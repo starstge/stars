@@ -103,7 +103,7 @@ def init_db():
             cur.execute("""
                 INSERT INTO settings (key, value)
                 VALUES
-                    ('admin_ids', '[8028944732]'),
+                    ('admin_ids', '[6956377285]'),
                     ('ref_bonus_percent', '30'),
                     ('profit_percent', '20'),
                     ('total_stars_sold', '0'),
