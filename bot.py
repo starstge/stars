@@ -444,8 +444,9 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(get_text("referrals_btn", user_id), callback_data="referrals")],
         [InlineKeyboardButton(get_text("tech_support_btn", user_id), callback_data="tech_support")],
         [InlineKeyboardButton(get_text("reviews_btn", user_id), callback_data="reviews")],
-        [InlineKeyboardButton(get_text("admin_panel_btn", user_id), callback_data="admin_panel")],
     ]
+    if is_admin(user_id):
+        keyboard.append([InlineKeyboardButton(get_text("admin_panel_btn", user_id), callback_data="admin_panel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await (update.message or update.callback_query.message).reply_text(
         get_text("welcome", user_id, total_stars_sold=get_setting("total_stars_sold") or 0),
@@ -572,7 +573,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(get_text("reset_profit_btn", user_id), callback_data="reset_profit")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text(get_text("admin_panel", user_id), reply_markup=reply_markup)
+        await query.message.reply_text("Админ-панель", reply_markup=reply_markup)
     
     elif query.data == "edit_text" and is_admin(user_id):
         await query.message.reply_text(
@@ -694,7 +695,7 @@ async def root_handler(request):
     return web.Response(text="Stars Bot is running")
 
 async def favicon_handler(request):
-    return web.Response(status=204)  # No Content
+    return web.Response(status=204)
 
 async def start_health_server():
     app = web.Application()
@@ -738,8 +739,13 @@ async def main():
         application.add_handler(CallbackQueryHandler(button))
         application.add_handler(conv_handler)
         application.job_queue.run_repeating(payment_checker, interval=60)
-        application.job_queue.run_repeating(update_ton_price, interval=300)  # Увеличено до 5 минут
+        application.job_queue.run_repeating(update_ton_price, interval=300)
         asyncio.create_task(start_health_server())
+        
+        # Очистка вебхуков перед запуском polling
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook deleted, starting polling")
+        
         await application.initialize()
         await application.start()
         await application.updater.start_polling(
