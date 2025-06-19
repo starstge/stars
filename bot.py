@@ -5,6 +5,8 @@ import logging
 import asyncio
 import aiohttp
 import psycopg2
+from urllib.parse import urlparse
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -15,6 +17,8 @@ from telegram.ext import (
     filters,
     ConversationHandler,
 )
+
+load_dotenv()
 
 # Логирование
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -32,7 +36,32 @@ OWNER_WALLET = os.getenv("OWNER_WALLET")
 EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_REVIEW_CHANNEL, CHOOSE_LANGUAGE = range(5)
 
 def get_db_connection():
-    return psycopg2.connect(POSTGRES_URL)
+    postgres_url = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
+    if not postgres_url:
+        logger.error("POSTGRES_URL or DATABASE_URL not set in environment variables")
+        raise ValueError("POSTGRES_URL or DATABASE_URL is not set")
+    
+    try:
+        # Парсим URL для извлечения компонентов
+        parsed_url = urlparse(postgres_url)
+        dbname = parsed_url.path.lstrip('/')
+        user = parsed_url.username
+        password = parsed_url.password
+        host = parsed_url.hostname
+        port = parsed_url.port or 5432
+        
+        logger.info(f"Connecting to PostgreSQL: host={host}, port={port}, dbname={dbname}")
+        
+        return psycopg2.connect(
+            dbname=dbname,
+            user=user,
+            password=password,
+            host=host,
+            port=port
+        )
+    except Exception as e:
+        logger.error(f"Failed to connect to PostgreSQL: {e}")
+        raise
 
 # Инициализация базы данных
 def init_db():
