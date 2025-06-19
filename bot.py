@@ -5,7 +5,6 @@ import logging
 import asyncio
 import aiohttp
 import psycopg2
-import requests
 from uuid import uuid4
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -22,7 +21,6 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from telegram_wallet_pay import TelegramWalletPay
 
 # Логирование
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -31,7 +29,6 @@ logger = logging.getLogger(__name__)
 # Константы
 OWNER_WALLET = os.getenv("OWNER_WALLET", "UQB_XcBjornHoP0aIf6ofn-wT8ru5QPsgYKtyPrlbgKsXrrX")
 SPLIT_TG_WALLET = os.getenv("SPLIT_TG_WALLET", "stx2wXqjEENm8ox-PjBMFBhslQOrkvLHHLS1cTXnfpUpfR1K5SJEXzL2nj0X6IyxXpsDFOZWvpwcizEbZiAv958nkR3dfNLdM9BBfUcEU42K8vdVy0TOD3j-r_tQK6LyRsx")
-WALLET_PAY_TOKEN = os.getenv("WALLET_PAY_TOKEN")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TONAPI_KEY = os.getenv("TONAPI_KEY")
 POSTGRES_URL = os.getenv("POSTGRES_URL")
@@ -106,7 +103,7 @@ def init_db():
                 INSERT INTO texts (key, value)
                 VALUES
                     ('welcome', 'Добро пожаловать! Купите Telegram Stars за TON.\nЗвезд продано: {total_stars_sold}'),
-                    ('buy_prompt', 'Оплатите {amount_ton:.6f} TON для {stars} звезд.\nАдрес: {address}\nMemo: {memo}'),
+                    ('buy_prompt', 'Оплатите {amount_ton:.6f} TON для {stars} звезд через TON Space.\nАдрес: {address}\nMemo: {memo}'),
                     ('buy_success', 'Оплата прошла! Вы получили {stars} звезд.'),
                     ('ref_info', 'Ваш реф. бонус: {ref_bonus_ton:.6f} TON\nРеф. ссылка: t.me/{bot_username}?start=ref_{user_id}'),
                     ('tech_support', 'Свяжитесь с техподдержкой: {support_channel}'),
@@ -227,11 +224,11 @@ async def issue_stars_selenium(username, stars):
     finally:
         driver.quit()
 
-# Заглушка для генерации TON-адреса
+# Генерация TON-адреса (TON Space)
 async def generate_ton_address(user_id):
     return {"address": OWNER_WALLET, "memo": f"order_{user_id}_{int(time.time())}"}
 
-# Заглушка для проверки оплаты TON
+# Проверка оплаты TON (через tonapi.io)
 async def check_ton_payment(address, memo, amount_ton):
     headers = {"Authorization": f"Bearer {TONAPI_KEY}"}
     async with aiohttp.ClientSession() as session:
@@ -248,7 +245,7 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
     while True:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT user_id, username, stars_bought, address, memo, amount_ton FROM users WHERE stars_bought = 0 AND address IS NOT NULL;")
+                cur.execute("SELECT user_id, username, stars_bought, address, memo, amount_ton FROM users WHERE stars_bought > 0 AND address IS NOT NULL;")
                 pending = cur.fetchall()
         for user_id, username, stars, address, memo, amount_ton in pending:
             if await check_ton_payment(address, memo, amount_ton):
@@ -256,8 +253,8 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                     with get_db_connection() as conn:
                         with conn.cursor() as cur:
                             cur.execute(
-                                "UPDATE users SET stars_bought = stars_bought + %s WHERE user_id = %s;",
-                                (stars, user_id)
+                                "UPDATE users SET stars_bought = 0 WHERE user_id = %s;",
+                                (user_id,)
                             )
                             total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars
                             total_profit_usd = float(get_setting("total_profit_usd") or 0) + (stars / 50 * float(get_setting("stars_price_usd")))
@@ -560,4 +557,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                
