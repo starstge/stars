@@ -21,18 +21,19 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from dotenv import load_dotenv
 
+
+load_dotenv("/etc/secrets/.env")  
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+POSTGRES_URL = os.getenv("POSTGRES_URL")
+TONAPI_KEY = os.getenv("TONAPI_KEY")
+OWNER_WALLET = os.getenv("OWNER_WALLET")
+SPLIT_TG_WALLET = os.getenv("SPLIT_TG_WALLET")
 # Логирование
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-# Константы
-OWNER_WALLET = os.getenv("OWNER_WALLET", "UQB_XcBjornHoP0aIf6ofn-wT8ru5QPsgYKtyPrlbgKsXrrX")
-SPLIT_TG_WALLET = os.getenv("SPLIT_TG_WALLET", "stx2wXqjEENm8ox-PjBMFBhslQOrkvLHHLS1cTXnfpUpfR1K5SJEXzL2nj0X6IyxXpsDFOZWvpwcizEbZiAv958nkR3dfNLdM9BBfUcEU42K8vdVy0TOD3j-r_tQK6LyRsx")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-TONAPI_KEY = os.getenv("TONAPI_KEY")
-POSTGRES_URL = os.getenv("POSTGRES_URL")
-SELENIUM_HEADLESS = os.getenv("SELENIUM_HEADLESS", "true").lower() == "true"
 
 # Состояния для ConversationHandler
 EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_REVIEW_CHANNEL = range(4)
