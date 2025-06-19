@@ -13,11 +13,13 @@ from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
     ConversationHandler,
 )
 
-# Загрузка .env для локального запуска
+# Загрузка .env
 load_dotenv()
 
 # Логирование
@@ -28,16 +30,16 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TONAPI_KEY = os.getenv("TONAPI_KEY")
 POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
-SPLIT_API_ID = os.getenv("SPLIT_API_ID")
 SPLIT_API_TOKEN = os.getenv("SPLIT_API_TOKEN")
 OWNER_WALLET = os.getenv("OWNER_WALLET")
+CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN")
 
 # Состояния для ConversationHandler
-EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_REVIEW_CHANNEL, CHOOSE_LANGUAGE = range(5)
+EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_REVIEW_CHANNEL, CHOOSE_LANGUAGE, BUY_STARS_USERNAME, BUY_STARS_AMOUNT, BUY_STARS_PAYMENT = range(8)
 
 def get_db_connection():
     if not POSTGRES_URL:
-        logger.error("POSTGRES_URL or DATABASE_URL not set in environment variables")
+        logger.error("POSTGRES_URL or DATABASE_URL not set")
         raise ValueError("POSTGRES_URL or DATABASE_URL is not set")
     
     try:
@@ -83,6 +85,7 @@ def init_db():
                     address TEXT,
                     memo TEXT,
                     amount_ton FLOAT,
+                    cryptobot_invoice_id TEXT,
                     language TEXT DEFAULT 'ru'
                 );
             """)
@@ -109,21 +112,35 @@ def init_db():
                     ('total_stars_sold', '0'),
                     ('total_profit_usd', '0'),
                     ('total_profit_ton', '0'),
-                    ('stars_price_usd', '0.972'),
+                    ('stars_price_usd', '0.81'),
                     ('stars_per_purchase', '50'),
                     ('ton_exchange_rate', '2.93'),
-                    ('review_channel', '@sacoectasy')
+                    ('review_channel', '@sacoectasy'),
+                    ('cryptobot_commission', '25'),
+                    ('ton_commission', '20')
                 ON CONFLICT (key) DO NOTHING;
             """)
             cur.execute("""
                 INSERT INTO texts (key, value)
                 VALUES
-                    ('welcome_ru', 'Добро пожаловать! Купите Telegram Stars за TON.\nЗвезд продано: {total_stars_sold}'),
-                    ('welcome_en', 'Welcome! Buy Telegram Stars with TON.\nStars sold: {total_stars_sold}'),
-                    ('buy_prompt_ru', 'Оплатите {amount_ton:.6f} TON для {stars} звезд через TON Space.\nАдрес: {address}\nMemo: {memo}'),
-                    ('buy_prompt_en', 'Pay {amount_ton:.6f} TON for {stars} stars via TON Space.\nAddress: {address}\nMemo: {memo}'),
-                    ('buy_success_ru', 'Оплата прошла! Вы получили {stars} звезд.'),
-                    ('buy_success_en', 'Payment successful! You received {stars} stars.'),
+                    ('welcome_ru', 'Добро пожаловать! Купите Telegram Stars за TON или USDT.\nЗвезд продано: {total_stars_sold}'),
+                    ('welcome_en', 'Welcome! Buy Telegram Stars with TON or USDT.\nStars sold: {total_stars_sold}'),
+                    ('buy_username_prompt_ru', 'Введите username получателя (без @):'),
+                    ('buy_username_prompt_en', 'Enter recipient username (without @):'),
+                    ('buy_amount_prompt_ru', 'Введите количество звезд:'),
+                    ('buy_amount_prompt_en', 'Enter number of stars:'),
+                    ('buy_payment_prompt_ru', 'Выберите способ оплаты:'),
+                    ('buy_payment_prompt_en', 'Choose payment method:'),
+                    ('buy_cryptobot_prompt_ru', 'Оплатите {amount_usd:.2f} USDT через @CryptoBot.\nНажмите "Оплатить" для создания чека.\n\n{stars} звезд для @{username}'),
+                    ('buy_cryptobot_prompt_en', 'Pay {amount_usd:.2f} USDT via @CryptoBot.\nClick "Pay" to create invoice.\n\n{stars} stars for @{username}'),
+                    ('buy_ton_prompt_ru', 'Оплатите {amount_ton:.6f} TON через TON Wallet.\nАдрес: {address}\nMemo: {memo}\n\n{stars} звезд для @{username}'),
+                    ('buy_ton_prompt_en', 'Pay {amount_ton:.6f} TON via TON Wallet.\nAddress: {address}\nMemo: {memo}\n\n{stars} stars for @{username}'),
+                    ('buy_success_ru', 'Оплата прошла! @{username} получил {stars} звезд.'),
+                    ('buy_success_en', 'Payment successful! @{username} received {stars} stars.'),
+                    ('buy_invalid_username_ru', 'Неверный username. Введите без @.'),
+                    ('buy_invalid_username_en', 'Invalid username. Enter without @.'),
+                    ('buy_invalid_amount_ru', 'Количество звезд должно быть больше 0.'),
+                    ('buy_invalid_amount_en', 'Number of stars must be greater than 0.'),
                     ('ref_info_ru', 'Ваш реф. бонус: {ref_bonus_ton:.6f} TON\nРеф. ссылка: t.me/{bot_username}?start=ref_{user_id}'),
                     ('ref_info_en', 'Your ref. bonus: {ref_bonus_ton:.6f} TON\nRef. link: t.me/{bot_username}?start=ref_{user_id}'),
                     ('tech_support_ru', 'Свяжитесь с техподдержкой: {support_channel}'),
@@ -160,6 +177,8 @@ def init_db():
                     ('set_price_btn_en', 'Set price'),
                     ('set_percent_btn_ru', 'Установить проценты'),
                     ('set_percent_btn_en', 'Set percentages'),
+                    ('set_commissions_btn_ru', 'Установить комиссии'),
+                    ('set_commissions_btn_en', 'Set commissions'),
                     ('set_review_channel_btn_ru', 'Установить канал отзывов'),
                     ('set_review_channel_btn_en', 'Set review channel'),
                     ('stats_btn_ru', 'Статистика'),
@@ -168,10 +187,12 @@ def init_db():
                     ('reset_profit_btn_en', 'Reset profit'),
                     ('edit_text_prompt_ru', 'Введите: key:value\nНапример: welcome_ru:Новый текст'),
                     ('edit_text_prompt_en', 'Enter: key:value\nExample: welcome_en:New text'),
-                    ('set_price_prompt_ru', 'Введите: price_usd:stars\nНапример: 0.972:50'),
-                    ('set_price_prompt_en', 'Enter: price_usd:stars\nExample: 0.972:50'),
+                    ('set_price_prompt_ru', 'Введите: price_usd:stars\nНапример: 0.81:50'),
+                    ('set_price_prompt_en', 'Enter: price_usd:stars\nExample: 0.81:50'),
                     ('set_percent_prompt_ru', 'Введите: ref_bonus:profit\nНапример: 30:20'),
                     ('set_percent_prompt_en', 'Enter: ref_bonus:profit\nExample: 30:20'),
+                    ('set_commissions_prompt_ru', 'Введите: cryptobot:ton\nНапример: 25:20'),
+                    ('set_commissions_prompt_en', 'Enter: cryptobot:ton\nExample: 25:20'),
                     ('set_review_channel_prompt_ru', 'Введите: @channel\nНапример: @sacoectasy'),
                     ('set_review_channel_prompt_en', 'Enter: @channel\nExample: @sacoectasy'),
                     ('access_denied_ru', 'Доступ запрещён.'),
@@ -194,6 +215,12 @@ def init_db():
                     ('percent_set_en', 'Percentages set: ref. bonus {ref_bonus}%, profit {profit}%'),
                     ('percent_format_ru', 'Формат: ref_bonus:profit'),
                     ('percent_format_en', 'Format: ref_bonus:profit'),
+                    ('invalid_commissions_ru', 'Комиссии должны быть: cryptobot 0-100, ton 0-100.'),
+                    ('invalid_commissions_en', 'Commissions must be: cryptobot 0-100, ton 0-100.'),
+                    ('commissions_set_ru', 'Комиссии установлены: @CryptoBot {cryptobot}%, TON {ton}%'),
+                    ('commissions_set_en', 'Commissions set: @CryptoBot {cryptobot}%, TON {ton}%'),
+                    ('commissions_format_ru', 'Формат: cryptobot:ton'),
+                    ('commissions_format_en', 'Format: cryptobot:ton'),
                     ('invalid_channel_ru', 'Неверный канал. Используйте @channel.'),
                     ('invalid_channel_en', 'Invalid channel. Use @channel.'),
                     ('channel_set_ru', 'Канал установлен: {channel}'),
@@ -219,7 +246,7 @@ def get_setting(key):
             if result:
                 if key in ('admin_ids', 'referrals', 'bonus_history'):
                     return json.loads(result[0])
-                return float(result[0]) if key in ('ref_bonus_percent', 'profit_percent', 'stars_price_usd', 'ton_exchange_rate') else result[0]
+                return float(result[0]) if key in ('ref_bonus_percent', 'profit_percent', 'stars_price_usd', 'ton_exchange_rate', 'cryptobot_commission', 'ton_commission') else result[0]
     return None
 
 # Обновление настроек
@@ -256,7 +283,7 @@ def update_text(key, value):
 
 # Проверка админа
 def is_admin(user_id):
-    admin_ids = get_setting("admin_ids") or [8028944732]
+    admin_ids = get_setting("admin_ids") or [6956377285]
     return user_id in admin_ids
 
 # Логирование действий админа
@@ -308,7 +335,52 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE):
                 return
         logger.error("Failed to update TON price after 3 attempts")
 
-# Выдача звёзд через API Split.tg
+# Создание инвойса через @CryptoBot
+async def create_cryptobot_invoice(amount_usd, username, stars):
+    api_url = "https://pay.crypt.bot/api/createInvoice"
+    headers = {
+        "Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN
+    }
+    payload = {
+        "amount": amount_usd,
+        "currency": "USDT",
+        "description": f"Purchase {stars} Telegram Stars for @{username}",
+        "swap_to": "USDT"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(api_url, headers=headers, json=payload) as response:
+            if response.status == 200:
+                data = await response.json()
+                if data.get("ok"):
+                    return data.get("result", {}).get("invoice_id")
+                else:
+                    logger.error(f"Failed to create CryptoBot invoice: {data.get('error')}")
+                    return None
+            else:
+                logger.error(f"CryptoBot API request failed: {response.status}")
+                return None
+
+# Проверка оплаты через @CryptoBot
+async def check_cryptobot_payment(invoice_id):
+    api_url = f"https://pay.crypt.bot/api/getInvoices?invoice_ids={invoice_id}"
+    headers = {
+        "Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(api_url, headers=headers) as response:
+            if response.status == 200:
+                data = await response.json()
+                if data.get("ok"):
+                    invoice = data.get("result", {}).get("items", [{}])[0]
+                    return invoice.get("status") == "paid"
+                else:
+                    logger.error(f"Failed to check CryptoBot invoice: {data.get('error')}")
+                    return False
+            else:
+                logger.error(f"CryptoBot API request failed: {response.status}")
+                return False
+
+# Выдача звёзд через split.tg
 async def issue_stars_api(username, stars):
     api_url = "https://api.split.tg/buy/stars"
     headers = {
@@ -336,11 +408,11 @@ async def issue_stars_api(username, stars):
                 logger.error(f"Split.tg API request failed: {response.status}, {response_text}")
                 return False
 
-# Генерация TON-адреса (TON Space)
+# Генерация TON-адреса
 async def generate_ton_address(user_id):
     return {"address": OWNER_WALLET, "memo": f"order_{user_id}_{int(time.time())}"}
 
-# Проверка оплаты TON (через tonapi.io)
+# Проверка оплаты TON
 async def check_ton_payment(address, memo, amount_ton):
     headers = {"Authorization": f"Bearer {TONAPI_KEY}"}
     async with aiohttp.ClientSession() as session:
@@ -357,27 +429,33 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
     while True:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT user_id, username, stars_bought, address, memo, amount_ton FROM users WHERE stars_bought > 0 AND address IS NOT NULL;")
+                cur.execute("SELECT user_id, username, stars_bought, address, memo, amount_ton, cryptobot_invoice_id FROM users WHERE stars_bought > 0 AND (address IS NOT NULL OR cryptobot_invoice_id IS NOT NULL);")
                 pending = cur.fetchall()
-        for user_id, username, stars, address, memo, amount_ton in pending:
-            if await check_ton_payment(address, memo, amount_ton):
+        for user_id, username, stars, address, memo, amount_ton, invoice_id in pending:
+            paid = False
+            if invoice_id:
+                paid = await check_cryptobot_payment(invoice_id)
+            elif address and memo and amount_ton:
+                paid = await check_ton_payment(address, memo, amount_ton)
+            
+            if paid:
                 if await issue_stars_api(username, stars):
                     with get_db_connection() as conn:
                         with conn.cursor() as cur:
                             cur.execute(
-                                "UPDATE users SET stars_bought = 0 WHERE user_id = %s;",
+                                "UPDATE users SET stars_bought = 0, address = NULL, memo = NULL, amount_ton = NULL, cryptobot_invoice_id = NULL WHERE user_id = %s;",
                                 (user_id,)
                             )
                             total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars
                             total_profit_usd = float(get_setting("total_profit_usd") or 0) + (stars / 50 * float(get_setting("stars_price_usd")))
-                            total_profit_ton = float(get_setting("total_profit_ton") or 0) + amount_ton
+                            total_profit_ton = float(get_setting("total_profit_ton") or 0) + (amount_ton if amount_ton else 0)
                             update_setting("total_stars_sold", total_stars_sold)
                             update_setting("total_profit_usd", total_profit_usd)
                             update_setting("total_profit_ton", total_profit_ton)
                             conn.commit()
                     await context.bot.send_message(
                         user_id,
-                        get_text("buy_success", user_id, stars=stars)
+                        get_text("buy_success", user_id, username=username, stars=stars)
                     )
                     with get_db_connection() as conn:
                         with conn.cursor() as cur:
@@ -386,7 +464,7 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                             referrer_id = result[0] if result else None
                     if referrer_id:
                         ref_bonus_percent = float(get_setting("ref_bonus_percent")) / 100
-                        ref_bonus_ton = amount_ton * ref_bonus_percent
+                        ref_bonus_ton = (amount_ton if amount_ton else (stars / 50 * float(get_setting("stars_price_usd")))) * ref_bonus_percent
                         with get_db_connection() as conn:
                             with conn.cursor() as cur:
                                 cur.execute(
@@ -468,10 +546,50 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     if query.data == "buy_stars":
-        stars = int(get_setting("stars_per_purchase"))
-        price_usd = float(get_setting("stars_price_usd"))
+        await query.message.reply_text(
+            get_text("buy_username_prompt", user_id)
+        )
+        context.user_data['state'] = 'buy_username'
+        return BUY_STARS_USERNAME
+    
+    if query.data == "payment_cryptobot":
+        target_username = context.user_data.get('buy_username')
+        stars = context.user_data.get('buy_stars')
+        price_usd = float(get_setting("stars_price_usd")) * (stars / 50)
+        commission = float(get_setting("cryptobot_commission")) / 100
+        amount_usd = price_usd * (1 + commission)
+        
+        invoice_id = await create_cryptobot_invoice(amount_usd, target_username, stars)
+        if invoice_id:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE users SET stars_bought = %s, username = %s, cryptobot_invoice_id = %s WHERE user_id = %s;",
+                        (stars, target_username, invoice_id, user_id)
+                    )
+                    conn.commit()
+            
+            keyboard = [
+                [InlineKeyboardButton("Оплатить" if get_user_language(user_id) == 'ru' else "Pay", url=f"https://t.me/CryptoBot?start=pay{invoice_id}")],
+                [InlineKeyboardButton("Проверить" if get_user_language(user_id) == 'ru' else "Check", callback_data="check_payment")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text(
+                get_text("buy_cryptobot_prompt", user_id, amount_usd=amount_usd, stars=stars, username=target_username),
+                reply_markup=reply_markup
+            )
+        else:
+            await query.message.reply_text("Ошибка при создании чека. Попробуйте позже.")
+        return ConversationHandler.END
+    
+    if query.data == "payment_ton":
+        target_username = context.user_data.get('buy_username')
+        stars = context.user_data.get('buy_stars')
+        price_usd = float(get_setting("stars_price_usd")) * (stars / 50)
+        commission = float(get_setting("ton_commission")) / 100
+        amount_usd = price_usd * (1 + commission)
         ton_exchange_rate = float(get_setting("ton_exchange_rate"))
-        amount_ton = price_usd / ton_exchange_rate
+        amount_ton = amount_usd / ton_exchange_rate
         
         payment_info = await generate_ton_address(user_id)
         address = payment_info["address"]
@@ -481,15 +599,60 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE users SET stars_bought = %s, username = %s, address = %s, memo = %s, amount_ton = %s WHERE user_id = %s;",
-                    (stars, username, address, memo, amount_ton, user_id)
+                    (stars, target_username, address, memo, amount_ton, user_id)
                 )
                 conn.commit()
         
+        keyboard = [
+            [InlineKeyboardButton("Оплатить" if get_user_language(user_id) == 'ru' else "Pay", url=f"https://ton.space/transfer?to={address}&amount={amount_ton}&memo={memo}")],
+            [InlineKeyboardButton("Проверить" if get_user_language(user_id) == 'ru' else "Check", callback_data="check_payment")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(
-            get_text("buy_prompt", user_id, amount_ton=amount_ton, stars=stars, address=address, memo=memo)
+            get_text("buy_ton_prompt", user_id, amount_ton=amount_ton, stars=stars, address=address, memo=memo, username=target_username),
+            reply_markup=reply_markup
         )
+        return ConversationHandler.END
     
-    elif query.data == "profile":
+    if query.data == "check_payment":
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT username, stars_bought, address, memo, amount_ton, cryptobot_invoice_id FROM users WHERE user_id = %s;", (user_id,))
+                result = cur.fetchone()
+                if not result:
+                    await query.message.reply_text("Нет активных заказов.")
+                    return ConversationHandler.END
+                target_username, stars, address, memo, amount_ton, invoice_id = result
+        
+        paid = False
+        if invoice_id:
+            paid = await check_cryptobot_payment(invoice_id)
+        elif address and memo and amount_ton:
+            paid = await check_ton_payment(address, memo, amount_ton)
+        
+        if paid:
+            if await issue_stars_api(target_username, stars):
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE users SET stars_bought = 0, address = NULL, memo = NULL, amount_ton = NULL, cryptobot_invoice_id = NULL WHERE user_id = %s;",
+                            (user_id,)
+                        )
+                        total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars
+                        total_profit_usd = float(get_setting("total_profit_usd") or 0) + (stars / 50 * float(get_setting("stars_price_usd")))
+                        total_profit_ton = float(get_setting("total_profit_ton") or 0) + (amount_ton if amount_ton else 0)
+                        update_setting("total_stars_sold", total_stars_sold)
+                        update_setting("total_profit_usd", total_profit_usd)
+                        update_setting("total_profit_ton", total_profit_ton)
+                        conn.commit()
+                await query.message.reply_text(
+                    get_text("buy_success", user_id, username=target_username, stars=stars)
+                )
+        else:
+            await query.message.reply_text("Оплата не подтверждена. Попробуйте позже.")
+        return ConversationHandler.END
+    
+    if query.data == "profile":
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT stars_bought, ref_bonus_ton FROM users WHERE user_id = %s;", (user_id,))
@@ -568,6 +731,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(get_text("edit_text_btn", user_id), callback_data="edit_text")],
             [InlineKeyboardButton(get_text("set_price_btn", user_id), callback_data="set_price")],
             [InlineKeyboardButton(get_text("set_percent_btn", user_id), callback_data="set_percent")],
+            [InlineKeyboardButton(get_text("set_commissions_btn", user_id), callback_data="set_commissions")],
             [InlineKeyboardButton(get_text("set_review_channel_btn", user_id), callback_data="set_review_channel")],
             [InlineKeyboardButton(get_text("stats_btn", user_id), callback_data="stats")],
             [InlineKeyboardButton(get_text("reset_profit_btn", user_id), callback_data="reset_profit")],
@@ -596,6 +760,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = 'set_percent'
         return SET_PERCENT
     
+    elif query.data == "set_commissions" and is_admin(user_id):
+        await query.message.reply_text(
+            get_text("set_commissions_prompt", user_id)
+        )
+        context.user_data['state'] = 'set_commissions'
+        return SET_COMMISSIONS
+    
     elif query.data == "set_review_channel" and is_admin(user_id):
         await query.message.reply_text(
             get_text("set_review_channel_prompt", user_id)
@@ -617,15 +788,43 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_admin_action(user_id, "Reset profit")
         await query.message.reply_text(get_text("reset_profit", user_id))
 
-# Обработка текстового ввода для админ-действий
-async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Обработка текстового ввода
+async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    state = context.user_data.get('state')
+    text = update.message.text.strip()
+    
+    if state == 'buy_username':
+        if text.startswith('@'):
+            await update.message.reply_text(get_text("buy_invalid_username", user_id))
+            return BUY_STARS_USERNAME
+        context.user_data['buy_username'] = text
+        await update.message.reply_text(get_text("buy_amount_prompt", user_id))
+        context.user_data['state'] = 'buy_amount'
+        return BUY_STARS_AMOUNT
+    
+    if state == 'buy_amount':
+        try:
+            stars = int(text)
+            if stars <= 0:
+                await update.message.reply_text(get_text("buy_invalid_amount", user_id))
+                return BUY_STARS_AMOUNT
+            context.user_data['buy_stars'] = stars
+            keyboard = [
+                [InlineKeyboardButton("@CryptoBot", callback_data="payment_cryptobot")],
+                [InlineKeyboardButton("TON Wallet", callback_data="payment_ton")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                get_text("buy_payment_prompt", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['state'] = 'buy_payment'
+            return BUY_STARS_PAYMENT
+    
     if not is_admin(user_id):
         await update.message.reply_text(get_text("access_denied", user_id))
         return ConversationHandler.END
-    
-    state = context.user_data.get('state')
-    text = update.message.text.strip()
     
     if state == 'edit_text':
         try:
@@ -672,6 +871,22 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(get_text("percent_set", user_id, ref_bonus=ref_bonus, profit=profit))
         except ValueError:
             await update.message.reply_text(get_text("percent_format", user_id))
+        return ConversationHandler.END
+    
+    elif state == 'set_commissions':
+        try:
+            cryptobot, ton = text.split(":")
+            cryptobot = float(cryptobot.strip())
+            ton = float(ton.strip())
+            if not (0 <= cryptobot <= 100 and 0 <= ton <= 100):
+                await update.message.reply_text(get_text("invalid_commissions", user_id))
+                return SET_COMMISSIONS
+            update_setting("cryptobot_commission", cryptobot)
+            update_setting("ton_commission", ton)
+            log_admin_action(user_id, f"Set commissions: cryptobot {cryptobot}%, ton {ton}%")
+            await update.message.reply_text(get_text("commissions_set", user_id, cryptobot=cryptobot, ton=ton))
+        except ValueError:
+            await update.message.reply_text(get_text("commissions_format", user_id))
         return ConversationHandler.END
     
     elif state == 'set_review_channel':
@@ -723,26 +938,29 @@ async def main():
         application = Application.builder().token(BOT_TOKEN).build()
         conv_handler = ConversationHandler(
             entry_points=[
-                CallbackQueryHandler(button, pattern="^(edit_text|set_price|set_percent|set_review_channel|lang_.*)$"),
+                CallbackQueryHandler(button, pattern="^(edit_text|set_price|set_percent|set_commissions|set_review_channel|lang_.*|buy_stars|payment_cryptobot|payment_ton|check_payment)$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
             ],
             states={
-                EDIT_TEXT: [CallbackQueryHandler(handle_admin_input)],
-                SET_PRICE: [CallbackQueryHandler(handle_admin_input)],
-                SET_PERCENT: [CallbackQueryHandler(handle_admin_input)],
-                SET_REVIEW_CHANNEL: [CallbackQueryHandler(handle_admin_input)],
+                EDIT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+                SET_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+                SET_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+                SET_COMMISSIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+                SET_REVIEW_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
                 CHOOSE_LANGUAGE: [CallbackQueryHandler(button)],
+                BUY_STARS_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+                BUY_STARS_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+                BUY_STARS_PAYMENT: [CallbackQueryHandler(button)]
             },
             fallbacks=[CommandHandler("cancel", cancel)],
             per_message=False
         )
         application.add_handler(CommandHandler("start", start))
-        application.add_handler(CallbackQueryHandler(button))
         application.add_handler(conv_handler)
         application.job_queue.run_repeating(payment_checker, interval=60)
         application.job_queue.run_repeating(update_ton_price, interval=300)
         asyncio.create_task(start_health_server())
         
-        # Очистка вебхуков перед запуском polling
         await application.bot.delete_webhook(drop_pending_updates=True)
         logger.info("Webhook deleted, starting polling")
         
@@ -753,7 +971,6 @@ async def main():
             drop_pending_updates=True,
             poll_interval=1
         )
-        # Держим приложение запущенным
         while True:
             await asyncio.sleep(3600)
     except Exception as e:
