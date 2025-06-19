@@ -347,7 +347,7 @@ async def check_ton_payment(address, memo, amount_ton):
         async with session.get(f"https://tonapi.io/v2/transactions?address={address}", headers=headers) as response:
             if response.status == 200:
                 transactions = await response.json()
-                for tx in transactions.get("transactions", [])]
+                for tx in transactions.get("transactions", []):
                     if tx.get("memo") == memo and float(tx.get("amount", 0)) / 1e9 >= amount_ton:
                         return True
     return False
