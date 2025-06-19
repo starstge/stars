@@ -48,14 +48,14 @@ def init_db():
             # Таблица настроек
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY_KEY,
+                    key TEXT PRIMARY KEY,
                     value TEXT
                 );
             """)
             # Таблица пользователей
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY_KEY,
+                    user_id BIGINT PRIMARY KEY,
                     username TEXT,
                     stars_bought INTEGER DEFAULT 0,
                     ref_bonus_ton FLOAT DEFAULT 0,
@@ -70,7 +70,7 @@ def init_db():
             # Таблица логов админов
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS admin_log (
-                    id SERIAL PRIMARY_KEY,
+                    id SERIAL PRIMARY KEY,
                     admin_id BIGINT,
                     action TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -79,7 +79,7 @@ def init_db():
             # Таблица текстов
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS texts (
-                    key TEXT PRIMARY_KEY,
+                    key TEXT PRIMARY KEY,
                     value TEXT
                 );
             """)
