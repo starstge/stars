@@ -284,17 +284,29 @@ def update_user_language(user_id, language):
             )
             conn.commit()
 
-# Обновление курса TON через CoinGecko
+# Обновление курса TON через CoinGecko с ретраем
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE):
     async with aiohttp.ClientSession() as session:
-        async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd") as response:
-            if response.status == 200:
-                data = await response.json()
-                ton_price = data.get("the-open-network", {}).get("usd", 2.93)
-                update_setting("ton_exchange_rate", ton_price)
-                logger.info(f"TON price updated: ${ton_price}")
-            else:
-                logger.error(f"Failed to update TON price: {response.status}")
+        for attempt in range(3):
+            try:
+                async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd") as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        ton_price = data.get("the-open-network", {}).get("usd", 2.93)
+                        update_setting("ton_exchange_rate", ton_price)
+                        logger.info(f"TON price updated: ${ton_price}")
+                        return
+                    elif response.status == 429:
+                        wait_time = 2 ** attempt * 10
+                        logger.warning(f"Rate limit hit, retrying in {wait_time} seconds...")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(f"Failed to update TON price: {response.status}")
+                        return
+            except Exception as e:
+                logger.error(f"Exception in update_ton_price: {e}")
+                return
+        logger.error("Failed to update TON price after 3 attempts")
 
 # Выдача звёзд через API Split.tg
 async def issue_stars_api(username, stars):
@@ -397,8 +409,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO users (user_id, username, referrer_id) VALUES (%s, %s, %s) ON CONFLICT (user_id) DO UPDATE SET username = %s;",
-                (user_id, username, ref_id, username)
+                "INSERT INTO users (user_id, username, referrer_id, language) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO UPDATE SET username = %s;",
+                (user_id, username, ref_id, 'ru', username)
             )
             if ref_id:
                 cur.execute(
@@ -518,6 +530,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         text = get_text("top_referrals", user_id) + "\n"
         for i, (username, ref_count) in enumerate(top_referrals, 1):
+dual
             text += f"{i}. @{username}: {ref_count} рефералов\n"
         await query.message.reply_text(text or get_text("no_referrals", user_id))
     
@@ -674,13 +687,23 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(get_text("channel_format", user_id))
         return ConversationHandler.END
 
-# HTTP health check
+# HTTP health check и заглушки
 async def health_check(request):
     return web.Response(text="OK")
 
+async def root_handler(request):
+    return web.Response(text="Stars Bot is running")
+
+async def favicon_handler(request):
+    return web.Response(status=204)  # No Content
+
 async def start_health_server():
     app = web.Application()
-    app.add_routes([web.get('/health', health_check)])
+    app.add_routes([
+        web.get('/health', health_check),
+        web.get('/', root_handler),
+        web.get('/favicon.ico', favicon_handler)
+    ])
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", 8080))
@@ -716,7 +739,7 @@ async def main():
         application.add_handler(CallbackQueryHandler(button))
         application.add_handler(conv_handler)
         application.job_queue.run_repeating(payment_checker, interval=60)
-        application.job_queue.run_repeating(update_ton_price, interval=60)
+        application.job_queue.run_repeating(update_ton_price, interval=300)  # Увеличено до 5 минут
         asyncio.create_task(start_health_server())
         await application.initialize()
         await application.start()
