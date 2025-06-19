@@ -532,19 +532,20 @@ async def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
     conv_handler = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(button, pattern="edit_text"),
-            CallbackQueryHandler(button, pattern="set_price"),
-            CallbackQueryHandler(button, pattern="set_percent"),
-            CallbackQueryHandler(button, pattern="set_review_channel"),
-        ],
-        states={
-            EDIT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text)],
-            SET_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
-            SET_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_percent)],
-            SET_REVIEW_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_review_channel)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
+    entry_points=[
+        CallbackQueryHandler(button, pattern="edit_text$"),
+        CallbackQueryHandler(button, pattern="set_price$"),
+        CallbackQueryHandler(button, pattern="set_percent$"),
+        CallbackQueryHandler(button, pattern="set_review_channel$"),
+    ],
+    states={
+        EDIT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text)],
+        SET_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
+        SET_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_percent)],
+        SET_REVIEW_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_review_channel)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+    per_message=True,
     )
     
     application.add_handler(CommandHandler("start", start))
