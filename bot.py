@@ -5,7 +5,6 @@ import logging
 import asyncio
 import aiohttp
 import psycopg2
-from uuid import uuid4
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -16,26 +15,21 @@ from telegram.ext import (
     filters,
     ConversationHandler,
 )
-from undetected_chromedriver import Chrome, ChromeOptions
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from dotenv import load_dotenv
 
-
-load_dotenv("/etc/secrets/.env")  
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-POSTGRES_URL = os.getenv("POSTGRES_URL")
-TONAPI_KEY = os.getenv("TONAPI_KEY")
-OWNER_WALLET = os.getenv("OWNER_WALLET")
-SPLIT_TG_WALLET = os.getenv("SPLIT_TG_WALLET")
 # Логирование
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# Константы
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+TONAPI_KEY = os.getenv("TONAPI_KEY")
+POSTGRES_URL = os.getenv("POSTGRES_URL")
+SPLIT_API_ID = os.getenv("SPLIT_API_ID")
+SPLIT_API_TOKEN = os.getenv("SPLIT_API_TOKEN")
+OWNER_WALLET = os.getenv("OWNER_WALLET")
+
 # Состояния для ConversationHandler
-EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_REVIEW_CHANNEL = range(4)
+EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_REVIEW_CHANNEL, CHOOSE_LANGUAGE = range(5)
 
 def get_db_connection():
     return psycopg2.connect(POSTGRES_URL)
@@ -44,14 +38,12 @@ def get_db_connection():
 def init_db():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            # Таблица настроек
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT
                 );
             """)
-            # Таблица пользователей
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -63,10 +55,10 @@ def init_db():
                     bonus_history JSONB DEFAULT '[]',
                     address TEXT,
                     memo TEXT,
-                    amount_ton FLOAT
+                    amount_ton FLOAT,
+                    language TEXT DEFAULT 'ru'
                 );
             """)
-            # Таблица логов админов
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS admin_log (
                     id SERIAL PRIMARY KEY,
@@ -75,14 +67,12 @@ def init_db():
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            # Таблица текстов
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS texts (
                     key TEXT PRIMARY KEY,
                     value TEXT
                 );
             """)
-            # Инициализация настроек
             cur.execute("""
                 INSERT INTO settings (key, value)
                 VALUES
@@ -94,20 +84,27 @@ def init_db():
                     ('total_profit_ton', '0'),
                     ('stars_price_usd', '0.972'),
                     ('stars_per_purchase', '50'),
-                    ('ton_exchange_rate', '8'),
+                    ('ton_exchange_rate', '2.93'),
                     ('review_channel', '@sacoectasy')
                 ON CONFLICT (key) DO NOTHING;
             """)
-            # Инициализация текстов
             cur.execute("""
                 INSERT INTO texts (key, value)
                 VALUES
-                    ('welcome', 'Добро пожаловать! Купите Telegram Stars за TON.\nЗвезд продано: {total_stars_sold}'),
-                    ('buy_prompt', 'Оплатите {amount_ton:.6f} TON для {stars} звезд через TON Space.\nАдрес: {address}\nMemo: {memo}'),
-                    ('buy_success', 'Оплата прошла! Вы получили {stars} звезд.'),
-                    ('ref_info', 'Ваш реф. бонус: {ref_bonus_ton:.6f} TON\nРеф. ссылка: t.me/{bot_username}?start=ref_{user_id}'),
-                    ('tech_support', 'Свяжитесь с техподдержкой: {support_channel}'),
-                    ('reviews', 'Оставьте отзыв: {review_channel}')
+                    ('welcome_ru', 'Добро пожаловать! Купите Telegram Stars за TON.\nЗвезд продано: {total_stars_sold}'),
+                    ('welcome_en', 'Welcome! Buy Telegram Stars with TON.\nStars sold: {total_stars_sold}'),
+                    ('buy_prompt_ru', 'Оплатите {amount_ton:.6f} TON для {stars} звезд через TON Space.\nАдрес: {address}\nMemo: {memo}'),
+                    ('buy_prompt_en', 'Pay {amount_ton:.6f} TON for {stars} stars via TON Space.\nAddress: {address}\nMemo: {memo}'),
+                    ('buy_success_ru', 'Оплата прошла! Вы получили {stars} звезд.'),
+                    ('buy_success_en', 'Payment successful! You received {stars} stars.'),
+                    ('ref_info_ru', 'Ваш реф. бонус: {ref_bonus_ton:.6f} TON\nРеф. ссылка: t.me/{bot_username}?start=ref_{user_id}'),
+                    ('ref_info_en', 'Your ref. bonus: {ref_bonus_ton:.6f} TON\nRef. link: t.me/{bot_username}?start=ref_{user_id}'),
+                    ('tech_support_ru', 'Свяжитесь с техподдержкой: {support_channel}'),
+                    ('tech_support_en', 'Contact support: {support_channel}'),
+                    ('reviews_ru', 'Оставьте отзыв: {review_channel}'),
+                    ('reviews_en', 'Leave a review: {review_channel}'),
+                    ('choose_language_ru', 'Выберите язык:'),
+                    ('choose_language_en', 'Choose language:')
                 ON CONFLICT (key) DO NOTHING;
             """)
             conn.commit()
@@ -135,14 +132,16 @@ def update_setting(key, value):
             conn.commit()
 
 # Получение текста
-def get_text(key, **kwargs):
+def get_text(key, user_id, **kwargs):
+    language = get_user_language(user_id)
+    key_with_lang = f"{key}_{language}"
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT value FROM texts WHERE key = %s;", (key,))
+            cur.execute("SELECT value FROM texts WHERE key = %s;", (key_with_lang,))
             result = cur.fetchone()
             if result:
                 return result[0].format(**kwargs)
-    return "Текст не найден."
+    return f"Text not found: {key_with_lang}"
 
 # Обновление текста
 def update_text(key, value):
@@ -166,63 +165,63 @@ def log_admin_action(admin_id, action):
             cur.execute("INSERT INTO admin_log (admin_id, action) VALUES (%s, %s);", (admin_id, action))
             conn.commit()
 
-# Selenium: Инициализация драйвера
-def init_selenium_driver():
-    chrome_options = ChromeOptions()
-    if SELENIUM_HEADLESS:
-        chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    driver = Chrome(options=chrome_options)
-    return driver
+# Получение языка пользователя
+def get_user_language(user_id):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT language FROM users WHERE user_id = %s;", (user_id,))
+            result = cur.fetchone()
+            return result[0] if result else 'ru'
 
-# Selenium: Выдача звезд через https://split.tg/premium (по Pastebin)
-async def issue_stars_selenium(username, stars):
-    driver = init_selenium_driver()
-    try:
-        logger.info(f"Выдача {stars} звезд для @{username} через Selenium")
-        driver.get("https://split.tg/premium")
-        
-        # Ожидание загрузки страницы
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        
-        # Подключение кошелька
-        connect_button = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Connect Wallet')]"))
-        )
-        connect_button.click()
-        
-        # Ввод username
-        username_field = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, "//input[@placeholder='Enter Telegram username']"))
-        )
-        username_field.send_keys(username)
-        
-        # Ввод количества звезд
-        stars_field = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, "//input[@placeholder='Enter stars amount']"))
-        )
-        stars_field.send_keys(str(stars))
-        
-        # Подтверждение транзакции
-        confirm_button = WebDriverWait(driver, 30).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Confirm')]"))
-        )
-        confirm_button.click()
-        
-        # Ожидание результата
-        success_message = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.XPATH, "//div[contains(text(), 'Stars issued successfully')]"))
-        )
-        logger.info(f"Звезды выданы: @{username}, {stars}")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка Selenium: {e}")
-        return False
-    finally:
-        driver.quit()
+# Обновление языка пользователя
+def update_user_language(user_id, language):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET language = %s WHERE user_id = %s;",
+                (language, user_id)
+            )
+            conn.commit()
+
+# Обновление курса TON через CoinGecko
+async def update_ton_price(context: ContextTypes.DEFAULT_TYPE):
+    async with aiohttp.ClientSession() as session:
+        async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd") as response:
+            if response.status == 200:
+                data = await response.json()
+                ton_price = data.get("the-open-network", {}).get("usd", 2.93)
+                update_setting("ton_exchange_rate", ton_price)
+                logger.info(f"TON price updated: ${ton_price}")
+            else:
+                logger.error(f"Failed to update TON price: {response.status}")
+
+# Выдача звёзд через API Split.tg
+async def issue_stars_api(username, stars):
+    api_url = "https://api.split.tg/buy/stars"
+    headers = {
+        "Authorization": f"Bearer {SPLIT_API_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    payload = {
+        "username": username.lstrip("@"),
+        "payment_method": "ton_connect",
+        "quantity": stars
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(api_url, headers=headers, json=payload) as response:
+            response_text = await response.text()
+            if response.status == 200:
+                data = json.loads(response_text)
+                if data.get("ok", False):
+                    logger.info(f"Звезды выданы: @{username}, {stars}")
+                    return True
+                else:
+                    logger.error(f"Split.tg API error: {data.get('error_message')}")
+                    return False
+            else:
+                logger.error(f"Split.tg API request failed: {response.status}, {response_text}")
+                return False
 
 # Генерация TON-адреса (TON Space)
 async def generate_ton_address(user_id):
@@ -249,7 +248,7 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                 pending = cur.fetchall()
         for user_id, username, stars, address, memo, amount_ton in pending:
             if await check_ton_payment(address, memo, amount_ton):
-                if await issue_stars_selenium(username, stars):
+                if await issue_stars_api(username, stars):
                     with get_db_connection() as conn:
                         with conn.cursor() as cur:
                             cur.execute(
@@ -265,9 +264,8 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                             conn.commit()
                     await context.bot.send_message(
                         user_id,
-                        get_text("buy_success", stars=stars)
+                        get_text("buy_success", user_id, stars=stars)
                     )
-                    # Реферальный бонус
                     with get_db_connection() as conn:
                         with conn.cursor() as cur:
                             cur.execute("SELECT referrer_id FROM users WHERE user_id = %s;", (user_id,))
@@ -285,7 +283,7 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                                 conn.commit()
                         await context.bot.send_message(
                             referrer_id,
-                            f"Ваш реф. бонус: +{ref_bonus_ton:.6f} TON от @{username}"
+                            get_text("ref_bonus", referrer_id, ref_bonus_ton=ref_bonus_ton, username=username)
                         )
         await asyncio.sleep(60)
 
@@ -306,19 +304,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "UPDATE users SET referrals = referrals || %s WHERE user_id = %s;",
                     (json.dumps({"user_id": user_id, "username": username}), ref_id)
                 )
+            cur.execute("SELECT language FROM users WHERE user_id = %s;", (user_id,))
+            language = cur.fetchone()[0]
             conn.commit()
     
+    if not language:
+        keyboard = [
+            [InlineKeyboardButton("Русский", callback_data="lang_ru")],
+            [InlineKeyboardButton("English", callback_data="lang_en")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            get_text("choose_language", user_id),
+            reply_markup=reply_markup
+        )
+        return CHOOSE_LANGUAGE
+    
+    await show_main_menu(update, context)
+
+# Показ главного меню
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     keyboard = [
-        [InlineKeyboardButton("Купить звезды", callback_data="buy_stars")],
-        [InlineKeyboardButton("Профиль", callback_data="profile")],
-        [InlineKeyboardButton("Рефералы", callback_data="referrals")],
-        [InlineKeyboardButton("Техподдержка", callback_data="tech_support")],
-        [InlineKeyboardButton("Отзывы", callback_data="reviews")],
-        [InlineKeyboardButton("Админ-панель", callback_data="admin_panel")],
+        [InlineKeyboardButton(get_text("buy_stars_btn", user_id), callback_data="buy_stars")],
+        [InlineKeyboardButton(get_text("profile_btn", user_id), callback_data="profile")],
+        [InlineKeyboardButton(get_text("referrals_btn", user_id), callback_data="referrals")],
+        [InlineKeyboardButton(get_text("tech_support_btn", user_id), callback_data="tech_support")],
+        [InlineKeyboardButton(get_text("reviews_btn", user_id), callback_data="reviews")],
+        [InlineKeyboardButton(get_text("admin_panel_btn", user_id), callback_data="admin_panel")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        get_text("welcome", total_stars_sold=get_setting("total_stars_sold") or 0),
+    await (update.message or update.callback_query.message).reply_text(
+        get_text("welcome", user_id, total_stars_sold=get_setting("total_stars_sold") or 0),
         reply_markup=reply_markup
     )
 
@@ -330,11 +347,17 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.answer()
     
+    if query.data.startswith("lang_"):
+        language = query.data.split("_")[1]
+        update_user_language(user_id, language)
+        await show_main_menu(update, context)
+        return ConversationHandler.END
+    
     if query.data == "buy_stars":
         stars = int(get_setting("stars_per_purchase"))
         price_usd = float(get_setting("stars_price_usd"))
         ton_exchange_rate = float(get_setting("ton_exchange_rate"))
-        amount_ton = (price_usd / ton_exchange_rate)
+        amount_ton = price_usd / ton_exchange_rate
         
         payment_info = await generate_ton_address(user_id)
         address = payment_info["address"]
@@ -349,7 +372,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.commit()
         
         await query.message.reply_text(
-            get_text("buy_prompt", amount_ton=amount_ton, stars=stars, address=address, memo=memo)
+            get_text("buy_prompt", user_id, amount_ton=amount_ton, stars=stars, address=address, memo=memo)
         )
     
     elif query.data == "profile":
@@ -360,7 +383,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 stars_bought, ref_bonus_ton = result if result else (0, 0)
         
         await query.message.reply_text(
-            f"Профиль @{username}:\nЗвезд куплено: {stars_bought}\nРеф. бонус: {ref_bonus_ton:.6f} TON"
+            get_text("profile", user_id, username=username, stars_bought=stars_bought, ref_bonus_ton=ref_bonus_ton)
         )
     
     elif query.data == "referrals":
@@ -370,60 +393,95 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 result = cur.fetchone()
                 ref_bonus_ton, referrals = result if result else (0, [])
         
+        keyboard = [
+            [InlineKeyboardButton(get_text("top_referrals_btn", user_id), callback_data="top_referrals")],
+            [InlineKeyboardButton(get_text("top_purchases_btn", user_id), callback_data="top_purchases")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(
-            get_text(
-                "ref_info",
-                ref_bonus_ton=ref_bonus_ton,
-                bot_username=context.bot.name.lstrip("@"),
-                user_id=user_id
-            )
+            get_text("ref_info", user_id, ref_bonus_ton=ref_bonus_ton, bot_username=context.bot.name.lstrip("@"), user_id=user_id),
+            reply_markup=reply_markup
         )
+    
+    elif query.data == "top_referrals":
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT username, jsonb_array_length(referrals) as ref_count
+                    FROM users
+                    WHERE jsonb_array_length(referrals) > 0
+                    ORDER BY ref_count DESC
+                    LIMIT 10;
+                """)
+                top_referrals = cur.fetchall()
+        
+        text = get_text("top_referrals", user_id) + "\n"
+        for i, (username, ref_count) in enumerate(top_referrals, 1):
+            text += f"{i}. @{username}: {ref_count} рефералов\n"
+        await query.message.reply_text(text or get_text("no_referrals", user_id))
+    
+    elif query.data == "top_purchases":
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT username, stars_bought
+                    FROM users
+                    WHERE stars_bought > 0
+                    ORDER BY stars_bought DESC
+                    LIMIT 10;
+                """)
+                top_purchases = cur.fetchall()
+        
+        text = get_text("top_purchases", user_id) + "\n"
+        for i, (username, stars_bought) in enumerate(top_purchases, 1):
+            text += f"{i}. @{username}: {stars_bought} звёзд\n"
+        await query.message.reply_text(text or get_text("no_purchases", user_id))
     
     elif query.data == "tech_support":
         support_channel = get_setting("review_channel") or "@sacoectasy"
         await query.message.reply_text(
-            get_text("tech_support", support_channel=support_channel)
+            get_text("tech_support", user_id, support_channel=support_channel)
         )
     
     elif query.data == "reviews":
         review_channel = get_setting("review_channel") or "@sacoectasy"
         await query.message.reply_text(
-            get_text("reviews", review_channel=review_channel)
+            get_text("reviews", user_id, review_channel=review_channel)
         )
     
     elif query.data == "admin_panel" and is_admin(user_id):
         keyboard = [
-            [InlineKeyboardButton("Изменить текст", callback_data="edit_text")],
-            [InlineKeyboardButton("Установить цену", callback_data="set_price")],
-            [InlineKeyboardButton("Установить проценты", callback_data="set_percent")],
-            [InlineKeyboardButton("Установить канал отзывов", callback_data="set_review_channel")],
-            [InlineKeyboardButton("Статистика", callback_data="stats")],
-            [InlineKeyboardButton("Сбросить выручку", callback_data="reset_profit")],
+            [InlineKeyboardButton(get_text("edit_text_btn", user_id), callback_data="edit_text")],
+            [InlineKeyboardButton(get_text("set_price_btn", user_id), callback_data="set_price")],
+            [InlineKeyboardButton(get_text("set_percent_btn", user_id), callback_data="set_percent")],
+            [InlineKeyboardButton(get_text("set_review_channel_btn", user_id), callback_data="set_review_channel")],
+            [InlineKeyboardButton(get_text("stats_btn", user_id), callback_data="stats")],
+            [InlineKeyboardButton(get_text("reset_profit_btn", user_id), callback_data="reset_profit")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text("Админ-панель:", reply_markup=reply_markup)
+        await query.message.reply_text(get_text("admin_panel", user_id), reply_markup=reply_markup)
     
     elif query.data == "edit_text" and is_admin(user_id):
         await query.message.reply_text(
-            "Введите ключ текста (welcome, buy_prompt, buy_success, ref_info, tech_support, reviews) и новый текст через двоеточие, например:\nwelcome:Новый текст приветствия"
+            get_text("edit_text_prompt", user_id)
         )
         return EDIT_TEXT
     
     elif query.data == "set_price" and is_admin(user_id):
         await query.message.reply_text(
-            "Введите цену за 50 звезд в USD и количество звезд, например:\n0.972:50"
+            get_text("set_price_prompt", user_id)
         )
         return SET_PRICE
     
     elif query.data == "set_percent" and is_admin(user_id):
         await query.message.reply_text(
-            "Введите реф. бонус (%) и процент прибыли (%), например:\n30:20"
+            get_text("set_percent_prompt", user_id)
         )
         return SET_PERCENT
     
     elif query.data == "set_review_channel" and is_admin(user_id):
         await query.message.reply_text(
-            "Введите Telegram-канал для отзывов, например:\n@MyReviewChannel"
+            get_text("set_review_channel_prompt", user_id)
         )
         return SET_REVIEW_CHANNEL
     
@@ -432,39 +490,39 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_profit_usd = get_setting("total_profit_usd") or 0
         total_profit_ton = get_setting("total_profit_ton") or 0
         await query.message.reply_text(
-            f"Статистика:\nЗвезд продано: {total_stars_sold}\nПрибыль USD: {total_profit_usd:.2f}\nПрибыль TON: {total_profit_ton:.6f}"
+            get_text("stats", user_id, total_stars_sold=total_stars_sold, total_profit_usd=total_profit_usd, total_profit_ton=total_profit_ton)
         )
     
     elif query.data == "reset_profit" and is_admin(user_id):
         update_setting("total_profit_usd", 0)
         update_setting("total_profit_ton", 0)
-        log_admin_action(user_id, "Сброс выручки")
-        await query.message.reply_text("Выручка сброшена.")
+        log_admin_action(user_id, "Reset profit")
+        await query.message.reply_text(get_text("reset_profit", user_id))
 
 # Обработка редактирования текста
 async def edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Доступ запрещен.")
+        await update.message.reply_text(get_text("access_denied", update.effective_user.id))
         return ConversationHandler.END
     
     try:
         key, value = update.message.text.split(":", 1)
         key = key.strip()
         value = value.strip()
-        if key not in ("welcome", "buy_prompt", "buy_success", "ref_info", "tech_support", "reviews"):
-            await update.message.reply_text("Неверный ключ. Используйте: welcome, buy_prompt, buy_success, ref_info, tech_support, reviews")
+        if not key.endswith(("_ru", "_en")):
+            await update.message.reply_text(get_text("invalid_text_key", update.effective_user.id))
             return EDIT_TEXT
         update_text(key, value)
-        log_admin_action(update.effective_user.id, f"Изменен текст {key}")
-        await update.message.reply_text(f"Текст {key} обновлен.")
+        log_admin_action(update.effective_user.id, f"Edited text {key}")
+        await update.message.reply_text(get_text("text_updated", update.effective_user.id, key=key))
     except ValueError:
-        await update.message.reply_text("Формат: ключ:новый текст")
+        await update.message.reply_text(get_text("text_format", update.effective_user.id))
     return ConversationHandler.END
 
 # Обработка установки цены
 async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Доступ запрещен.")
+        await update.message.reply_text(get_text("access_denied", update.effective_user.id))
         return ConversationHandler.END
     
     try:
@@ -472,20 +530,20 @@ async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price_usd = float(price_usd.strip())
         stars = int(stars.strip())
         if price_usd <= 0 or stars <= 0:
-            await update.message.reply_text("Цена и количество звезд должны быть положительными.")
+            await update.message.reply_text(get_text("invalid_price", update.effective_user.id))
             return SET_PRICE
         update_setting("stars_price_usd", price_usd)
         update_setting("stars_per_purchase", stars)
-        log_admin_action(update.effective_user.id, f"Установлена цена: {price_usd} USD за {stars} звезд")
-        await update.message.reply_text(f"Цена установлена: {price_usd} USD за {stars} звезд.")
+        log_admin_action(update.effective_user.id, f"Set price: {price_usd} USD for {stars} stars")
+        await update.message.reply_text(get_text("price_set", update.effective_user.id, price_usd=price_usd, stars=stars))
     except ValueError:
-        await update.message.reply_text("Формат: цена:количество_звезд")
+        await update.message.reply_text(get_text("price_format", update.effective_user.id))
     return ConversationHandler.END
 
 # Обработка установки процентов
 async def set_percent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Доступ запрещен.")
+        await update.message.reply_text(get_text("access_denied", update.effective_user.id))
         return ConversationHandler.END
     
     try:
@@ -493,68 +551,83 @@ async def set_percent(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref_bonus = float(ref_bonus.strip())
         profit = float(profit.strip())
         if not (0 <= ref_bonus <= 100 and 10 <= profit <= 50):
-            await update.message.reply_text("Реф. бонус: 0–100%, прибыль: 10–50%")
+            await update.message.reply_text(get_text("invalid_percent", update.effective_user.id))
             return SET_PERCENT
         update_setting("ref_bonus_percent", ref_bonus)
         update_setting("profit_percent", profit)
-        log_admin_action(update.effective_user.id, f"Установлены проценты: реф. бонус {ref_bonus}%, прибыль {profit}%")
-        await update.message.reply_text(f"Проценты установлены: реф. бонус {ref_bonus}%, прибыль {profit}%")
+        log_admin_action(update.effective_user.id, f"Set percentages: ref_bonus {ref_bonus}%, profit {profit}%")
+        await update.message.reply_text(get_text("percent_set", update.effective_user.id, ref_bonus=ref_bonus, profit=profit))
     except ValueError:
-        await update.message.reply_text("Формат: реф_бонус:прибыль")
+        await update.message.reply_text(get_text("percent_format", update.effective_user.id))
     return ConversationHandler.END
 
 # Обработка установки канала отзывов
 async def set_review_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Доступ запрещен.")
+        await update.message.reply_text(get_text("access_denied", update.effective_user.id))
         return ConversationHandler.END
     
     try:
         channel = update.message.text.strip()
         if not channel.startswith("@"):
-            await update.message.reply_text("Канал должен начинаться с @")
+            await update.message.reply_text(get_text("invalid_channel", update.effective_user.id))
             return SET_REVIEW_CHANNEL
         update_setting("review_channel", channel)
-        log_admin_action(update.effective_user.id, f"Установлен канал отзывов: {channel}")
-        await update.message.reply_text(f"Канал отзывов установлен: {channel}")
+        log_admin_action(update.effective_user.id, f"Set review channel: {channel}")
+        await update.message.reply_text(get_text("channel_set", update.effective_user.id, channel=channel))
     except ValueError:
-        await update.message.reply_text("Формат: @ChannelName")
+        await update.message.reply_text(get_text("channel_format", update.effective_user.id))
     return ConversationHandler.END
 
 # Отмена ConversationHandler
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Действие отменено.")
+    await update.message.reply_text(get_text("cancel", update.effective_user.id))
     return ConversationHandler.END
 
 # Основная функция
 async def main():
-    init_db()
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    conv_handler = ConversationHandler(
-    entry_points=[
-        CallbackQueryHandler(button, pattern="edit_text$"),
-        CallbackQueryHandler(button, pattern="set_price$"),
-        CallbackQueryHandler(button, pattern="set_percent$"),
-        CallbackQueryHandler(button, pattern="set_review_channel$"),
-    ],
-    states={
-        EDIT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text)],
-        SET_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
-        SET_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_percent)],
-        SET_REVIEW_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_review_channel)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel)],
-    per_message=True,
-    )
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(conv_handler)
-    
-    application.job_queue.run_repeating(payment_checker, interval=60)
-    
-    await application.run_polling()
+    try:
+        init_db()
+        application = Application.builder().token(BOT_TOKEN).build()
+        conv_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(button, pattern="edit_text$"),
+                CallbackQueryHandler(button, pattern="set_price$"),
+                CallbackQueryHandler(button, pattern="set_percent$"),
+                CallbackQueryHandler(button, pattern="set_review_channel$"),
+                CallbackQueryHandler(button, pattern="lang_"),
+            ],
+            states={
+                EDIT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text)],
+                SET_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
+                SET_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_percent)],
+                SET_REVIEW_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_review_channel)],
+                CHOOSE_LANGUAGE: [CallbackQueryHandler(button)],
+            },
+            fallbacks=[CommandHandler("cancel", cancel)],
+            per_message=True,
+        )
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(button))
+        application.add_handler(conv_handler)
+        application.job_queue.run_repeating(payment_checker, interval=60)
+        application.job_queue.run_repeating(update_ton_price, interval=60)
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.error(f"Ошибка в main: {e}")
+        raise
+    finally:
+        if 'application' in locals():
+            await application.updater.stop()
+            await application.stop()
+            await application.shutdown()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
