@@ -35,7 +35,7 @@ OWNER_WALLET = os.getenv("OWNER_WALLET")
 CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN")
 
 # Состояния для ConversationHandler
-EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_REVIEW_CHANNEL, CHOOSE_LANGUAGE, BUY_STARS_USERNAME, BUY_STARS_AMOUNT, BUY_STARS_PAYMENT = range(8)
+EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_COMMISSIONS, SET_REVIEW_CHANNEL, CHOOSE_LANGUAGE, BUY_STARS_USERNAME, BUY_STARS_AMOUNT, BUY_STARS_PAYMENT = range(9)
 
 def get_db_connection():
     if not POSTGRES_URL:
@@ -906,6 +906,30 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     return ConversationHandler.END
+
+# HTTP health check и заглушки
+async def health_check(request):
+    return web.Response(text="OK")
+
+async def root_handler(request):
+    return web.Response(text="Stars Bot is running")
+
+async def favicon_handler(request):
+    return web.Response(status=204)
+
+async def start_health_server():
+    app = web.Application()
+    app.add_routes([
+        web.get('/health', health_check),
+        web.get('/', root_handler),
+        web.get('/favicon.ico', favicon_handler)
+    ])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"Health check server started on port {port}")
 
 # Отмена ConversationHandler
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
