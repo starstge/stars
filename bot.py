@@ -7,17 +7,17 @@ import aiohttp
 import psycopg2
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
-    MessageHandler,
-    filters,
     ConversationHandler,
 )
 
+# Загрузка .env для локального запуска
 load_dotenv()
 
 # Логирование
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Константы
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TONAPI_KEY = os.getenv("TONAPI_KEY")
-POSTGRES_URL = os.getenv("POSTGRES_URL")
+POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 SPLIT_API_ID = os.getenv("SPLIT_API_ID")
 SPLIT_API_TOKEN = os.getenv("SPLIT_API_TOKEN")
 OWNER_WALLET = os.getenv("OWNER_WALLET")
@@ -36,14 +36,12 @@ OWNER_WALLET = os.getenv("OWNER_WALLET")
 EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_REVIEW_CHANNEL, CHOOSE_LANGUAGE = range(5)
 
 def get_db_connection():
-    postgres_url = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
-    if not postgres_url:
+    if not POSTGRES_URL:
         logger.error("POSTGRES_URL or DATABASE_URL not set in environment variables")
         raise ValueError("POSTGRES_URL or DATABASE_URL is not set")
     
     try:
-        # Парсим URL для извлечения компонентов
-        parsed_url = urlparse(postgres_url)
+        parsed_url = urlparse(POSTGRES_URL)
         dbname = parsed_url.path.lstrip('/')
         user = parsed_url.username
         password = parsed_url.password
@@ -133,7 +131,81 @@ def init_db():
                     ('reviews_ru', 'Оставьте отзыв: {review_channel}'),
                     ('reviews_en', 'Leave a review: {review_channel}'),
                     ('choose_language_ru', 'Выберите язык:'),
-                    ('choose_language_en', 'Choose language:')
+                    ('choose_language_en', 'Choose language:'),
+                    ('profile_ru', 'Профиль: @{username}\nКуплено звезд: {stars_bought}\nРеф. бонус: {ref_bonus_ton:.6f} TON'),
+                    ('profile_en', 'Profile: @{username}\nStars bought: {stars_bought}\nRef. bonus: {ref_bonus_ton:.6f} TON'),
+                    ('top_referrals_ru', 'Топ-10 рефералов:'),
+                    ('top_referrals_en', 'Top-10 referrers:'),
+                    ('top_purchases_ru', 'Топ-10 покупок:'),
+                    ('top_purchases_en', 'Top-10 purchases:'),
+                    ('no_referrals_ru', 'Нет рефералов.'),
+                    ('no_referrals_en', 'No referrers.'),
+                    ('no_purchases_ru', 'Нет покупок.'),
+                    ('no_purchases_en', 'No purchases.'),
+                    ('buy_stars_btn_ru', 'Купить звезды'),
+                    ('buy_stars_btn_en', 'Buy stars'),
+                    ('profile_btn_ru', 'Профиль'),
+                    ('profile_btn_en', 'Profile'),
+                    ('referrals_btn_ru', 'Рефералы'),
+                    ('referrals_btn_en', 'Referrals'),
+                    ('tech_support_btn_ru', 'Техподдержка'),
+                    ('tech_support_btn_en', 'Support'),
+                    ('reviews_btn_ru', 'Отзывы'),
+                    ('reviews_btn_en', 'Reviews'),
+                    ('admin_panel_btn_ru', 'Админ-панель'),
+                    ('admin_panel_btn_en', 'Admin panel'),
+                    ('edit_text_btn_ru', 'Редактировать текст'),
+                    ('edit_text_btn_en', 'Edit text'),
+                    ('set_price_btn_ru', 'Установить цену'),
+                    ('set_price_btn_en', 'Set price'),
+                    ('set_percent_btn_ru', 'Установить проценты'),
+                    ('set_percent_btn_en', 'Set percentages'),
+                    ('set_review_channel_btn_ru', 'Установить канал отзывов'),
+                    ('set_review_channel_btn_en', 'Set review channel'),
+                    ('stats_btn_ru', 'Статистика'),
+                    ('stats_btn_en', 'Statistics'),
+                    ('reset_profit_btn_ru', 'Сбросить прибыль'),
+                    ('reset_profit_btn_en', 'Reset profit'),
+                    ('edit_text_prompt_ru', 'Введите: key:value\nНапример: welcome_ru:Новый текст'),
+                    ('edit_text_prompt_en', 'Enter: key:value\nExample: welcome_en:New text'),
+                    ('set_price_prompt_ru', 'Введите: price_usd:stars\nНапример: 0.972:50'),
+                    ('set_price_prompt_en', 'Enter: price_usd:stars\nExample: 0.972:50'),
+                    ('set_percent_prompt_ru', 'Введите: ref_bonus:profit\nНапример: 30:20'),
+                    ('set_percent_prompt_en', 'Enter: ref_bonus:profit\nExample: 30:20'),
+                    ('set_review_channel_prompt_ru', 'Введите: @channel\nНапример: @sacoectasy'),
+                    ('set_review_channel_prompt_en', 'Enter: @channel\nExample: @sacoectasy'),
+                    ('access_denied_ru', 'Доступ запрещён.'),
+                    ('access_denied_en', 'Access denied.'),
+                    ('invalid_text_key_ru', 'Неверный ключ текста. Используйте _ru или _en.'),
+                    ('invalid_text_key_en', 'Invalid text key. Use _ru or _en.'),
+                    ('text_updated_ru', 'Текст обновлён: {key}'),
+                    ('text_updated_en', 'Text updated: {key}'),
+                    ('text_format_ru', 'Формат: key:value'),
+                    ('text_format_en', 'Format: key:value'),
+                    ('invalid_price_ru', 'Неверная цена или количество звезд.'),
+                    ('invalid_price_en', 'Invalid price or stars amount.'),
+                    ('price_set_ru', 'Цена установлена: ${price_usd} за {stars} звезд'),
+                    ('price_set_en', 'Price set: ${price_usd} for {stars} stars'),
+                    ('price_format_ru', 'Формат: price_usd:stars'),
+                    ('price_format_en', 'Format: price_usd:stars'),
+                    ('invalid_percent_ru', 'Проценты должны быть: ref_bonus 0-100, profit 10-50.'),
+                    ('invalid_percent_en', 'Percentages must be: ref_bonus 0-100, profit 10-50.'),
+                    ('percent_set_ru', 'Проценты установлены: реф. бонус {ref_bonus}%, прибыль {profit}%'),
+                    ('percent_set_en', 'Percentages set: ref. bonus {ref_bonus}%, profit {profit}%'),
+                    ('percent_format_ru', 'Формат: ref_bonus:profit'),
+                    ('percent_format_en', 'Format: ref_bonus:profit'),
+                    ('invalid_channel_ru', 'Неверный канал. Используйте @channel.'),
+                    ('invalid_channel_en', 'Invalid channel. Use @channel.'),
+                    ('channel_set_ru', 'Канал установлен: {channel}'),
+                    ('channel_set_en', 'Channel set: {channel}'),
+                    ('channel_format_ru', 'Формат: @channel'),
+                    ('channel_format_en', 'Format: @channel'),
+                    ('stats_ru', 'Статистика:\nЗвезд продано: {total_stars_sold}\nПрибыль USD: ${total_profit_usd}\nПрибыль TON: {total_profit_ton}'),
+                    ('stats_en', 'Statistics:\nStars sold: {total_stars_sold}\nProfit USD: ${total_profit_usd}\nProfit TON: {total_profit_ton}'),
+                    ('reset_profit_ru', 'Прибыль сброшена.'),
+                    ('reset_profit_en', 'Profit reset.'),
+                    ('cancel_ru', 'Операция отменена.'),
+                    ('cancel_en', 'Operation cancelled.')
                 ON CONFLICT (key) DO NOTHING;
             """)
             conn.commit()
@@ -494,24 +566,28 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             get_text("edit_text_prompt", user_id)
         )
+        context.user_data['state'] = 'edit_text'
         return EDIT_TEXT
     
     elif query.data == "set_price" and is_admin(user_id):
         await query.message.reply_text(
             get_text("set_price_prompt", user_id)
         )
+        context.user_data['state'] = 'set_price'
         return SET_PRICE
     
     elif query.data == "set_percent" and is_admin(user_id):
         await query.message.reply_text(
             get_text("set_percent_prompt", user_id)
         )
+        context.user_data['state'] = 'set_percent'
         return SET_PERCENT
     
     elif query.data == "set_review_channel" and is_admin(user_id):
         await query.message.reply_text(
             get_text("set_review_channel_prompt", user_id)
         )
+        context.user_data['state'] = 'set_review_channel'
         return SET_REVIEW_CHANNEL
     
     elif query.data == "stats" and is_admin(user_id):
@@ -528,85 +604,89 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log_admin_action(user_id, "Reset profit")
         await query.message.reply_text(get_text("reset_profit", user_id))
 
-# Обработка редактирования текста
-async def edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text(get_text("access_denied", update.effective_user.id))
+# Обработка текстового ввода для админ-действий
+async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text(get_text("access_denied", user_id))
         return ConversationHandler.END
     
-    try:
-        key, value = update.message.text.split(":", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key.endswith(("_ru", "_en")):
-            await update.message.reply_text(get_text("invalid_text_key", update.effective_user.id))
-            return EDIT_TEXT
-        update_text(key, value)
-        log_admin_action(update.effective_user.id, f"Edited text {key}")
-        await update.message.reply_text(get_text("text_updated", update.effective_user.id, key=key))
-    except ValueError:
-        await update.message.reply_text(get_text("text_format", update.effective_user.id))
-    return ConversationHandler.END
+    state = context.user_data.get('state')
+    text = update.message.text.strip()
+    
+    if state == 'edit_text':
+        try:
+            key, value = text.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key.endswith(("_ru", "_en")):
+                await update.message.reply_text(get_text("invalid_text_key", user_id))
+                return EDIT_TEXT
+            update_text(key, value)
+            log_admin_action(user_id, f"Edited text {key}")
+            await update.message.reply_text(get_text("text_updated", user_id, key=key))
+        except ValueError:
+            await update.message.reply_text(get_text("text_format", user_id))
+        return ConversationHandler.END
+    
+    elif state == 'set_price':
+        try:
+            price_usd, stars = text.split(":")
+            price_usd = float(price_usd.strip())
+            stars = int(stars.strip())
+            if price_usd <= 0 or stars <= 0:
+                await update.message.reply_text(get_text("invalid_price", user_id))
+                return SET_PRICE
+            update_setting("stars_price_usd", price_usd)
+            update_setting("stars_per_purchase", stars)
+            log_admin_action(user_id, f"Set price: {price_usd} USD for {stars} stars")
+            await update.message.reply_text(get_text("price_set", user_id, price_usd=price_usd, stars=stars))
+        except ValueError:
+            await update.message.reply_text(get_text("price_format", user_id))
+        return ConversationHandler.END
+    
+    elif state == 'set_percent':
+        try:
+            ref_bonus, profit = text.split(":")
+            ref_bonus = float(ref_bonus.strip())
+            profit = float(profit.strip())
+            if not (0 <= ref_bonus <= 100 and 10 <= profit <= 50):
+                await update.message.reply_text(get_text("invalid_percent", user_id))
+                return SET_PERCENT
+            update_setting("ref_bonus_percent", ref_bonus)
+            update_setting("profit_percent", profit)
+            log_admin_action(user_id, f"Set percentages: ref_bonus {ref_bonus}%, profit {profit}%")
+            await update.message.reply_text(get_text("percent_set", user_id, ref_bonus=ref_bonus, profit=profit))
+        except ValueError:
+            await update.message.reply_text(get_text("percent_format", user_id))
+        return ConversationHandler.END
+    
+    elif state == 'set_review_channel':
+        try:
+            channel = text.strip()
+            if not channel.startswith("@"):
+                await update.message.reply_text(get_text("invalid_channel", user_id))
+                return SET_REVIEW_CHANNEL
+            update_setting("review_channel", channel)
+            log_admin_action(user_id, f"Set review channel: {channel}")
+            await update.message.reply_text(get_text("channel_set", user_id, channel=channel))
+        except ValueError:
+            await update.message.reply_text(get_text("channel_format", user_id))
+        return ConversationHandler.END
 
-# Обработка установки цены
-async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text(get_text("access_denied", update.effective_user.id))
-        return ConversationHandler.END
-    
-    try:
-        price_usd, stars = update.message.text.split(":")
-        price_usd = float(price_usd.strip())
-        stars = int(stars.strip())
-        if price_usd <= 0 or stars <= 0:
-            await update.message.reply_text(get_text("invalid_price", update.effective_user.id))
-            return SET_PRICE
-        update_setting("stars_price_usd", price_usd)
-        update_setting("stars_per_purchase", stars)
-        log_admin_action(update.effective_user.id, f"Set price: {price_usd} USD for {stars} stars")
-        await update.message.reply_text(get_text("price_set", update.effective_user.id, price_usd=price_usd, stars=stars))
-    except ValueError:
-        await update.message.reply_text(get_text("price_format", update.effective_user.id))
-    return ConversationHandler.END
+# HTTP health check
+async def health_check(request):
+    return web.Response(text="OK")
 
-# Обработка установки процентов
-async def set_percent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text(get_text("access_denied", update.effective_user.id))
-        return ConversationHandler.END
-    
-    try:
-        ref_bonus, profit = update.message.text.split(":")
-        ref_bonus = float(ref_bonus.strip())
-        profit = float(profit.strip())
-        if not (0 <= ref_bonus <= 100 and 10 <= profit <= 50):
-            await update.message.reply_text(get_text("invalid_percent", update.effective_user.id))
-            return SET_PERCENT
-        update_setting("ref_bonus_percent", ref_bonus)
-        update_setting("profit_percent", profit)
-        log_admin_action(update.effective_user.id, f"Set percentages: ref_bonus {ref_bonus}%, profit {profit}%")
-        await update.message.reply_text(get_text("percent_set", update.effective_user.id, ref_bonus=ref_bonus, profit=profit))
-    except ValueError:
-        await update.message.reply_text(get_text("percent_format", update.effective_user.id))
-    return ConversationHandler.END
-
-# Обработка установки канала отзывов
-async def set_review_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text(get_text("access_denied", update.effective_user.id))
-        return ConversationHandler.END
-    
-    try:
-        channel = update.message.text.strip()
-        if not channel.startswith("@"):
-            await update.message.reply_text(get_text("invalid_channel", update.effective_user.id))
-            return SET_REVIEW_CHANNEL
-        update_setting("review_channel", channel)
-        log_admin_action(update.effective_user.id, f"Set review channel: {channel}")
-        await update.message.reply_text(get_text("channel_set", update.effective_user.id, channel=channel))
-    except ValueError:
-        await update.message.reply_text(get_text("channel_format", update.effective_user.id))
-    return ConversationHandler.END
+async def start_health_server():
+    app = web.Application()
+    app.add_routes([web.get('/health', health_check)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"Health check server started on port {port}")
 
 # Отмена ConversationHandler
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -620,30 +700,34 @@ async def main():
         application = Application.builder().token(BOT_TOKEN).build()
         conv_handler = ConversationHandler(
             entry_points=[
-                CallbackQueryHandler(button, pattern="edit_text$"),
-                CallbackQueryHandler(button, pattern="set_price$"),
-                CallbackQueryHandler(button, pattern="set_percent$"),
-                CallbackQueryHandler(button, pattern="set_review_channel$"),
-                CallbackQueryHandler(button, pattern="lang_"),
+                CallbackQueryHandler(button, pattern="^(edit_text|set_price|set_percent|set_review_channel|lang_.*)$"),
             ],
             states={
-                EDIT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_text)],
-                SET_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price)],
-                SET_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_percent)],
-                SET_REVIEW_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_review_channel)],
+                EDIT_TEXT: [CallbackQueryHandler(handle_admin_input)],
+                SET_PRICE: [CallbackQueryHandler(handle_admin_input)],
+                SET_PERCENT: [CallbackQueryHandler(handle_admin_input)],
+                SET_REVIEW_CHANNEL: [CallbackQueryHandler(handle_admin_input)],
                 CHOOSE_LANGUAGE: [CallbackQueryHandler(button)],
             },
             fallbacks=[CommandHandler("cancel", cancel)],
-            per_message=True,
+            per_message=False
         )
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CallbackQueryHandler(button))
         application.add_handler(conv_handler)
         application.job_queue.run_repeating(payment_checker, interval=60)
         application.job_queue.run_repeating(update_ton_price, interval=60)
+        asyncio.create_task(start_health_server())
         await application.initialize()
         await application.start()
-        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await application.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+            poll_interval=1
+        )
+        # Держим приложение запущенным
+        while True:
+            await asyncio.sleep(3600)
     except Exception as e:
         logger.error(f"Ошибка в main: {e}")
         raise
