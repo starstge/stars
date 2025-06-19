@@ -3,4 +3,4 @@ psycopg2-binary==2.9.9
 aiohttp==3.9.5
 requests==2.31.0
 selenium==4.15.2
-telegram-wallet-pay==0.1.4
+telegram-wallet-pay==0.1.0
