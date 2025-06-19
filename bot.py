@@ -16,8 +16,7 @@ from telegram.ext import (
     filters,
     ConversationHandler,
 )
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+from undetected_chromedriver import Chrome, ChromeOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -169,12 +168,12 @@ def log_admin_action(admin_id, action):
 
 # Selenium: Инициализация драйвера
 def init_selenium_driver():
-    chrome_options = Options()
+    chrome_options = ChromeOptions()
     if SELENIUM_HEADLESS:
         chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(options=chrome_options)
+    driver = Chrome(options=chrome_options)
     return driver
 
 # Selenium: Выдача звезд через https://split.tg/premium (по Pastebin)
