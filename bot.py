@@ -1437,7 +1437,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 get_text("buy_invalid_username", user_id),
                 reply_markup=reply_markup
             )
-            
             context.user_data['input_prompt_id'] = message.message_id
             context.job_queue.run_once(
                 callback=lambda x: delete_input_prompt(context, user_id),
@@ -1449,28 +1448,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_buy_menu(update, context)
         return BUY_STARS_USERNAME
     
-        elif state == 'buy_amount':
-            try:
-                stars = int(text)
-                min_stars = int(get_setting("min_stars_purchase") or 10)
-                if stars < min_stars:
-                    keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    message = await update.message.reply_text(
-                        get_text("buy_invalid_amount", user_id, min_stars=min_stars),
-                        reply_markup=reply_markup
-                    )
-                    context.user_data['input_prompt_id'] = message.message_id
-                    context.job_queue.run_once(
-                        callback=lambda x: delete_input_prompt(context, user_id),
-                        when=5,
-                        data={'user_id': user_id}
-                    )
-                    return BUY_STARS_AMOUNT
-                context.user_data['buy_stars'] = stars
-                await show_buy_menu(update, context)
-                return BUY_STARS_USERNAME
-            except ValueError:
+    elif state == 'buy_amount':
+        try:
+            stars = int(text)
+            min_stars = int(get_setting("min_stars_purchase") or 10)
+            if stars < min_stars:
                 keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 message = await update.message.reply_text(
@@ -1484,6 +1466,23 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data={'user_id': user_id}
                 )
                 return BUY_STARS_AMOUNT
+            context.user_data['buy_stars'] = stars
+            await show_buy_menu(update, context)
+            return BUY_STARS_USERNAME
+        except ValueError:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("buy_invalid_amount", user_id, min_stars=min_stars),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            return BUY_STARS_AMOUNT
 
     elif state == 'edit_text' and await is_admin(user_id):
         try:
