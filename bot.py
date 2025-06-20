@@ -1759,7 +1759,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         markup = float(text)
         if not 0 <= markup <= 100:
-            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel"))]]
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
                 get_text("invalid_markup", user_id),
