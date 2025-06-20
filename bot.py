@@ -955,7 +955,7 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
         if payment_method == '@CryptoBot':
             commission = float(get_setting("cryptobot_commission") or 25) / 100
         elif payment_method == 'TON Wallet':
-            commission = float(get_setting("ton_commission") or 20) / 100)
+            commission = float(get_setting("ton_commission") or 20) / 100
         elif payment_method == 'Card':
             commission = float(get_setting("card_commission") or 30) / 100
         amount_usd = price_usd * (1 + commission)
