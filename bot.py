@@ -1065,7 +1065,7 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
                         base_price_usd = float(get_setting("stars_price_usd") or 0.81) * (stars / 50)
                         markup = float(get_setting("markup_percentage") or MARKUP_PERCENTAGE)
                         total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars
-                        total_profit = float(get_profit_usd(get_setting("total_profit_usd") or 0) + (base_price * (1 + markup / 100))
+                        total_profit = float(get_profit_usd(get_setting("total_profit_usd") or 0) + (base_price * (1 + markup / 100)))
                         total_profit = float(get_profit_ton(get_setting("total_profit_ton") or 0) + (amount_ton if amount_ton else 0)
                         update_setting("total_stars_sold", total_stars_sold)
                         update_setting("total_profit_usd", total_profit_usd)
