@@ -517,6 +517,11 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                         update_setting("total_profit_usd", total_profit_usd)
                         update_setting("total_profit_ton", total_profit_ton)
                         conn.commit()
+                # Уведомляем админа о покупке
+                currency = "TON" if amount_ton else "USD"
+                amount = amount_ton if amount_ton else base_price_usd * (1 + markup / 100)
+                await notify_admin_purchase(context, user_id, username, stars, amount, currency)
+                # Отправляем сообщение пользователю
                 await context.bot.send_message(
                     user_id=user_id,
                     text=get_text("buy_success", user_id=user_id, username=username, stars=stars)
@@ -714,6 +719,17 @@ async def show_user_details(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         reply_markup=reply_markup
     )
     context.user_data['last_message_id'] = message.message_id
+
+async def notify_admin_purchase(context: ContextTypes.DEFAULT_TYPE, buyer_id: int, username: str, stars: int, amount: float, currency: str):
+    admin_ids = get_setting("admin_ids") or [6956377285]
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=f"New purchase!\nUser ID: {buyer_id}\nUsername: {username or 'N/A'}\nStars: {stars}\nAmount: {amount:.2f} {currency}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify admin {admin_id} about purchase: {e}")
 
 async def show_manage_admins_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1040,7 +1056,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += f"{i}. @{username}: {ref_count} рефералов\n"
         else:
             text += get_text("no_referrals", user_id)
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="profile")]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="profile")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_previous_message(context, user_id)
         message = await query.message.reply_text(text, reply_markup=reply_markup)
@@ -1092,8 +1108,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_previous_message(context, user_id)
-        message = await query.message.reply_text(get_text("reviews", user_id, review_channel=review_channel)),
-        reply_markup=reply_markup
+        message = await query.message.reply_text(
+            get_text("reviews", user_id, review_channel=review_channel),
+            reply_markup=reply_markup
         )
         context.user_data['last_message_id'] = message.message_id
         context.job_queue.run_once(
