@@ -1064,7 +1064,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += f"{i}. @{username}: {stars_bought} звёзд\n"
         else:
             text += get_text("no_purchases", user_id)
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="profile")]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="profile")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_previous_message(context, user_id)
         message = await query.message.reply_text(text, reply_markup=reply_markup)
@@ -1094,7 +1094,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await clear_previous_message(context, user_id)
         message = await query.message.reply_text(get_text("reviews", user_id, review_channel=review_channel)),
         reply_markup=reply_markup
-)
+        )
         context.user_data['last_message_id'] = message.message_id
         context.job_queue.run_once(
             lambda x: clear_previous_message(context, user_id), 5, data={'user_id': user_id}
