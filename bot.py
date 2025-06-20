@@ -544,7 +544,7 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                             result = cur.fetchone()
                             referrer_id = result[0] if result else None
                     if referrer_id:
-                        ref_bonus_percent = float(get_setting("ref_bonus_percent") or / 100
+                        ref_bonus_percent = float(get_setting("ref_bonus_percent") or 10) / 100
                         ref_bonus_ton = (amount_ton if amount_ton else (stars / 50 * float(get_setting("stars_price_usd")) * (1 + markup / 100))) * ref_bonus_percent
                         with get_db_connection() as conn:
                             with conn.cursor() as cur:
