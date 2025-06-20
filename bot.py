@@ -27,12 +27,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Константы
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7579031437:AAGTnqJUHlZeDk7GuUyFljBnW9NbxPIJZyE")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 TON_API_KEY = os.getenv("TON_API_KEY")
-POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL", "postgresql://stars_bot_user:R3Exnj2LEASCsuY0NImBP44nkMbSORKH@dpg-d19qr395pdvs73a3ao2g-a.oregon-postgres.render.com/stars_bot")
+POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 SPLIT_API_TOKEN = os.getenv("SPLIT_API_TOKEN")
 OWNER_WALLET = os.getenv("OWNER_WALLET")
-CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN", "417243:AAOX6otWrre07SY0GHWtVXKWrLZxyvFNttV")
+CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN")
 MARKUP_PERCENTAGE = float(os.getenv("MARKUP_PERCENTAGE", 10))
 
 # Состояния для ConversationHandler
@@ -1874,6 +1874,41 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # Главная функция
+Command /addadmin
+async def cmd_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not await is_admin(user_id):
+        await update.message.reply_text(get_text("access_denied", user_id))
+        return
+    # Assuming add_admin is a function that initiates the admin-adding process
+    context.user_data['input_state'] = 'add_admin'
+    keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    message = await update.message.reply_text(
+        get_text("enter_admin_id", user_id),
+        reply_markup=reply_markup
+    )
+    context.user_data['input_prompt_id'] = message.message_id
+    return ADD_ADMIN
+
+# Command /removeadmin
+async def cmd_remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not await is_admin(user_id):
+        await update.message.reply_text(get_text("access_denied", user_id))
+        return
+    # Assuming remove_admin is a function that initiates the admin-removal process
+    context.user_data['input_state'] = 'remove_admin'
+    keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    message = await update.message.reply_text(
+        get_text("enter_admin_id_remove", user_id),
+        reply_markup=reply_markup
+    )
+    context.user_data['input_prompt_id'] = message.message_id
+    return REMOVE_ADMIN
+
+# Main function
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -1935,7 +1970,7 @@ def main():
             REMOVE_ADMIN: [
                 CallbackQueryHandler(button),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-            ]
+            ],
         },
         fallbacks=[CommandHandler("start", start)]
     )
