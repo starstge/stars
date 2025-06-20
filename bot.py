@@ -1260,7 +1260,7 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             [InlineKeyboardButton(get_text("set_card_payment_btn", user_id), callback_data="set_card_payment")],
             [InlineKeyboardButton(get_text("set_markup_btn", user_id), callback_data="set_markup")],
             [InlineKeyboardButton(get_text("stats_btn", user_id), callback_data="stats")],
-            [InlineKeyboardButton(get_text("reset_profit_btn", user_id)), callback_data="reset_profit")],
+            [InlineKeyboardButton(get_text("reset_profit_btn", user_id), callback_data="reset_profit")],
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
         reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
