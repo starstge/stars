@@ -1744,17 +1744,23 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
-    user_id = update.effective_user.id if update.effective_user else None
-    if user_id:
-        await clear_previous_message(context, user_id)
-        message = await (update.message or update.callback_query.message).reply_text(
-            get_text("cancel", user_id)
-        )
-        context.user_data['last_message_id'] = message.message_id
-        context.job_queue.run_once(
-            lambda x: clear_previous_message(context, user_id), 5, data={'user_id': user_id}
-        )
-        await show_main_menu(update, context)
+    if update and (update.message or update.callback_query):
+        user_id = update.effective_user.id if update.effective_user else None
+        if user_id:
+            await clear_previous_message(context, user_id)
+            try:
+                message = await (update.message or update.callback_query.message).reply_text(
+                    get_text("error", user_id) if user_id else "⚠️ Произошла ошибка. Попробуйте снова."
+                )
+                context.user_data['last_message_id'] = message.message_id
+                context.job_queue.run_once(
+                    lambda x: clear_previous_message(context, user_id), 5, data={'user_id': user_id}
+                )
+                await show_main_menu(update, context)
+            except Exception as e:
+                logger.error(f"Failed to send error message to user {user_id}: {e}")
+    else:
+        logger.warning("No user context available for error handling")
 
 def main():
     init_db()
@@ -1781,7 +1787,22 @@ def main():
             EDIT_USER_REF_BONUS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
         },
         fallbacks=[CommandHandler("start", start), CallbackQueryHandler(button, pattern="cancel|back")],
-        allow_reentry=True
+        allow_reentry=True,
+        per_message=True  # Устраняет PTBUserWarning
+    )
+    
+    application.add_handler(conv_handler)
+    application.add_error_handler(error_handler)
+    
+    application.job_queue.run_repeating(update_ton_price, interval=3600, first=0)
+    application.job_queue.run_repeating(payment_checker, interval=30, first=0)
+    
+    logger.info("Запуск бота с вебхуком...")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 8443)),
+        url_path=f"/{BOT_TOKEN}",
+        webhook_url=f"https://<your-render-domain>/{BOT_TOKEN}"
     )
     
     application.add_handler(conv_handler)
