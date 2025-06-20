@@ -1490,7 +1490,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == 'buy_username':
         if text.startswith('@'):
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-                        reply_markup = InlineKeyboardMarkup(keyboard)
+            reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
                 get_text("buy_invalid_username", user_id),
                 reply_markup=reply_markup
