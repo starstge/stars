@@ -742,7 +742,7 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
     last_main_menu_id = context.user_data.get('last_main_menu_id')
     if last_main_menu_id:
         try:
-            await context.bot.delete_message(chat_id=user_id=user_id, message_id='last_main_menu_id)
+            await context.bot.delete_message(chat_id=user_id, message_id=last_main_menu_id)
         except Exception:
             pass
         context.user_data['last_main_menu_id'] = None
