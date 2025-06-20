@@ -1128,6 +1128,50 @@ async def main():
     try:
         init_db()
         application = Application.builder().token(BOT_TOKEN).build()
+
+        # Уникальный идентификатор инстанса
+        instance_id = os.getenv("RENDER_INSTANCE_ID", str(time.time()))
+        logger.info(f"Starting bot instance: {instance_id}")
+
+        # Проверка других инстансов через PostgreSQL
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_instances (
+                        instance_id TEXT PRIMARY KEY,
+                        last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                cur.execute(
+                    "INSERT INTO bot_instances (instance_id, last_heartbeat) VALUES (%s, CURRENT_TIMESTAMP) ON CONFLICT (instance_id) DO UPDATE SET last_heartbeat = CURRENT_TIMESTAMP;",
+                    (instance_id,)
+                )
+                cur.execute("SELECT instance_id FROM bot_instances WHERE last_heartbeat > NOW() - INTERVAL '5 minutes' AND instance_id != %s;", (instance_id,))
+                other_instances = cur.fetchall()
+                if other_instances:
+                    logger.error(f"Other bot instances detected: {other_instances}. Stopping to avoid conflicts.")
+                    raise RuntimeError("Multiple bot instances detected.")
+                conn.commit()
+
+        # Удаление вебхуков с ретраями
+        for attempt in range(3):
+            try:
+                webhook_info = await application.bot.get_webhook_info()
+                logger.info(f"Webhook info: {webhook_info}")
+                if webhook_info.url:
+                    logger.info(f"Deleting webhook: {webhook_info.url}")
+                    await application.bot.delete_webhook(drop_pending_updates=True)
+                    logger.info("Webhook successfully deleted")
+                else:
+                    logger.info("No active webhook found")
+                break
+            except Exception as e:
+                logger.error(f"Failed to delete webhook (attempt {attempt+1}/3): {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt * 5)  # Экспоненциальная задержка
+                else:
+                    raise RuntimeError(f"Failed to delete webhook after 3 attempts: {e}")
+
         conv_handler = ConversationHandler(
             entry_points=[
                 CallbackQueryHandler(button, pattern="^(edit_text|set_price|set_percent|set_commissions|set_card_payment|set_review_channel|lang_.*|buy_stars|set_username|set_amount|set_payment_method|payment_card|payment_crypto|payment_cryptobot|payment_ton|check_payment|back_to_main|confirm_payment)$"),
@@ -1153,9 +1197,7 @@ async def main():
         application.job_queue.run_repeating(update_ton_price, interval=300)
         asyncio.create_task(start_health_server())
         
-        await application.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Webhook deleted, starting polling")
-        
+        logger.info("Starting polling")
         await application.initialize()
         await application.start()
         await application.updater.start_polling(
@@ -1163,6 +1205,21 @@ async def main():
             drop_pending_updates=True,
             poll_interval=1
         )
+
+        # Фоновое обновление heartbeat
+        async def heartbeat():
+            while True:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE bot_instances SET last_heartbeat = CURRENT_TIMESTAMP WHERE instance_id = %s;",
+                            (instance_id,)
+                        )
+                        conn.commit()
+                await asyncio.sleep(60)
+
+        asyncio.create_task(heartbeat())
+
         while True:
             await asyncio.sleep(3600)
     except Exception as e:
@@ -1173,11 +1230,8 @@ async def main():
             await application.updater.stop()
             await application.stop()
             await application.shutdown()
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
+        # Очистка инстанса из базы
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM bot_instances WHERE instance_id = %s;", (instance_id,))
+                conn.commit()
