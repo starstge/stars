@@ -858,7 +858,7 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             context.user_data['input_prompt_id'] = None
         keyboard = [
             [InlineKeyboardButton("@CryptoBot", callback_data="payment_cryptobot")],
-            InlineKeyboardButton("TON Wallet", callback_data="payment_ton")],
+            [InlineKeyboardButton("TON Wallet", callback_data="payment_ton")],
             [InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")],
         ]
         reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
