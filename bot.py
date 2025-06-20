@@ -1481,7 +1481,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             key = key.strip()
             value = value.strip()
             if not key.endswith(("_ru", "_en")):
-                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]]
+                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
                 reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
                 message = await update.message.reply_text(
                     get_text("invalid_text_key", user_id),
@@ -1497,7 +1497,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return EDIT_TEXT
             update_text(key, value)
             log_admin_action(user_id, f"Updated text: {key}")
-            keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]]
+            keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
             reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
                 get_text("text_updated", user_id, key=key),
@@ -1512,7 +1512,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         except ValueError:
-            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]]
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
             reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
                 get_text("text_format", user_id),
