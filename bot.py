@@ -35,7 +35,7 @@ OWNER_WALLET = os.getenv("OWNER_WALLET")
 CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN")
 
 # Состояния для ConversationHandler
-EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_COMMISSIONS, SET_REVIEW_CHANNEL, CHOOSE_LANGUAGE, BUY_STARS_USERNAME, BUY_STARS_AMOUNT, BUY_STARS_PAYMENT = range(9)
+EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_COMMISSIONS, SET_REVIEW_CHANNEL, CHOOSE_LANGUAGE, BUY_STARS_USERNAME, BUY_STARS_AMOUNT, BUY_STARS_PAYMENT_METHOD, BUY_STARS_CONFIRM = range(10)
 
 def get_db_connection():
     if not POSTGRES_URL:
@@ -117,7 +117,9 @@ def init_db():
                     ('ton_exchange_rate', '2.93'),
                     ('review_channel', '@sacoectasy'),
                     ('cryptobot_commission', '25'),
-                    ('ton_commission', '20')
+                    ('ton_commission', '20'),
+                    ('card_commission', '30'),
+                    ('card_payment_enabled', 'false')
                 ON CONFLICT (key) DO NOTHING;
             """)
             cur.execute("""
@@ -125,12 +127,16 @@ def init_db():
                 VALUES
                     ('welcome_ru', 'Добро пожаловать! Купите Telegram Stars за TON или USDT.\nЗвезд продано: {total_stars_sold}'),
                     ('welcome_en', 'Welcome! Buy Telegram Stars with TON or USDT.\nStars sold: {total_stars_sold}'),
+                    ('buy_stars_prompt_ru', '⭐️ Кому отправить Telegram Stars?'),
+                    ('buy_stars_prompt_en', '⭐️ Who to send Telegram Stars to?'),
                     ('buy_username_prompt_ru', 'Введите username получателя (без @):'),
                     ('buy_username_prompt_en', 'Enter recipient username (without @):'),
                     ('buy_amount_prompt_ru', 'Введите количество звезд:'),
                     ('buy_amount_prompt_en', 'Enter number of stars:'),
-                    ('buy_payment_prompt_ru', 'Выберите способ оплаты:'),
-                    ('buy_payment_prompt_en', 'Choose payment method:'),
+                    ('buy_payment_method_prompt_ru', 'Выберите способ оплаты:'),
+                    ('buy_payment_method_prompt_en', 'Choose payment method:'),
+                    ('buy_crypto_method_prompt_ru', 'Выберите криптовалюту:'),
+                    ('buy_crypto_method_prompt_en', 'Choose cryptocurrency:'),
                     ('buy_cryptobot_prompt_ru', 'Оплатите {amount_usd:.2f} USDT через @CryptoBot.\nНажмите "Оплатить" для создания чека.\n\n{stars} звезд для @{username}'),
                     ('buy_cryptobot_prompt_en', 'Pay {amount_usd:.2f} USDT via @CryptoBot.\nClick "Pay" to create invoice.\n\n{stars} stars for @{username}'),
                     ('buy_ton_prompt_ru', 'Оплатите {amount_ton:.6f} TON через TON Wallet.\nАдрес: {address}\nMemo: {memo}\n\n{stars} звезд для @{username}'),
@@ -141,6 +147,8 @@ def init_db():
                     ('buy_invalid_username_en', 'Invalid username. Enter without @.'),
                     ('buy_invalid_amount_ru', 'Количество звезд должно быть больше 0.'),
                     ('buy_invalid_amount_en', 'Number of stars must be greater than 0.'),
+                    ('buy_card_disabled_ru', 'Оплата картой пока недоступна.'),
+                    ('buy_card_disabled_en', 'Card payment is currently unavailable.'),
                     ('ref_info_ru', 'Ваш реф. бонус: {ref_bonus_ton:.6f} TON\nРеф. ссылка: t.me/{bot_username}?start=ref_{user_id}'),
                     ('ref_info_en', 'Your ref. bonus: {ref_bonus_ton:.6f} TON\nRef. link: t.me/{bot_username}?start=ref_{user_id}'),
                     ('tech_support_ru', 'Свяжитесь с техподдержкой: {support_channel}'),
@@ -191,8 +199,8 @@ def init_db():
                     ('set_price_prompt_en', 'Enter: price_usd:stars\nExample: 0.81:50'),
                     ('set_percent_prompt_ru', 'Введите: ref_bonus:profit\nНапример: 30:20'),
                     ('set_percent_prompt_en', 'Enter: ref_bonus:profit\nExample: 30:20'),
-                    ('set_commissions_prompt_ru', 'Введите: cryptobot:ton\nНапример: 25:20'),
-                    ('set_commissions_prompt_en', 'Enter: cryptobot:ton\nExample: 25:20'),
+                    ('set_commissions_prompt_ru', 'Введите: cryptobot:ton:card\nНапример: 25:20:30'),
+                    ('set_commissions_prompt_en', 'Enter: cryptobot:ton:card\nExample: 25:20:30'),
                     ('set_review_channel_prompt_ru', 'Введите: @channel\nНапример: @sacoectasy'),
                     ('set_review_channel_prompt_en', 'Enter: @channel\nExample: @sacoectasy'),
                     ('access_denied_ru', 'Доступ запрещён.'),
@@ -215,12 +223,12 @@ def init_db():
                     ('percent_set_en', 'Percentages set: ref. bonus {ref_bonus}%, profit {profit}%'),
                     ('percent_format_ru', 'Формат: ref_bonus:profit'),
                     ('percent_format_en', 'Format: ref_bonus:profit'),
-                    ('invalid_commissions_ru', 'Комиссии должны быть: cryptobot 0-100, ton 0-100.'),
-                    ('invalid_commissions_en', 'Commissions must be: cryptobot 0-100, ton 0-100.'),
-                    ('commissions_set_ru', 'Комиссии установлены: @CryptoBot {cryptobot}%, TON {ton}%'),
-                    ('commissions_set_en', 'Commissions set: @CryptoBot {cryptobot}%, TON {ton}%'),
-                    ('commissions_format_ru', 'Формат: cryptobot:ton'),
-                    ('commissions_format_en', 'Format: cryptobot:ton'),
+                    ('invalid_commissions_ru', 'Комиссии должны быть: cryptobot 0-100, ton 0-100, card 0-100.'),
+                    ('invalid_commissions_en', 'Commissions must be: cryptobot 0-100, ton 0-100, card 0-100.'),
+                    ('commissions_set_ru', 'Комиссии установлены: @CryptoBot {cryptobot}%, TON {ton}%, Card {card}%'),
+                    ('commissions_set_en', 'Commissions set: @CryptoBot {cryptobot}%, TON {ton}%, Card {card}%'),
+                    ('commissions_format_ru', 'Формат: cryptobot:ton:card'),
+                    ('commissions_format_en', 'Format: cryptobot:ton:card'),
                     ('invalid_channel_ru', 'Неверный канал. Используйте @channel.'),
                     ('invalid_channel_en', 'Invalid channel. Use @channel.'),
                     ('channel_set_ru', 'Канал установлен: {channel}'),
@@ -232,7 +240,11 @@ def init_db():
                     ('reset_profit_ru', 'Прибыль сброшена.'),
                     ('reset_profit_en', 'Profit reset.'),
                     ('cancel_ru', 'Операция отменена.'),
-                    ('cancel_en', 'Operation cancelled.')
+                    ('cancel_en', 'Operation cancelled.'),
+                    ('set_card_payment_prompt_ru', 'Введите: enabled (true/false)\nНапример: true'),
+                    ('set_card_payment_prompt_en', 'Enter: enabled (true/false)\nExample: true'),
+                    ('card_payment_set_ru', 'Оплата картой: {status}'),
+                    ('card_payment_set_en', 'Card payment: {status}')
                 ON CONFLICT (key) DO NOTHING;
             """)
             conn.commit()
@@ -246,7 +258,9 @@ def get_setting(key):
             if result:
                 if key in ('admin_ids', 'referrals', 'bonus_history'):
                     return json.loads(result[0])
-                return float(result[0]) if key in ('ref_bonus_percent', 'profit_percent', 'stars_price_usd', 'ton_exchange_rate', 'cryptobot_commission', 'ton_commission') else result[0]
+                if key == 'card_payment_enabled':
+                    return result[0].lower() == 'true'
+                return float(result[0]) if key in ('ref_bonus_percent', 'profit_percent', 'stars_price_usd', 'ton_exchange_rate', 'cryptobot_commission', 'ton_commission', 'card_commission') else result[0]
     return None
 
 # Обновление настроек
@@ -478,6 +492,7 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                         )
         await asyncio.sleep(60)
 
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -526,11 +541,69 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(user_id):
         keyboard.append([InlineKeyboardButton(get_text("admin_panel_btn", user_id), callback_data="admin_panel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await (update.message or update.callback_query.message).reply_text(
+    message = await (update.message or update.callback_query.message).reply_text(
         get_text("welcome", user_id, total_stars_sold=get_setting("total_stars_sold") or 0),
         reply_markup=reply_markup
     )
+    context.user_data['last_main_menu_id'] = message.message_id
 
+# Показ меню покупки
+async def show_buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    target_username = context.user_data.get('buy_username', '####')
+    stars = context.user_data.get('buy_stars', '####')
+    payment_method = context.user_data.get('payment_method', '####')
+    
+    price_usd = float(get_setting("stars_price_usd")) * (int(stars) / 50 if stars != '####' else 1)
+    commission = 0
+    if payment_method == '@CryptoBot':
+        commission = float(get_setting("cryptobot_commission")) / 100
+    elif payment_method == 'TON Wallet':
+        commission = float(get_setting("ton_commission")) / 100
+    elif payment_method == 'Card':
+        commission = float(get_setting("card_commission")) / 100
+    amount_usd = price_usd * (1 + commission) if stars != '####' else 0
+    
+    keyboard = [
+        [InlineKeyboardButton(f"Имя: {target_username}", callback_data="set_username")],
+        [InlineKeyboardButton(f"Кол-во звёзд: {stars}", callback_data="set_amount")],
+        [InlineKeyboardButton(f"Оплата: {payment_method}", callback_data="set_payment_method")],
+        [InlineKeyboardButton(f"Стоимость: ${amount_usd:.2f}", callback_data="noop")],
+        [
+            InlineKeyboardButton("Назад", callback_data="back_to_main"),
+            InlineKeyboardButton("Оплатить", callback_data="confirm_payment")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    query = update.callback_query
+    if query:
+        await query.message.edit_text(
+            get_text("buy_stars_prompt", user_id),
+            reply_markup=reply_markup
+        )
+    else:
+        message = await update.message.reply_text(
+            get_text("buy_stars_prompt", user_id),
+            reply_markup=reply_markup
+        )
+        context.user_data['buy_menu_id'] = message.message_id
+    
+    # Таймер 30 секунд
+    context.job_queue.run_once(
+        callback=lambda ctx: delete_buy_menu(ctx, user_id),
+        when=30,
+        data={'user_id': user_id}
+    )
+
+async def delete_buy_menu(context: ContextTypes.DEFAULT_TYPE, user_id):
+    buy_menu_id = context.user_data.get('buy_menu_id')
+    if buy_menu_id:
+        try:
+            await context.bot.delete_message(chat_id=user_id, message_id=buy_menu_id)
+            context.user_data['buy_menu_id'] = None
+        except:
+            pass
 # Обработка кнопок
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -546,73 +619,156 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     if query.data == "buy_stars":
-        await query.message.reply_text(
-            get_text("buy_username_prompt", user_id)
-        )
+        context.user_data['buy_username'] = '####'
+        context.user_data['buy_stars'] = '####'
+        context.user_data['payment_method'] = '####'
+        await show_buy_menu(update, context)
+        return BUY_STARS_USERNAME
+    
+    if query.data == "set_username":
+        await query.message.reply_text(get_text("buy_username_prompt", user_id))
         context.user_data['state'] = 'buy_username'
         return BUY_STARS_USERNAME
     
+    if query.data == "set_amount":
+        await query.message.reply_text(get_text("buy_amount_prompt", user_id))
+        context.user_data['state'] = 'buy_amount'
+        return BUY_STARS_AMOUNT
+    
+    if query.data == "set_payment_method":
+        card_enabled = get_setting("card_payment_enabled")
+        keyboard = [
+            [InlineKeyboardButton("Карта" if get_user_language(user_id) == 'ru' else "Card", callback_data="payment_card")],
+            [InlineKeyboardButton("Крипта" if get_user_language(user_id) == 'ru' else "Crypto", callback_data="payment_crypto")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(
+            get_text("buy_payment_method_prompt", user_id),
+            reply_markup=reply_markup
+        )
+        context.user_data['state'] = 'buy_payment_method'
+        return BUY_STARS_PAYMENT_METHOD
+    
+    if query.data == "payment_card":
+        if not get_setting("card_payment_enabled"):
+            await query.message.reply_text(get_text("buy_card_disabled", user_id))
+            await show_buy_menu(update, context)
+            return BUY_STARS_USERNAME
+        context.user_data['payment_method'] = 'Card'
+        await show_buy_menu(update, context)
+        return BUY_STARS_USERNAME
+    
+    if query.data == "payment_crypto":
+        keyboard = [
+            [InlineKeyboardButton("@CryptoBot", callback_data="payment_cryptobot")],
+            [InlineKeyboardButton("TON Wallet", callback_data="payment_ton")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(
+            get_text("buy_crypto_method_prompt", user_id),
+            reply_markup=reply_markup
+        )
+        context.user_data['state'] = 'buy_crypto_method'
+        return BUY_STARS_PAYMENT_METHOD
+    
     if query.data == "payment_cryptobot":
+        context.user_data['payment_method'] = '@CryptoBot'
+        await show_buy_menu(update, context)
+        return BUY_STARS_USERNAME
+    
+    if query.data == "payment_ton":
+        context.user_data['payment_method'] = 'TON Wallet'
+        await show_buy_menu(update, context)
+        return BUY_STARS_USERNAME
+    
+    if query.data == "back_to_main":
+        buy_menu_id = context.user_data.get('buy_menu_id')
+        if buy_menu_id:
+            try:
+                await context.bot.delete_message(chat_id=user_id, message_id=buy_menu_id)
+            except:
+                pass
+        context.user_data['buy_username'] = None
+        context.user_data['buy_stars'] = None
+        context.user_data['payment_method'] = None
+        context.user_data['buy_menu_id'] = None
+        await show_main_menu(update, context)
+        return ConversationHandler.END
+    
+    if query.data == "confirm_payment":
         target_username = context.user_data.get('buy_username')
         stars = context.user_data.get('buy_stars')
-        price_usd = float(get_setting("stars_price_usd")) * (stars / 50)
-        commission = float(get_setting("cryptobot_commission")) / 100
+        payment_method = context.user_data.get('payment_method')
+        
+        if target_username == '####' or stars == '####' or payment_method == '####':
+            await query.message.reply_text("Заполните все поля (Имя, Кол-во звёзд, Оплата).")
+            await show_buy_menu(update, context)
+            return BUY_STARS_USERNAME
+
+        price_usd = float(get_setting("stars_price_usd")) * (int(stars) / 50)
+        commission = 0
+        if payment_method == '@CryptoBot':
+            commission = float(get_setting("cryptobot_commission")) / 100
+        elif payment_method == 'TON Wallet':
+            commission = float(get_setting("ton_commission")) / 100
+        elif payment_method == 'Card':
+            commission = float(get_setting("card_commission")) / 100
         amount_usd = price_usd * (1 + commission)
         
-        invoice_id = await create_cryptobot_invoice(amount_usd, target_username, stars)
-        if invoice_id:
+        if payment_method == '@CryptoBot':
+            invoice_id = await create_cryptobot_invoice(amount_usd, target_username, stars)
+            if invoice_id:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE users SET stars_bought = %s, username = %s, cryptobot_invoice_id = %s WHERE user_id = %s;",
+                            (stars, target_username, invoice_id, user_id)
+                        )
+                        conn.commit()
+                
+                keyboard = [
+                    [InlineKeyboardButton("Оплатить" if get_user_language(user_id) == 'ru' else "Pay", url=f"https://t.me/CryptoBot?start=pay{invoice_id}")],
+                    [InlineKeyboardButton("Проверить" if get_user_language(user_id) == 'ru' else "Check", callback_data="check_payment")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text(
+                    get_text("buy_cryptobot_prompt", user_id, amount_usd=amount_usd, stars=stars, username=target_username),
+                    reply_markup=reply_markup
+                )
+            else:
+                await query.message.reply_text("Ошибка при создании чека. Попробуйте позже.")
+            return ConversationHandler.END
+        
+        elif payment_method == 'TON Wallet':
+            ton_exchange_rate = float(get_setting("ton_exchange_rate"))
+            amount_ton = amount_usd / ton_exchange_rate
+            payment_info = await generate_ton_address(user_id)
+            address = payment_info["address"]
+            memo = payment_info["memo"]
+            
             with get_db_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE users SET stars_bought = %s, username = %s, cryptobot_invoice_id = %s WHERE user_id = %s;",
-                        (stars, target_username, invoice_id, user_id)
+                        "UPDATE users SET stars_bought = %s, username = %s, address = %s, memo = %s, amount_ton = %s WHERE user_id = %s;",
+                        (stars, target_username, address, memo, amount_ton, user_id)
                     )
                     conn.commit()
             
             keyboard = [
-                [InlineKeyboardButton("Оплатить" if get_user_language(user_id) == 'ru' else "Pay", url=f"https://t.me/CryptoBot?start=pay{invoice_id}")],
+                [InlineKeyboardButton("Оплатить" if get_user_language(user_id) == 'ru' else "Pay", url=f"https://ton.space/transfer?to={address}&amount={amount_ton}&memo={memo}")],
                 [InlineKeyboardButton("Проверить" if get_user_language(user_id) == 'ru' else "Check", callback_data="check_payment")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.reply_text(
-                get_text("buy_cryptobot_prompt", user_id, amount_usd=amount_usd, stars=stars, username=target_username),
+            await query.message.edit_text(
+                get_text("buy_ton_prompt", user_id, amount_ton=amount_ton, stars=stars, address=address, memo=memo, username=target_username),
                 reply_markup=reply_markup
             )
-        else:
-            await query.message.reply_text("Ошибка при создании чека. Попробуйте позже.")
-        return ConversationHandler.END
-    
-    if query.data == "payment_ton":
-        target_username = context.user_data.get('buy_username')
-        stars = context.user_data.get('buy_stars')
-        price_usd = float(get_setting("stars_price_usd")) * (stars / 50)
-        commission = float(get_setting("ton_commission")) / 100
-        amount_usd = price_usd * (1 + commission)
-        ton_exchange_rate = float(get_setting("ton_exchange_rate"))
-        amount_ton = amount_usd / ton_exchange_rate
+            return ConversationHandler.END
         
-        payment_info = await generate_ton_address(user_id)
-        address = payment_info["address"]
-        memo = payment_info["memo"]
-        
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE users SET stars_bought = %s, username = %s, address = %s, memo = %s, amount_ton = %s WHERE user_id = %s;",
-                    (stars, target_username, address, memo, amount_ton, user_id)
-                )
-                conn.commit()
-        
-        keyboard = [
-            [InlineKeyboardButton("Оплатить" if get_user_language(user_id) == 'ru' else "Pay", url=f"https://ton.space/transfer?to={address}&amount={amount_ton}&memo={memo}")],
-            [InlineKeyboardButton("Проверить" if get_user_language(user_id) == 'ru' else "Check", callback_data="check_payment")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text(
-            get_text("buy_ton_prompt", user_id, amount_ton=amount_ton, stars=stars, address=address, memo=memo, username=target_username),
-            reply_markup=reply_markup
-        )
-        return ConversationHandler.END
+        elif payment_method == 'Card':
+            await query.message.reply_text(get_text("buy_card_disabled", user_id))
+            await show_buy_menu(update, context)
+            return BUY_STARS_USERNAME
     
     if query.data == "check_payment":
         with get_db_connection() as conn:
@@ -733,6 +889,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(get_text("set_percent_btn", user_id), callback_data="set_percent")],
             [InlineKeyboardButton(get_text("set_commissions_btn", user_id), callback_data="set_commissions")],
             [InlineKeyboardButton(get_text("set_review_channel_btn", user_id), callback_data="set_review_channel")],
+            [InlineKeyboardButton(get_text("set_card_payment_btn", user_id), callback_data="set_card_payment")],
             [InlineKeyboardButton(get_text("stats_btn", user_id), callback_data="stats")],
             [InlineKeyboardButton(get_text("reset_profit_btn", user_id), callback_data="reset_profit")],
         ]
@@ -767,6 +924,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['state'] = 'set_commissions'
         return SET_COMMISSIONS
     
+    elif query.data == "set_card_payment" and is_admin(user_id):
+        await query.message.reply_text(
+            get_text("set_card_payment_prompt", user_id)
+        )
+        context.user_data['state'] = 'set_card_payment'
+        return SET_COMMISSIONS
+    
     elif query.data == "set_review_channel" and is_admin(user_id):
         await query.message.reply_text(
             get_text("set_review_channel_prompt", user_id)
@@ -799,9 +963,12 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(get_text("buy_invalid_username", user_id))
             return BUY_STARS_USERNAME
         context.user_data['buy_username'] = text
-        await update.message.reply_text(get_text("buy_amount_prompt", user_id))
-        context.user_data['state'] = 'buy_amount'
-        return BUY_STARS_AMOUNT
+        try:
+            await update.message.delete()
+        except:
+            pass
+        await show_buy_menu(update, context)
+        return BUY_STARS_USERNAME
     
     if state == 'buy_amount':
         try:
@@ -810,17 +977,9 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(get_text("buy_invalid_amount", user_id))
                 return BUY_STARS_AMOUNT
             context.user_data['buy_stars'] = stars
-            keyboard = [
-                [InlineKeyboardButton("@CryptoBot", callback_data="payment_cryptobot")],
-                [InlineKeyboardButton("TON Wallet", callback_data="payment_ton")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(
-                get_text("buy_payment_prompt", user_id),
-                reply_markup=reply_markup
-            )
-            context.user_data['state'] = 'buy_payment'
-            return BUY_STARS_PAYMENT
+            await update.message.delete()
+            await show_buy_menu(update, context)
+            return BUY_STARS_USERNAME
         except ValueError:
             await update.message.reply_text(get_text("buy_invalid_amount", user_id))
             return BUY_STARS_AMOUNT
@@ -878,18 +1037,35 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif state == 'set_commissions':
         try:
-            cryptobot, ton = text.split(":")
+            cryptobot, ton, card = text.split(":")
             cryptobot = float(cryptobot.strip())
             ton = float(ton.strip())
-            if not (0 <= cryptobot <= 100 and 0 <= ton <= 100):
+            card = float(card.strip())
+            if not (0 <= cryptobot <= 100 and 0 <= ton <= 100 and 0 <= card <= 100):
                 await update.message.reply_text(get_text("invalid_commissions", user_id))
                 return SET_COMMISSIONS
             update_setting("cryptobot_commission", cryptobot)
             update_setting("ton_commission", ton)
-            log_admin_action(user_id, f"Set commissions: cryptobot {cryptobot}%, ton {ton}%")
-            await update.message.reply_text(get_text("commissions_set", user_id, cryptobot=cryptobot, ton=ton))
+            update_setting("card_commission", card)
+            log_admin_action(user_id, f"Set commissions: cryptobot {cryptobot}%, ton {ton}%, card {card}%")
+            await update.message.reply_text(get_text("commissions_set", user_id, cryptobot=cryptobot, ton=ton, card=card))
         except ValueError:
             await update.message.reply_text(get_text("commissions_format", user_id))
+        return ConversationHandler.END
+    
+    elif state == 'set_card_payment':
+        try:
+            enabled = text.strip().lower()
+            if enabled not in ('true', 'false'):
+                await update.message.reply_text("Формат: enabled (true/false)")
+                return SET_COMMISSIONS
+            update_setting("card_payment_enabled", enabled)
+            log_admin_action(user_id, f"Set card payment: {enabled}")
+            await update.message.reply_text(
+                get_text("card_payment_set", user_id, status="включена" if enabled == 'true' else "выключена" if get_user_language(user_id) == 'ru' else "enabled" if enabled == 'true' else "disabled")
+            )
+        except ValueError:
+            await update.message.reply_text("Формат: enabled (true/false)")
         return ConversationHandler.END
     
     elif state == 'set_review_channel':
@@ -934,6 +1110,17 @@ async def start_health_server():
 # Отмена ConversationHandler
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_text("cancel", update.effective_user.id))
+    buy_menu_id = context.user_data.get('buy_menu_id')
+    if buy_menu_id:
+        try:
+            await context.bot.delete_message(chat_id=update.effective_user.id, message_id=buy_menu_id)
+        except:
+            pass
+    context.user_data['buy_username'] = None
+    context.user_data['buy_stars'] = None
+    context.user_data['payment_method'] = None
+    context.user_data['buy_menu_id'] = None
+    await show_main_menu(update, context)
     return ConversationHandler.END
 
 # Основная функция
@@ -943,7 +1130,7 @@ async def main():
         application = Application.builder().token(BOT_TOKEN).build()
         conv_handler = ConversationHandler(
             entry_points=[
-                CallbackQueryHandler(button, pattern="^(edit_text|set_price|set_percent|set_commissions|set_review_channel|lang_.*|buy_stars|payment_cryptobot|payment_ton|check_payment)$"),
+                CallbackQueryHandler(button, pattern="^(edit_text|set_price|set_percent|set_commissions|set_card_payment|set_review_channel|lang_.*|buy_stars|set_username|set_amount|set_payment_method|payment_card|payment_crypto|payment_cryptobot|payment_ton|check_payment|back_to_main|confirm_payment)$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
             ],
             states={
@@ -953,9 +1140,9 @@ async def main():
                 SET_COMMISSIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
                 SET_REVIEW_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
                 CHOOSE_LANGUAGE: [CallbackQueryHandler(button)],
-                BUY_STARS_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
-                BUY_STARS_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
-                BUY_STARS_PAYMENT: [CallbackQueryHandler(button)]
+                BUY_STARS_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input), CallbackQueryHandler(button)],
+                BUY_STARS_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input), CallbackQueryHandler(button)],
+                BUY_STARS_PAYMENT_METHOD: [CallbackQueryHandler(button)]
             },
             fallbacks=[CommandHandler("cancel", cancel)],
             per_message=False
