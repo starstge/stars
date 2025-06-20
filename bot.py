@@ -1468,7 +1468,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data={'user_id': user_id}
         )
 
-# Обработка текстового ввода
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = context.user_data.get('input_state')
@@ -1731,49 +1730,20 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return ConversationHandler.END
 
-        elif state == 'set_card_payment':
-            if not await is_admin(user_id):
-                await update.message.reply_text(get_text("access_denied", user_id))
-                return ConversationHandler.END
-            if text.lower() not in ('true', 'false'):
-                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                message = await update.message.reply_text(
-                    get_text("set_card_payment_prompt", user_id),
-                    reply_markup=reply_markup
-                )
-                context.user_data['input_prompt_id'] = message.message_id
-                return SET_CARD_PAYMENT
-            update_setting("card_payment_enabled", text.lower())
-            log_admin_action(user_id, f"Set card payment: {text.lower()}")
-            message = await update.message.reply_text(
-                get_text("card_payment_set", user_id, status=text.lower())
-            )
-            context.user_data['input_prompt_id'] = message.message_id
-            context.job_queue.run_once(
-                callback=lambda x: delete_input_prompt(context, user_id),
-                when=5,
-                data={'user_id': user_id}
-            )
-            await show_main_menu(update, context)
-            return ConversationHandler.END
-
-    elif state == 'set_markup' and await is_admin(user_id):
-    try:
-        markup = float(text)
-        if not 0 <= markup <= 100:
+    elif state == 'set_card_payment' and await is_admin(user_id):
+        if text.lower() not in ('true', 'false'):
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
-                get_text("invalid_markup", user_id),
+                get_text("set_card_payment_prompt", user_id),
                 reply_markup=reply_markup
             )
             context.user_data['input_prompt_id'] = message.message_id
-            return SET_MARKUP
-        update_setting("markup_percentage", markup)
-        log_admin_action(user_id, f"Set markup: {markup}%")
+            return SET_CARD_PAYMENT
+        update_setting("card_payment_enabled", text.lower())
+        log_admin_action(user_id, f"Set card payment: {text.lower()}")
         message = await update.message.reply_text(
-            get_text("markup_set", user_id, markup=markup)
+            get_text("card_payment_set", user_id, status=text.lower())
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1783,15 +1753,41 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await show_main_menu(update, context)
         return ConversationHandler.END
-    except ValueError:
-        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await update.message.reply_text(
-            get_text("markup_format", user_id),
-            reply_markup=reply_markup
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        return SET_MARKUP
+
+    elif state == 'set_markup' and await is_admin(user_id):
+        try:
+            markup = float(text)
+            if not 0 <= markup <= 100:
+                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                message = await update.message.reply_text(
+                    get_text("invalid_markup", user_id),
+                    reply_markup=reply_markup
+                )
+                context.user_data['input_prompt_id'] = message.message_id
+                return SET_MARKUP
+            update_setting("markup_percentage", markup)
+            log_admin_action(user_id, f"Set markup: {markup}%")
+            message = await update.message.reply_text(
+                get_text("markup_set", user_id, markup=markup)
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            await show_main_menu(update, context)
+            return ConversationHandler.END
+        except ValueError:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("markup_format", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            return SET_MARKUP
 
     elif state == 'add_admin' and await is_admin(user_id):
         try:
