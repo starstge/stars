@@ -1748,10 +1748,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
-            callback=lambda x: delete_input_prompt(context, user_id)),
-            when=5,
-            data={'user_id': user_id}
-        )
+                callback=lambda x: delete_input_prompt(context, user_id)),
+                when=5,
+                data={'user_id': user_id}
+            )
         await show_main_menu(update, context)
         return ConversationHandler.END
 
