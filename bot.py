@@ -1802,7 +1802,7 @@ def main():
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 8443)),
         url_path=f"/{BOT_TOKEN}",
-        webhook_url=f"https://stars-ejwz.onrender.com>{BOT_TOKEN}"
+        webhook_url=f"https://stars-ejwz.onrender.com/{BOT_TOKEN}"
     )
     
     application.add_handler(conv_handler)
