@@ -1731,29 +1731,29 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return ConversationHandler.END
 
-    elif state == 'set_card_payment' and await is_admin(user_id):
-        if text.lower() not in ('true', 'false'):
-            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+        elif state == 'set_card_payment' and await is_admin(user_id):
+            if text.lower() not in ('true', 'false'):
+                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                message = await update.message.reply_text(
+                    get_text("set_card_payment_prompt", user_id),
+                    reply_markup=reply_markup
+                )
+                context.user_data['input_prompt_id'] = message.message_id
+                return SET_CARD_PAYMENT
+            update_setting("card_payment_enabled", text.lower())
+            log_admin_action(user_id, f"Set card payment: {text.lower()}")
             message = await update.message.reply_text(
-                get_text("set_card_payment_prompt", user_id),
-                reply_markup=reply_markup
+                get_text("card_payment_set", user_id, status=text.lower())
             )
             context.user_data['input_prompt_id'] = message.message_id
-            return SET_CARD_PAYMENT
-        update_setting("card_payment_enabled", text.lower())
-        log_admin_action(user_id, f"Set card payment: {text.lower()}")
-        message = await update.message.reply_text(
-            get_text("card_payment_set", user_id, status=text.lower())
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        context.job_queue.run_once(
-                callback=lambda x: delete_input_prompt(context, user_id)),
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
                 when=5,
                 data={'user_id': user_id}
             )
-        await show_main_menu(update, context)
-        return ConversationHandler.END
+            await show_main_menu(update, context)
+            return ConversationHandler.END
 
     elif state == 'set_markup' and await is_admin(user_id):
     try:
