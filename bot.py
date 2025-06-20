@@ -5,6 +5,7 @@ import logging
 import asyncio
 import aiohttp
 import psycopg2
+import uuid
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -72,7 +73,7 @@ def init_db():
                     value TEXT NOT NULL
                 );
             """)
-            cur.execute(f"""
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     username TEXT NOT NULL,
@@ -96,19 +97,19 @@ def init_db():
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
-            cur.execute(f"""
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS texts (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
-            TEXT""")
-            cur.execute(f"""
+            """)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS bot_instances (
                     instance_id TEXT PRIMARY KEY,
                     last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
-            TEXT""")
-            cur.execute(f"""
+            """)
+            cur.execute("""
                 INSERT INTO settings (key, value)
                 VALUES
                     ('admin_ids', '[6956377285]'),
@@ -290,7 +291,7 @@ def get_setting(key):
                     return json.loads(result[0])
                 if key == 'card_payment_enabled':
                     return result[0].lower() == 'true'
-                return float(result[0]) if key in ('ref_bonus_percent', 'profit_percent', 'stars_price_usd', 'ton_exchange_rate', 'cryptobot_commission', 'ton_commission', 'card_commission', 'min_stars_purchase', 'markup_percentage') else result[0]
+                return float(result[0]) if key in ('ref_bonus_percent', 'profit_percent', 'stars_price_usd', 'ton_exchange_rate', 'cryptobot_commission', 'ton_commission', 'card_commission', 'min_stars_purchase', 'markup_percentage', 'total_stars_sold', 'total_profit_usd', 'total_profit_ton') else result[0]
     return None
 
 # Обновление настроек
@@ -334,7 +335,7 @@ async def is_admin(user_id):
 def log_admin_action(admin_id, action):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO admin_log (admin_id, action) VALUES (%s, %s);", (admin_id, action))
+            cur.execute("INSERT INTO admin_log (user_id, action) VALUES (%s, %s);", (admin_id, action))
             conn.commit()
 
 # Получение языка пользователя
@@ -354,6 +355,19 @@ def update_user_language(user_id, language):
                 (user_id, language, language)
             )
             conn.commit()
+
+# Получение числового значения прибыли
+def get_profit_usd(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+def get_profit_ton(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 # Обновление курса TON через CoinGecko
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE):
@@ -528,8 +542,8 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                             total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars
                             base_price_usd = float(get_setting("stars_price_usd") or 0.81) * (stars / 50)
                             markup = float(get_setting("markup_percentage") or MARKUP_PERCENTAGE)
-                            total_profit =usd_usd = base_price_usd * (1 + markup / 100)
-                            total_profit =ton_ton = float(amount_ton) if amount_ton else 0
+                            total_profit_usd = float(get_setting("total_profit_usd") or 0) + (base_price_usd * (markup / 100))
+                            total_profit_ton = float(get_setting("total_profit_ton") or 0) + (float(amount_ton) if amount_ton else 0)
                             update_setting("total_stars_sold", total_stars_sold)
                             update_setting("total_profit_usd", total_profit_usd)
                             update_setting("total_profit_ton", total_profit_ton)
@@ -598,10 +612,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("English", callback_data="lang_en")],
             [InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]
         ]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await update.message.reply_text(
             get_text("choose_language", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -609,7 +623,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             when=10,
             data={'user_id': user_id}
         )
-        return LANGUAGE_CHOOSE
+        return CHOOSE_LANGUAGE
     
     await show_main_menu(update, context)
     return ConversationHandler.END
@@ -639,11 +653,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     if await is_admin(user_id):
         keyboard.append([InlineKeyboardButton(get_text("admin_panel_btn", user_id), callback_data="admin_panel")])
-    reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     message = await (update.message or update.callback_query.message).reply_text(
         get_text("welcome", user_id, total_stars_sold=get_setting("total_stars_sold") or 0),
-        reply_markup=inlinekeyboard
+        reply_markup=reply_markup
     )
     context.user_data['last_main_menu_id'] = message.message_id
 
@@ -652,7 +666,7 @@ async def show_buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     target_username = context.user_data.get('buy_username', '####')
     stars = context.user_data.get('buy_stars', '####')
-    payment_method = context.user_data.get('payment_method', '💳')
+    payment_method = context.user_data.get('payment_method', '####')
     
     # Расчёт стоимости с наценкой
     base_price_usd = float(get_setting("stars_price_usd") or 0.81) * (int(stars) / 50 if stars != '####' else 1)
@@ -677,7 +691,7 @@ async def show_buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("✅ Оплатить", callback_data="confirm_payment")
         ]
     ]
-    reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     # Удаляем предыдущее меню покупки
     buy_menu_id = context.user_data.get('buy_menu_id')
@@ -699,7 +713,7 @@ async def show_buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Отправляем новое меню
     message = await (update.message or update.callback_query.message).reply_text(
         get_text("buy_stars_prompt", user_id),
-        reply_markup=inlinekeyboard
+        reply_markup=reply_markup
     )
     context.user_data['buy_menu_id'] = message.message_id
     
@@ -731,7 +745,7 @@ async def delete_input_prompt(context: ContextTypes.DEFAULT_TYPE, user_id):
             pass
 
 # Обработка кнопок
-async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     username = query.from_user.username or f"user_{user_id}"
@@ -764,7 +778,7 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
     
     elif query.data == "set_username":
         buy_menu_id = context.user_data.get('buy_menu_id')
-        if buy_menu:
+        if buy_menu_id:
             try:
                 await context.bot.delete_message(chat_id=user_id, message_id=buy_menu_id)
             except Exception:
@@ -772,14 +786,14 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             context.user_data['buy_menu_id'] = None
         
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("buy_username_prompt", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.user_data['input_state'] = 'buy_username'
-        return BUY_USERNAME_STARS
+        return BUY_STARS_USERNAME
     
     elif query.data == "set_amount":
         buy_menu_id = context.user_data.get('buy_menu_id')
@@ -791,10 +805,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             context.user_data['buy_menu_id'] = None
         
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("buy_amount_prompt", user_id, min_stars=get_setting("min_stars_purchase") or 10),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -815,10 +829,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             [InlineKeyboardButton("💸 Криптовалюта", callback_data="payment_crypto")],
             [InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")],
         ]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("buy_payment_method_prompt", user_id=user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -861,14 +875,14 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             [InlineKeyboardButton("TON Wallet", callback_data="payment_ton")],
             [InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")],
         ]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("buy_crypto_method_prompt", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         context.user_data['input_prompt_id'] = message.message_id
-        context.user_data['input_state'] = 'buy_crypto'
-        return BUY_PAYMENT_METHOD_STARS
+        context.user_data['input_state'] = 'buy_payment_method'
+        return BUY_STARS_PAYMENT_METHOD
     
     elif query.data == "payment_cryptobot":
         input_prompt_id = context.user_data.get('input_prompt_id')
@@ -890,9 +904,9 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             except Exception:
                 pass
             context.user_data['input_prompt_id'] = None
-            context.user_data['payment_method'] = 'TON Wallet'
-            await show_buy_menu(update, context)
-            return BUY_STARS_USERNAME
+        context.user_data['payment_method'] = 'TON Wallet'
+        await show_buy_menu(update, context)
+        return BUY_STARS_USERNAME
     
     elif query.data == "cancel":
         input_prompt_id = context.user_data.get('input_prompt_id')
@@ -936,7 +950,7 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
         stars = context.user_data.get('buy_stars')
         payment_method = context.user_data.get('payment_method')
         
-        if target_username == '####' or stars == '####' or payment_method == '💸':
+        if target_username == '####' or stars == '####' or payment_method == '####':
             message = await query.message.reply_text(get_text("buy_error_fill_fields", user_id))
             context.user_data['input_prompt_id'] = message.message_id
             context.job_queue.run_once(
@@ -969,32 +983,30 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
                 
                 with get_db_connection() as conn:
                     with conn.cursor() as cur:
-                            cur.execute(
-                                "UPDATE users SET stars_bought = %s, username = %s, cryptobot_invoice_id = %s WHERE user_id = %s;",
-                                (stars, target_username, invoice_id, user_id)
-                            )
-                            conn.commit()
+                        cur.execute(
+                            "UPDATE users SET stars_bought = %s, username = %s, cryptobot_invoice_id = %s WHERE user_id = %s;",
+                            (stars, target_username, invoice_id, user_id)
+                        )
+                        conn.commit()
                 
                 keyboard = [
                     [InlineKeyboardButton("✅ Оплатить", url=payment_url)],
                     [InlineKeyboardButton("🔄 Проверить", callback_data="check_payment")],
                     [InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]
                 ]
-                reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+                reply_markup = InlineKeyboardMarkup(keyboard)
                 message = await query.message.reply_text(
                     get_text(f"buy_{'card' if payment_method == 'Card' else 'cryptobot'}_prompt", user_id, amount_usd=amount_usd, stars=stars, username=target_username),
-                    reply_markup=inlinekeyboard
+                    reply_markup=reply_markup
                 )
                 context.user_data['input_prompt_id'] = message.message_id
             else:
                 message = await query.message.reply_text(get_text("buy_error_cryptobot", user_id))
                 context.user_data['input_prompt_id'] = message.message_id
                 context.job_queue.run_once(
-                    queue_once(
-                        callback=lambda x: delete_input_prompt(context, user_id),
-                        when= lambda x: 5,
-                        data={'user_id': user_id}
-                    )
+                    callback=lambda x: delete_input_prompt(context, user_id),
+                    when=5,
+                    data={'user_id': user_id}
                 )
                 await show_main_menu(update, context)
             return ConversationHandler.END
@@ -1019,13 +1031,13 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
                     [InlineKeyboardButton("🔄 Проверить", callback_data="check_payment")],
                     [InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]
                 ]
-                reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+                reply_markup = InlineKeyboardMarkup(keyboard)
                 message = await query.message.reply_text(
                     get_text("buy_ton_prompt", user_id, amount_ton=amount_ton, stars=stars, address=address, memo=memo, username=target_username),
-                    reply_markup=inlinekeyboard
+                    reply_markup=reply_markup
                 )
                 context.user_data['input_prompt_id'] = message.message_id
-                return ConversationHandler.END
+            return ConversationHandler.END
     
     elif query.data == "check_payment":
         with get_db_connection() as conn:
@@ -1062,14 +1074,14 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
                             "UPDATE users SET stars_bought = 0, address = NULL, memo = NULL, amount_ton = NULL, cryptobot_invoice_id = NULL WHERE user_id = %s;",
                             (user_id,)
                         )
+                        total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars
                         base_price_usd = float(get_setting("stars_price_usd") or 0.81) * (stars / 50)
                         markup = float(get_setting("markup_percentage") or MARKUP_PERCENTAGE)
-                        total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars
-                        total_profit = float(get_profit_usd(get_setting("total_profit_usd") or 0) + (base_price * (1 + markup / 100)))
-                        total_profit = float(get_profit_ton(get_setting("total_profit_ton") or 0) + (amount_ton if amount_ton else 0)
+                        total_profit_usd = float(get_setting("total_profit_usd") or 0) + (base_price_usd * (markup / 100))
+                        total_profit_ton = float(get_setting("total_profit_ton") or 0) + (float(amount_ton) if amount_ton else 0)
                         update_setting("total_stars_sold", total_stars_sold)
                         update_setting("total_profit_usd", total_profit_usd)
-                        update_setting("total_profit_ton", total_profit)
+                        update_setting("total_profit_ton", total_profit_ton)
                         conn.commit()
                 message = await query.message.reply_text(
                     get_text("buy_success", user_id, username=target_username, stars=stars)
@@ -1084,7 +1096,7 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
                 message = await query.message.reply_text("❌ Не удалось выдать звёзды. Обратитесь в техподдержку.")
                 context.user_data['input_prompt_id'] = message.message_id
                 context.job_queue.run_once(
-                    (callback=lambda x: delete_input_prompt(context, user_id),
+                    callback=lambda x: delete_input_prompt(context, user_id),
                     when=5,
                     data={'user_id': user_id}
                 )
@@ -1105,10 +1117,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
         keyboard = [
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("profile", user_id, username=username, stars_bought=stars_bought, ref_bonus_ton=ref_bonus_ton),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1125,10 +1137,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             [InlineKeyboardButton("🏆 Топ-5 покупок", callback_data="top_purchases")],
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("ref_info", user_id, ref_bonus_ton=ref_bonus_ton, bot_username=context.bot.name.lstrip("@"), user_id=user_id, ref_count=len(referrals)),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1159,10 +1171,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
         
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             text,
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1193,10 +1205,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
         
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             text,
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1210,10 +1222,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
         keyboard = [
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("tech_support", user_id, support_channel=support_channel),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1223,14 +1235,14 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
         )
     
     elif query.data == "reviews":
-        review_channel = get_setting("review_channel") or "@sacoect"
+        review_channel = get_setting("review_channel") or "@sacoectasy"
         keyboard = [
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("reviews", user_id, review_channel=review_channel),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1263,8 +1275,8 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             [InlineKeyboardButton(get_text("reset_profit_btn", user_id), callback_data="reset_profit")],
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
-        message = await query.message.reply_text("⚙️ Админ-панель", reply_markup=inlinekeyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        message = await query.message.reply_text("⚙️ Админ-панель", reply_markup=reply_markup)
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
             callback=lambda x: delete_input_prompt(context, user_id),
@@ -1274,10 +1286,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
     
     elif query.data == "edit_text" and await is_admin(user_id):
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("edit_text_prompt", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -1286,10 +1298,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
     
     elif query.data == "set_price" and await is_admin(user_id):
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("set_price_prompt", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -1298,10 +1310,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
     
     elif query.data == "set_percent" and await is_admin(user_id):
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("set_percent_prompt", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -1310,10 +1322,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
     
     elif query.data == "set_commissions" and await is_admin(user_id):
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("set_commissions_prompt", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -1322,10 +1334,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
     
     elif query.data == "set_review_channel" and await is_admin(user_id):
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("set_review_channel_prompt", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -1334,10 +1346,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
     
     elif query.data == "set_card_payment" and await is_admin(user_id):
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("set_card_payment_prompt", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -1346,10 +1358,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
     
     elif query.data == "set_markup" and await is_admin(user_id):
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("set_markup_prompt", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -1364,10 +1376,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
         
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("stats", user_id, total_stars_sold=total_stars_sold, total_profit_usd=total_profit_usd, total_profit_ton=total_profit_ton),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -1385,10 +1397,10 @@ async def button(update: Update, context: ContextTypes.CallbackQueryHandler):
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
         
-        reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("reset_profit", user_id),
-            reply_markup=inlinekeyboard
+            reply_markup=reply_markup
         )
         
         context.user_data['input_prompt_id'] = message.message_id
@@ -1414,18 +1426,16 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         await update.message.delete()
-        except Exception:
-            pass
     except Exception:
         pass
     
     if state == 'buy_username':
         if text.startswith('@'):
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-            reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+            reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
                 get_text("buy_invalid_username", user_id),
-                reply_markup=inlinekeyboard
+                reply_markup=reply_markup
             )
             
             context.user_data['input_prompt_id'] = message.message_id
@@ -1461,10 +1471,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_buy_menu(update, context)
             return BUY_STARS_USERNAME
         except ValueError:
-            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]  # Removed extra bracket
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
-                get_text("buy_invalid_amount", user_id, min_stars=get_setting("min_stars_purchase") or 10),
+                get_text("buy_invalid_amount", user_id, min_stars=min_stars),
                 reply_markup=reply_markup
             )
             context.user_data['input_prompt_id'] = message.message_id
@@ -1474,20 +1484,19 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data={'user_id': user_id}
             )
             return BUY_STARS_AMOUNT
-    
+
     elif state == 'edit_text' and await is_admin(user_id):
         try:
-            key, value = text.split(":", 1)
+            key, value = text.split(':', 1)
             key = key.strip()
             value = value.strip()
-            if not key.endswith(("_ru", "_en")):
+            if not key.endswith(('_ru', '_en')):
                 keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-                reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+                reply_markup = InlineKeyboardMarkup(keyboard)
                 message = await update.message.reply_text(
                     get_text("invalid_text_key", user_id),
-                    reply_markup=inlinekeyboard
+                    reply_markup=reply_markup
                 )
-                
                 context.user_data['input_prompt_id'] = message.message_id
                 context.job_queue.run_once(
                     callback=lambda x: delete_input_prompt(context, user_id),
@@ -1496,29 +1505,25 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return EDIT_TEXT
             update_text(key, value)
-            log_admin_action(user_id, f"Updated text: {key}")
-            keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
-            reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+            log_admin_action(user_id, f"Edited text: {key}")
             message = await update.message.reply_text(
-                get_text("text_updated", user_id, key=key),
-                reply_markup=inlinekeyboard
+                get_text("text_updated", user_id, key=key)
             )
-            
             context.user_data['input_prompt_id'] = message.message_id
             context.job_queue.run_once(
                 callback=lambda x: delete_input_prompt(context, user_id),
                 when=5,
                 data={'user_id': user_id}
             )
+            await show_main_menu(update, context)
             return ConversationHandler.END
         except ValueError:
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-            reply_inlinekeyboard = InlineKeyboardMarkup(keyboard)
+            reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
                 get_text("text_format", user_id),
-                reply_markup=inlinekeyboard
+                reply_markup=reply_markup
             )
-            
             context.user_data['input_prompt_id'] = message.message_id
             context.job_queue.run_once(
                 callback=lambda x: delete_input_prompt(context, user_id),
@@ -1526,20 +1531,165 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data={'user_id': user_id}
             )
             return EDIT_TEXT
-    
+
     elif state == 'set_price' and await is_admin(user_id):
-    try:
-        price_usd, stars = map(float, text.split(":", 1))
-        if price_usd <= 0 or stars <= 0:
-            raise ValueError("Price and stars must be positive.")
-        update_setting("stars_price_usd", price_usd)
-        update_setting("stars_per_purchase", stars)
-        log_admin_action(user_id, f"Set price: ${price_usd} for {stars} stars")
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            price_usd, stars = map(float, text.split(':'))
+            if price_usd <= 0 or stars <= 0:
+                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                message = await update.message.reply_text(
+                    get_text("invalid_price", user_id),
+                    reply_markup=reply_markup
+                )
+                context.user_data['input_prompt_id'] = message.message_id
+                context.job_queue.run_once(
+                    callback=lambda x: delete_input_prompt(context, user_id),
+                    when=5,
+                    data={'user_id': user_id}
+                )
+                return SET_PRICE
+            update_setting("stars_price_usd", price_usd)
+            update_setting("stars_per_purchase", stars)
+            log_admin_action(user_id, f"Set price: ${price_usd} for {stars} stars")
+            message = await update.message.reply_text(
+                get_text("price_set", user_id, price_usd=price_usd, stars=stars)
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            await show_main_menu(update, context)
+            return ConversationHandler.END
+        except ValueError:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("price_format", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            return SET_PRICE
+
+    elif state == 'set_percent' and await is_admin(user_id):
+        try:
+            ref_bonus, profit = map(float, text.split(':'))
+            if not (0 <= ref_bonus <= 100 and 10 <= profit <= 50):
+                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                message = await update.message.reply_text(
+                    get_text("invalid_percent", user_id),
+                    reply_markup=reply_markup
+                )
+                context.user_data['input_prompt_id'] = message.message_id
+                context.job_queue.run_once(
+                    callback=lambda x: delete_input_prompt(context, user_id),
+                    when=5,
+                    data={'user_id': user_id}
+                )
+                return SET_PERCENT
+            update_setting("ref_bonus_percent", ref_bonus)
+            update_setting("profit_percent", profit)
+            log_admin_action(user_id, f"Set percentages: ref_bonus={ref_bonus}%, profit={profit}%")
+            message = await update.message.reply_text(
+                get_text("percent_set", user_id, ref_bonus=ref_bonus, profit=profit)
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            await show_main_menu(update, context)
+            return ConversationHandler.END
+        except ValueError:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("percent_format", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            return SET_PERCENT
+
+    elif state == 'set_commissions' and await is_admin(user_id):
+        try:
+            cryptobot, ton, card = map(float, text.split(':'))
+            if not (0 <= cryptobot <= 100 and 0 <= ton <= 100 and 0 <= card <= 100):
+                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                message = await update.message.reply_text(
+                    get_text("invalid_commissions", user_id),
+                    reply_markup=reply_markup
+                )
+                context.user_data['input_prompt_id'] = message.message_id
+                context.job_queue.run_once(
+                    callback=lambda x: delete_input_prompt(context, user_id),
+                    when=5,
+                    data={'user_id': user_id}
+                )
+                return SET_COMMISSIONS
+            update_setting("cryptobot_commission", cryptobot)
+            update_setting("ton_commission", ton)
+            update_setting("card_commission", card)
+            log_admin_action(user_id, f"Set commissions: cryptobot={cryptobot}%, ton={ton}%, card={card}%")
+            message = await update.message.reply_text(
+                get_text("commissions_set", user_id, cryptobot=cryptobot, ton=ton, card=card)
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            await show_main_menu(update, context)
+            return ConversationHandler.END
+        except ValueError:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("commissions_format", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            return SET_COMMISSIONS
+
+    elif state == 'set_review_channel' and await is_admin(user_id):
+        if not text.startswith('@'):
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("invalid_channel", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            return SET_REVIEW_CHANNEL
+        update_setting("review_channel", text)
+        log_admin_action(user_id, f"Set review channel: {text}")
         message = await update.message.reply_text(
-            get_text("price_set", user_id, price_usd=price_usd, stars=stars),
-            reply_markup=reply_markup
+            get_text("channel_set", user_id, channel=text)
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1547,35 +1697,28 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             when=5,
             data={'user_id': user_id}
         )
+        await show_main_menu(update, context)
         return ConversationHandler.END
-    except ValueError:
-        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await update.message.reply_text(
-            get_text("price_format", user_id),
-            reply_markup=reply_markup
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        context.job_queue.run_once(
-            callback=lambda x: delete_input_prompt(context, user_id),
-            when=5,
-            data={'user_id': user_id}
-        )
-        return SET_PRICE
 
-elif state == 'set_percent' and await is_admin(user_id):
-    try:
-        ref_bonus, profit = map(float, text.split(":", 1))
-        if not (0 <= ref_bonus <= 100 and 10 <= profit <= 50):
-            raise ValueError("Invalid percentage range.")
-        update_setting("ref_bonus_percent", ref_bonus)
-        update_setting("profit_percent", profit)
-        log_admin_action(user_id, f"Set percentages: ref_bonus={ref_bonus}%, profit={profit}%")
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    elif state == 'set_card_payment' and await is_admin(user_id):
+        if text.lower() not in ('true', 'false'):
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("set_card_payment_prompt", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            return SET_CARD_PAYMENT
+        update_setting("card_payment_enabled", text.lower())
+        log_admin_action(user_id, f"Set card payment: {text.lower()}")
         message = await update.message.reply_text(
-            get_text("percent_set", user_id, ref_bonus=ref_bonus, profit=profit),
-            reply_markup=reply_markup
+            get_text("card_payment_set", user_id, status=text.lower())
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1583,266 +1726,193 @@ elif state == 'set_percent' and await is_admin(user_id):
             when=5,
             data={'user_id': user_id}
         )
+        await show_main_menu(update, context)
         return ConversationHandler.END
-    except ValueError:
-        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await update.message.reply_text(
-            get_text("percent_format", user_id),
-            reply_markup=reply_markup
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        context.job_queue.run_once(
-            callback=lambda x: delete_input_prompt(context, user_id),
-            when=5,
-            data={'user_id': user_id}
-        )
-        return SET_PERCENT
 
-elif state == 'set_commissions' and await is_admin(user_id):
-    try:
-        cryptobot, ton, card = map(float, text.split(":", 2))
-        if not (0 <= cryptobot <= 100 and 0 <= ton <= 100 and 0 <= card <= 100):
-            raise ValueError("Invalid commission range.")
-        update_setting("cryptobot_commission", cryptobot)
-        update_setting("ton_commission", ton)
-        update_setting("card_commission", card)
-        log_admin_action(user_id, f"Set commissions: cryptobot={cryptobot}%, ton={ton}%, card={card}%")
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await update.message.reply_text(
-            get_text("commissions_set", user_id, cryptobot=cryptobot, ton=ton, card=card),
-            reply_markup=reply_markup
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        context.job_queue.run_once(
-            callback=lambda x: delete_input_prompt(context, user_id),
-            when=5,
-            data={'user_id': user_id}
-        )
-        return ConversationHandler.END
-    except ValueError:
-        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await update.message.reply_text(
-            get_text("commissions_format", user_id),
-            reply_markup=reply_markup
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        context.job_queue.run_once(
-            callback=lambda x: delete_input_prompt(context, user_id),
-            when=5,
-            data={'user_id': user_id}
-        )
-        return SET_COMMISSIONS
-
-elif state == 'set_review_channel' and await is_admin(user_id):
-    if not text.startswith('@'):
-        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await update.message.reply_text(
-            get_text("invalid_channel", user_id),
-            reply_markup=reply_markup
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        context.job_queue.run_once(
-            callback=lambda x: delete_input_prompt(context, user_id),
-            when=5,
-            data={'user_id': user_id}
-        )
-        return SET_REVIEW_CHANNEL
-    update_setting("review_channel", text)
-    log_admin_action(user_id, f"Set review channel: {text}")
-    keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    message = await update.message.reply_text(
-        get_text("channel_set", user_id, channel=text),
-        reply_markup=reply_markup
-    )
-    context.user_data['input_prompt_id'] = message.message_id
-    context.job_queue.run_once(
-        callback=lambda x: delete_input_prompt(context, user_id),
-        when=5,
-        data={'user_id': user_id}
-    )
-    return ConversationHandler.END
-
-elif state == 'set_card_payment' and await is_admin(user_id):
-    if text.lower() not in ('true', 'false'):
-        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await update.message.reply_text(
-            get_text("card_payment_format", user_id),
-            reply_markup=reply_markup
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        context.job_queue.run_once(
-            callback=lambda x: delete_input_prompt(context, user_id),
-            when=5,
-            data={'user_id': user_id}
-        )
-        return SET_CARD_PAYMENT
-    enabled = text.lower() == 'true'
-    update_setting("card_payment_enabled", enabled)
-    log_admin_action(user_id, f"Set card payment: {enabled}")
-    keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    message = await update.message.reply_text(
-        get_text("card_payment_set", user_id, status="включена" if enabled else "отключена" if get_user_language(user_id) == 'ru' else "enabled" if enabled else "disabled"),
-        reply_markup=reply_markup
-    )
-    context.user_data['input_prompt_id'] = message.message_id
-    context.job_queue.run_once(
-        callback=lambda x: delete_input_prompt(context, user_id),
-        when=5,
-        data={'user_id': user_id}
-    )
-    return ConversationHandler.END
-
-elif state == 'set_markup' and await is_admin(user_id):
-    try:
-        markup = float(text)
-        if not 0 <= markup <= 100:
-            raise ValueError("Markup must be between 0 and 100.")
-        update_setting("markup_percentage", markup)
-        log_admin_action(user_id, f"Set markup: {markup}%")
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await update.message.reply_text(
-            get_text("markup_set", user_id, markup=markup),
-            reply_markup=reply_markup
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        context.job_queue.run_once(
-            callback=lambda x: delete_input_prompt(context, user_id),
-            when=5,
-            data={'user_id': user_id}
-        )
-        return ConversationHandler.END
-    except ValueError:
-        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message = await update.message.reply_text(
-            get_text("markup_format", user_id),
-            reply_markup=reply_markup
-        )
-        context.user_data['input_prompt_id'] = message.message_id
-        context.job_queue.run_once(
-            callback=lambda x: delete_input_prompt(context, user_id),
-            when=5,
-            data={'user_id': user_id}
-        )
-        return SET_MARKUP
+    elif state == 'set_markup' and await is_admin(user_id):
+        try:
+            markup = float(text)
+            if not (0 <= markup <= 100):
+                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                message = await update.message.reply_text(
+                    get_text("invalid_markup", user_id),
+                    reply_markup=reply_markup
+                )
+                context.user_data['input_prompt_id'] = message.message_id
+                context.job_queue.run_once(
+                    callback=lambda x: delete_input_prompt(context, user_id),
+                    when=5,
+                    data={'user_id': user_id}
+                )
+                return SET_MARKUP
+            update_setting("markup_percentage", markup)
+            log_admin_action(user_id, f"Set markup: {markup}%")
+            message = await update.message.reply_text(
+                get_text("markup_set", user_id, markup=markup)
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            await show_main_menu(update, context)
+            return ConversationHandler.END
+        except ValueError:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("markup_format", user_id)
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            context.job_queue.run_once(
+                callback=lambda x: delete_input_prompt(context, user_id),
+                when=5,
+                data={'user_id': user_id}
+            )
+            return SET_MARKUP
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
-    if update and update.effective_user:
+    if update.effective_user:
         user_id = update.effective_user.id
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=get_text("tech_support", user_id, support_channel=get_setting("support_channel") or "@support_channel")
+                text="⚠️ An error occurred. Please try again later."
             )
         except Exception as e:
             logger.error(f"Failed to send error message to user {user_id}: {e}")
 
+# Регистрация обработчиков
+def setup_handlers(application: Application):
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(button)
+        ],
+        states={
+            CHOOSE_LANGUAGE: [
+                CallbackQueryHandler(button)
+            ],
+            BUY_STARS_USERNAME: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            BUY_STARS_AMOUNT: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            BUY_STARS_PAYMENT_METHOD: [
+                CallbackQueryHandler(button)
+            ],
+            EDIT_TEXT: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            SET_PRICE: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            SET_PERCENT: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            SET_COMMISSIONS: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            SET_REVIEW_CHANNEL: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            SET_CARD_PAYMENT: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            SET_MARKUP: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(button, pattern="^cancel$")
+        ]
+    )
+    application.add_handler(conv_handler)
+    application.add_error_handler(error_handler)
+
+# Команда /cancel
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    input_prompt_id = context.user_data.get('input_prompt_id')
+    buy_menu_id = context.user_data.get('buy_menu_id')
+    
+    if input_prompt_id:
+        try:
+            await context.bot.delete_message(chat_id=user_id, message_id=input_prompt_id)
+        except Exception:
+            pass
+        context.user_data['input_prompt_id'] = None
+    
+    if buy_menu_id:
+        try:
+            await context.bot.delete_message(chat_id=user_id, message_id=buy_menu_id)
+        except Exception:
+            pass
+        context.user_data['buy_menu_id'] = None
+    
+    context.user_data['buy_username'] = None
+    context.user_data['buy_stars'] = None
+    context.user_data['payment_method'] = None
+    context.user_data['input_state'] = None
+    
+    message = await update.message.reply_text(get_text("cancel", user_id))
+    context.user_data['input_prompt_id'] = message.message_id
+    context.job_queue.run_once(
+        callback=lambda x: delete_input_prompt(context, user_id),
+        when=5,
+        data={'user_id': user_id}
+    )
+    await show_main_menu(update, context)
+    return ConversationHandler.END
+
 # Запуск бота
-def main():
+async def main():
     try:
         init_db()
         application = Application.builder().token(BOT_TOKEN).build()
-
-        conv_handler = ConversationHandler(
-            entry_points=[
-                CommandHandler("start", start),
-                CallbackQueryHandler(button)
-            ],
-            states={
-                CHOOSE_LANGUAGE: [CallbackQueryHandler(button)],
-                BUY_STARS_USERNAME: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-                BUY_STARS_AMOUNT: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-                BUY_STARS_PAYMENT_METHOD: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-                EDIT_TEXT: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-                SET_PRICE: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-                SET_PERCENT: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-                SET_COMMISSIONS: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-                SET_REVIEW_CHANNEL: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-                SET_CARD_PAYMENT: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-                SET_MARKUP: [
-                    CallbackQueryHandler(button),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-                ],
-            },
-            fallbacks=[CommandHandler("start", start), CallbackQueryHandler(button, pattern="cancel|back")]
-        )
-
-        application.add_handler(conv_handler)
-        application.add_error_handler(error_handler)
-
-        # Фоновые задачи
+        setup_handlers(application)
+        
+        # Периодическое обновление курса TON
         application.job_queue.run_repeating(
             update_ton_price,
-            interval=600,
+            interval=3600,
             first=0
         )
+        
+        # Запуск проверки оплаты
         application.job_queue.run_repeating(
             payment_checker,
             interval=30,
             first=0
         )
-
-        # Heartbeat для Render
-        instance_id = str(uuid.uuid4())
-        def update_heartbeat():
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO bot_instances (instance_id, last_heartbeat) VALUES (%s, CURRENT_TIMESTAMP) "
-                        "ON CONFLICT (instance_id) DO UPDATE SET last_heartbeat = CURRENT_TIMESTAMP;",
-                        (instance_id,)
-                    )
-                    conn.commit()
-
-        application.job_queue.run_repeating(
-            callback=lambda x: update_heartbeat(),
-            interval=60,
-            first=0
-        )
-
+        
         logger.info("Starting bot...")
-        application.run_polling(timeout=30, poll_interval=30)
-        logger.info("Bot started successfully")
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        
+        # Держим приложение активным
+        while True:
+            await asyncio.sleep(3600)
+            
     except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
+        logger.error(f"Bot failed to start: {e}")
         raise e
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
