@@ -33,10 +33,10 @@ POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL", "postgresq
 SPLIT_API_TOKEN = os.getenv("SPLIT_API_TOKEN")
 OWNER_WALLET = os.getenv("OWNER_WALLET")
 CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN", "417243:AAOX6otWrre07SY0GHWtVXKWrLZxyvFNttV")
-MARKUP_PERCENTAGE = float(os.getenv("MARKUP_PERCENTAGE", 10))  # Наценка 10% по умолчанию
+MARKUP_PERCENTAGE = float(os.getenv("MARKUP_PERCENTAGE", 10))
 
 # Состояния для ConversationHandler
-EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_COMMISSIONS, SET_REVIEW_CHANNEL, SET_CARD_PAYMENT, CHOOSE_LANGUAGE, BUY_STARS_USERNAME, BUY_STARS_AMOUNT, BUY_STARS_PAYMENT_METHOD, SET_MARKUP = range(11)
+EDIT_TEXT, SET_PRICE, SET_PERCENT, SET_COMMISSIONS, SET_REVIEW_CHANNEL, SET_CARD_PAYMENT, CHOOSE_LANGUAGE, BUY_STARS_USERNAME, BUY_STARS_AMOUNT, BUY_STARS_PAYMENT_METHOD, SET_MARKUP, ADD_ADMIN, REMOVE_ADMIN = range(13)
 
 def get_db_connection():
     if not POSTGRES_URL:
@@ -72,8 +72,6 @@ def init_db():
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
-            """)
-            cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     username TEXT NOT NULL,
@@ -88,28 +86,20 @@ def init_db():
                     cryptobot_invoice_id TEXT,
                     language TEXT DEFAULT 'ru'
                 );
-            """)
-            cur.execute("""
                 CREATE TABLE IF NOT EXISTS admin_log (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT,
                     action TEXT NOT NULL,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
-            """)
-            cur.execute("""
                 CREATE TABLE IF NOT EXISTS texts (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
-            """)
-            cur.execute("""
                 CREATE TABLE IF NOT EXISTS bot_instances (
                     instance_id TEXT PRIMARY KEY,
                     last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
-            """)
-            cur.execute("""
                 INSERT INTO settings (key, value)
                 VALUES
                     ('admin_ids', '[6956377285]'),
@@ -130,57 +120,55 @@ def init_db():
                     ('min_stars_purchase', '10'),
                     ('markup_percentage', '{MARKUP_PERCENTAGE}')
                 ON CONFLICT (key) DO NOTHING;
-            """)
-            cur.execute("""
                 INSERT INTO texts (key, value)
                 VALUES
-                    ('welcome_ru', '✨ Добро пожаловать в Stars Bot! Покупайте Telegram Stars быстро и безопасно! 🌟\nПродано звёзд: {total_stars_sold}'),
-                    ('welcome_en', '✨ Welcome to Stars Bot! Buy Telegram Stars quickly and securely! 🌟\nStars sold: {total_stars_sold}'),
-                    ('buy_stars_prompt_ru', '✨ Кому отправить Telegram Stars? Выберите параметры ниже:'),
-                    ('buy_stars_prompt_en', '✨ Who to send Telegram Stars to? Select options below:'),
-                    ('buy_username_prompt_ru', '👤 Введите username получателя (без @):'),
+                    ('welcome_ru', '🌟 Привет! Это Stars Bot — твой помощник для покупки Telegram Stars! 🚀\nПродано звёзд: {total_stars_sold}'),
+                    ('welcome_en', '🌟 Hello! Welcome to Stars Bot — your assistant for buying Telegram Stars! 🚀\nStars sold: {total_stars_sold}'),
+                    ('buy_stars_prompt_ru', '✨ Кому отправить звёзды? Выбери параметры:'),
+                    ('buy_stars_prompt_en', '✨ Who to send stars to? Choose options:'),
+                    ('buy_username_prompt_ru', '👤 Введи username получателя (без @):'),
                     ('buy_username_prompt_en', '👤 Enter recipient username (without @):'),
-                    ('buy_amount_prompt_ru', '🌟 Введите количество звёзд (минимум {min_stars}):'),
-                    ('buy_amount_prompt_en', '🌟 Enter number of stars (minimum {min_stars}):'),
-                    ('buy_payment_method_prompt_ru', '💳 Выберите способ оплаты:'),
+                    ('buy_amount_prompt_ru', '🌟 Сколько звёзд купить? (минимум {min_stars}):'),
+                    ('buy_amount_prompt_en', '🌟 How many stars to buy? (minimum {min_stars}):'),
+                    ('buy_payment_method_prompt_ru', '💳 Выбери способ оплаты:'),
                     ('buy_payment_method_prompt_en', '💳 Choose payment method:'),
-                    ('buy_crypto_method_prompt_ru', '💸 Выберите криптовалюту:'),
+                    ('buy_crypto_method_prompt_ru', '💸 Выбери криптовалюту:'),
                     ('buy_crypto_method_prompt_en', '💸 Choose cryptocurrency:'),
-                    ('buy_cryptobot_prompt_ru', '💸 Оплатите {amount_usd:.2f} USDT через @CryptoBot за {stars} звёзд для @{username}.\nНажмите "Оплатить" для создания счёта.'),
-                    ('buy_cryptobot_prompt_en', '💸 Pay {amount_usd:.2f} USDT via @CryptoBot for {stars} stars to @{username}.\nClick "Pay" to create invoice.'),
-                    ('buy_card_prompt_ru', '💳 Оплатите {amount_usd:.2f} USD картой через @CryptoBot за {stars} звёзд для @{username}.\nНажмите "Оплатить" для создания счёта.'),
-                    ('buy_card_prompt_en', '💳 Pay {amount_usd:.2f} USD by card via @CryptoBot for {stars} stars to @{username}.\nClick "Pay" to create invoice.'),
-                    ('buy_ton_prompt_ru', '💸 Оплатите {amount_ton:.6f} TON через TON Wallet за {stars} звёзд для @{username}.\n📍 Адрес: {address}\n📝 Memo: {memo}'),
+                    ('buy_cryptobot_prompt_ru', '💸 Оплати {amount_usd:.2f} USDT через @CryptoBot за {stars} звёзд для @{username}.'),
+                    ('buy_cryptobot_prompt_en', '💸 Pay {amount_usd:.2f} USDT via @CryptoBot for {stars} stars to @{username}.'),
+                    ('buy_card_prompt_ru', '💳 Оплати {amount_usd:.2f} USD картой за {stars} звёзд для @{username}.'),
+                    ('buy_card_prompt_en', '💳 Pay {amount_usd:.2f} USD by card for {stars} stars to @{username}.'),
+                    ('buy_ton_prompt_ru', '💸 Оплати {amount_ton:.6f} TON через TON Wallet за {stars} звёзд для @{username}.\n📍 Адрес: {address}\n📝 Memo: {memo}'),
                     ('buy_ton_prompt_en', '💸 Pay {amount_ton:.6f} TON via TON Wallet for {stars} stars to @{username}.\n📍 Address: {address}\n📝 Memo: {memo}'),
-                    ('buy_success_ru', '🎉 Оплата прошла успешно! @{username} получил {stars} звёзд!'),
+                    ('buy_success_ru', '🎉 Оплата прошла! @{username} получил {stars} звёзд!'),
                     ('buy_success_en', '🎉 Payment successful! @{username} received {stars} stars!'),
-                    ('buy_invalid_username_ru', '⚠️ Неверный username. Введите без @.'),
+                    ('buy_invalid_username_ru', '⚠️ Неверный username. Введи без @.'),
                     ('buy_invalid_username_en', '⚠️ Invalid username. Enter without @.'),
-                    ('buy_invalid_amount_ru', '⚠️ Количество звёзд должно быть числом не менее {min_stars}.'),
-                    ('buy_invalid_amount_en', '⚠️ Number of stars must be a number not less than {min_stars}.'),
-                    ('buy_card_disabled_ru', '⚠️ Оплата картой временно недоступна.'),
+                    ('buy_invalid_amount_ru', '⚠️ Количество звёзд должно быть не менее {min_stars}.'),
+                    ('buy_invalid_amount_en', '⚠️ Number of stars must be at least {min_stars}.'),
+                    ('buy_card_disabled_ru', '⚠️ Оплата картой сейчас недоступна.'),
                     ('buy_card_disabled_en', '⚠️ Card payment is currently unavailable.'),
-                    ('buy_error_fill_fields_ru', '⚠️ Заполните все поля: имя, количество звёзд, способ оплаты.'),
-                    ('buy_error_fill_fields_en', '⚠️ Fill all fields: name, number of stars, payment method.'),
-                    ('buy_error_cryptobot_ru', '⚠️ Не удалось создать счёт в @CryptoBot. Попробуйте позже.'),
+                    ('buy_error_fill_fields_ru', '⚠️ Заполни все поля: username, количество звёзд, способ оплаты.'),
+                    ('buy_error_fill_fields_en', '⚠️ Fill all fields: username, number of stars, payment method.'),
+                    ('buy_error_cryptobot_ru', '⚠️ Ошибка создания счёта в @CryptoBot. Попробуй позже.'),
                     ('buy_error_cryptobot_en', '⚠️ Failed to create invoice in @CryptoBot. Try again later.'),
-                    ('ref_info_ru', '💰 Реферальный бонус: {ref_bonus_ton:.6f} TON\n🔗 Ваша ссылка: t.me/{bot_username}?start=ref_{user_id}\n👥 Рефералов: {ref_count}'),
+                    ('ref_info_ru', '💰 Реферальный бонус: {ref_bonus_ton:.6f} TON\n🔗 Твоя ссылка: t.me/{bot_username}?start=ref_{user_id}\n👥 Рефералов: {ref_count}'),
                     ('ref_info_en', '💰 Referral bonus: {ref_bonus_ton:.6f} TON\n🔗 Your link: t.me/{bot_username}?start=ref_{user_id}\n👥 Referrals: {ref_count}'),
-                    ('tech_support_ru', '📞 Нужна помощь? Напишите в техподдержку: {support_channel}'),
+                    ('tech_support_ru', '📞 Нужна помощь? Пиши в поддержку: {support_channel}'),
                     ('tech_support_en', '📞 Need help? Contact support: {support_channel}'),
-                    ('reviews_ru', '⭐️ Поделитесь впечатлениями: {review_channel}'),
-                    ('reviews_en', '⭐️ Share your feedback: {review_channel}'),
-                    ('choose_language_ru', '🌐 Выберите язык:'),
+                    ('reviews_ru', '⭐️ Оставь отзыв: {review_channel}'),
+                    ('reviews_en', '⭐️ Share feedback: {review_channel}'),
+                    ('choose_language_ru', '🌐 Выбери язык:'),
                     ('choose_language_en', '🌐 Choose language:'),
-                    ('profile_ru', '👤 Профиль: @{username}\n🌟 Куплено звёзд: {stars_bought}\n💰 Реф. бонус: {ref_bonus_ton:.6f} TON'),
-                    ('profile_en', '👤 Profile: @{username}\n🌟 Stars bought: {stars_bought}\n💰 Ref. bonus: {ref_bonus_ton:.6f} TON'),
-                    ('top_referrals_ru', '🏆 Топ-10 рефералов:'),
-                    ('top_referrals_en', '🏆 Top-10 referrers:'),
-                    ('top_purchases_ru', '🏆 Топ-10 покупок:'),
-                    ('top_purchases_en', '🏆 Top-10 purchases:'),
-                    ('no_referrals_ru', '😔 Пока нет рефералов.'),
+                    ('profile_ru', '👤 Профиль: @{username}\n🌟 Куплено звёзд: {stars_bought}\n💰 Бонус: {ref_bonus_ton:.6f} TON'),
+                    ('profile_en', '👤 Profile: @{username}\n🌟 Stars bought: {stars_bought}\n💰 Bonus: {ref_bonus_ton:.6f} TON'),
+                    ('top_referrals_ru', '🏆 Топ-5 рефералов:'),
+                    ('top_referrals_en', '🏆 Top-5 referrers:'),
+                    ('top_purchases_ru', '🏆 Топ-5 покупок:'),
+                    ('top_purchases_en', '🏆 Top-5 purchases:'),
+                    ('no_referrals_ru', '😔 Рефералов пока нет.'),
                     ('no_referrals_en', '😔 No referrers yet.'),
-                    ('no_purchases_ru', '😔 Пока нет покупок.'),
+                    ('no_purchases_ru', '😔 Покупок пока нет.'),
                     ('no_purchases_en', '😔 No purchases yet.'),
                     ('buy_stars_btn_ru', '🌟 Купить звёзды'),
                     ('buy_stars_btn_en', '🌟 Buy stars'),
@@ -188,7 +176,7 @@ def init_db():
                     ('profile_btn_en', '👤 Profile'),
                     ('referrals_btn_ru', '🔗 Рефералы'),
                     ('referrals_btn_en', '🔗 Referrals'),
-                    ('tech_support_btn_ru', '📞 Техподдержка'),
+                    ('tech_support_btn_ru', '📞 Поддержка'),
                     ('tech_support_btn_en', '📞 Support'),
                     ('reviews_btn_ru', '⭐️ Отзывы'),
                     ('reviews_btn_en', '⭐️ Reviews'),
@@ -196,86 +184,104 @@ def init_db():
                     ('admin_panel_btn_en', '⚙️ Admin panel'),
                     ('back_btn_ru', '◀️ Назад'),
                     ('back_btn_en', '◀️ Back'),
-                    ('cancel_btn_ru', '❌ Отменить'),
+                    ('cancel_btn_ru', '❌ Отмена'),
                     ('cancel_btn_en', '❌ Cancel'),
-                    ('edit_text_btn_ru', '✏️ Редактировать текст'),
-                    ('edit_text_btn_en', '✏️ Edit text'),
-                    ('set_price_btn_ru', '💵 Установить цену'),
-                    ('set_price_btn_en', '💵 Set price'),
-                    ('set_percent_btn_ru', '📊 Установить проценты'),
-                    ('set_percent_btn_en', '📊 Set percentages'),
-                    ('set_commissions_btn_ru', '💸 Установить комиссии'),
-                    ('set_commissions_btn_en', '💸 Set commissions'),
-                    ('set_review_channel_btn_ru', '📢 Установить канал отзывов'),
-                    ('set_review_channel_btn_en', '📢 Set review channel'),
-                    ('set_card_payment_btn_ru', '💳 Настроить оплату картой'),
-                    ('set_card_payment_btn_en', '💳 Configure card payment'),
-                    ('set_markup_btn_ru', '📈 Установить наценку'),
-                    ('set_markup_btn_en', '📈 Set markup'),
-                    ('stats_btn_ru', '📈 Статистика'),
-                    ('stats_btn_en', '📈 Statistics'),
-                    ('reset_profit_btn_ru', '🔄 Сбросить прибыль'),
-                    ('reset_profit_btn_en', '🔄 Reset profit'),
-                    ('edit_text_prompt_ru', '✏️ Введите: key:value\nНапример: welcome_ru:Новый текст'),
+                    ('edit_text_btn_ru', '✏️ Тексты'),
+                    ('edit_text_btn_en', '✏️ Texts'),
+                    ('set_price_btn_ru', '💵 Цена'),
+                    ('set_price_btn_en', '💵 Price'),
+                    ('set_percent_btn_ru', '📊 Проценты'),
+                    ('set_percent_btn_en', '📊 Percentages'),
+                    ('set_commissions_btn_ru', '💸 Комиссии'),
+                    ('set_commissions_btn_en', '💸 Commissions'),
+                    ('set_review_channel_btn_ru', '📢 Канал отзывов'),
+                    ('set_review_channel_btn_en', '📢 Review channel'),
+                    ('set_card_payment_btn_ru', '💳 Оплата картой'),
+                    ('set_card_payment_btn_en', '💳 Card payment'),
+                    ('set_markup_btn_ru', '📈 Наценка'),
+                    ('set_markup_btn_en', '📈 Markup'),
+                    ('stats_btn_ru', '📊 Статистика'),
+                    ('stats_btn_en', '📊 Statistics'),
+                    ('manage_admins_btn_ru', '👑 Управление админами'),
+                    ('manage_admins_btn_en', '👑 Manage admins'),
+                    ('add_admin_btn_ru', '➕ Добавить админа'),
+                    ('add_admin_btn_en', '➕ Add admin'),
+                    ('remove_admin_btn_ru', '➖ Удалить админа'),
+                    ('remove_admin_btn_en', '➖ Remove admin'),
+                    ('edit_text_prompt_ru', '✏️ Введи: key:value\nПример: welcome_ru:Новый текст'),
                     ('edit_text_prompt_en', '✏️ Enter: key:value\nExample: welcome_en:New text'),
-                    ('set_price_prompt_ru', '💵 Введите: price_usd:stars\nНапример: 0.81:50'),
+                    ('set_price_prompt_ru', '💵 Введи: price_usd:stars\nПример: 0.81:50'),
                     ('set_price_prompt_en', '💵 Enter: price_usd:stars\nExample: 0.81:50'),
-                    ('set_percent_prompt_ru', '📊 Введите: ref_bonus:profit\nНапример: 30:20'),
+                    ('set_percent_prompt_ru', '📊 Введи: ref_bonus:profit\nПример: 30:20'),
                     ('set_percent_prompt_en', '📊 Enter: ref_bonus:profit\nExample: 30:20'),
-                    ('set_commissions_prompt_ru', '💸 Введите: cryptobot:ton:card\nНапример: 25:20:30'),
+                    ('set_commissions_prompt_ru', '💸 Введи: cryptobot:ton:card\nПример: 25:20:30'),
                     ('set_commissions_prompt_en', '💸 Enter: cryptobot:ton:card\nExample: 25:20:30'),
-                    ('set_review_channel_prompt_ru', '📢 Введите: @channel\nНапример: @sacoectasy'),
+                    ('set_review_channel_prompt_ru', '📢 Введи: @channel\nПример: @sacoectasy'),
                     ('set_review_channel_prompt_en', '📢 Enter: @channel\nExample: @sacoectasy'),
-                    ('set_card_payment_prompt_ru', '💳 Введите: enabled (true/false)\nНапример: true'),
-                    ('set_card_payment_prompt_en', '💳 Enter: enabled (true/false)\nExample: true'),
-                    ('set_markup_prompt_ru', '📈 Введите: markup_percentage\nНапример: 10'),
+                    ('set_card_payment_prompt_ru', '💳 Введи: true/false\nПример: true'),
+                    ('set_card_payment_prompt_en', '💳 Enter: true/false\nExample: true'),
+                    ('set_markup_prompt_ru', '📈 Введи: markup_percentage\nПример: 10'),
                     ('set_markup_prompt_en', '📈 Enter: markup_percentage\nExample: 10'),
+                    ('add_admin_prompt_ru', '👑 Введи ID пользователя для добавления в админы:'),
+                    ('add_admin_prompt_en', '👑 Enter user ID to add as admin:'),
+                    ('remove_admin_prompt_ru', '👑 Введи ID пользователя для удаления из админов:'),
+                    ('remove_admin_prompt_en', '👑 Enter user ID to remove from admins:'),
                     ('access_denied_ru', '🚫 Доступ запрещён.'),
                     ('access_denied_en', '🚫 Access denied.'),
-                    ('invalid_text_key_ru', '⚠️ Неверный ключ текста. Используйте _ru или _en.'),
-                    ('invalid_text_key_en', '⚠️ Invalid text key. Use _ru or _en.'),
+                    ('invalid_text_key_ru', '⚠️ Неверный ключ. Используй _ru или _en.'),
+                    ('invalid_text_key_en', '⚠️ Invalid key. Use _ru or _en.'),
                     ('text_updated_ru', '✅ Текст обновлён: {key}'),
                     ('text_updated_en', '✅ Text updated: {key}'),
                     ('text_format_ru', '⚠️ Формат: key:value'),
                     ('text_format_en', '⚠️ Format: key:value'),
                     ('invalid_price_ru', '⚠️ Неверная цена или количество звёзд.'),
                     ('invalid_price_en', '⚠️ Invalid price or stars amount.'),
-                    ('price_set_ru', '✅ Цена установлена: ${price_usd} за {stars} звёзд'),
-                    ('price_set_en', '✅ Price set: ${price_usd} for {stars} stars'),
+                    ('price_set_ru', '✅ Установлено: ${price_usd} за {stars} звёзд'),
+                    ('price_set_en', '✅ Set: ${price_usd} for {stars} stars'),
                     ('price_format_ru', '⚠️ Формат: price_usd:stars'),
                     ('price_format_en', '⚠️ Format: price_usd:stars'),
-                    ('invalid_percent_ru', '⚠️ Проценты должны быть: ref_bonus 0-100, profit 10-50.'),
-                    ('invalid_percent_en', '⚠️ Percentages must be: ref_bonus 0-100, profit 10-50.'),
-                    ('percent_set_ru', '✅ Проценты установлены: реф. бонус {ref_bonus}%, прибыль {profit}%'),
-                    ('percent_set_en', '✅ Percentages set: ref. bonus {ref_bonus}%, profit {profit}%'),
+                    ('invalid_percent_ru', '⚠️ Проценты: ref_bonus 0-100, profit 10-50.'),
+                    ('invalid_percent_en', '⚠️ Percentages: ref_bonus 0-100, profit 10-50.'),
+                    ('percent_set_ru', '✅ Установлено: бонус {ref_bonus}%, прибыль {profit}%'),
+                    ('percent_set_en', '✅ Set: bonus {ref_bonus}%, profit {profit}%'),
                     ('percent_format_ru', '⚠️ Формат: ref_bonus:profit'),
                     ('percent_format_en', '⚠️ Format: ref_bonus:profit'),
-                    ('invalid_commissions_ru', '⚠️ Комиссии должны быть: cryptobot 0-100, ton 0-100, card 0-100.'),
-                    ('invalid_commissions_en', '⚠️ Commissions must be: cryptobot 0-100, ton 0-100, card 0-100.'),
-                    ('commissions_set_ru', '✅ Комиссии установлены: @CryptoBot {cryptobot}%, TON {ton}%, Card {card}%'),
-                    ('commissions_set_en', '✅ Commissions set: @CryptoBot {cryptobot}%, TON {ton}%, Card {card}%'),
+                    ('invalid_commissions_ru', '⚠️ Комиссии: cryptobot 0-100, ton 0-100, card 0-100.'),
+                    ('invalid_commissions_en', '⚠️ Commissions: cryptobot 0-100, ton 0-100, card 0-100.'),
+                    ('commissions_set_ru', '✅ Установлено: CryptoBot {cryptobot}%, TON {ton}%, Card {card}%'),
+                    ('commissions_set_en', '✅ Set: CryptoBot {cryptobot}%, TON {ton}%, Card {card}%'),
                     ('commissions_format_ru', '⚠️ Формат: cryptobot:ton:card'),
                     ('commissions_format_en', '⚠️ Format: cryptobot:ton:card'),
-                    ('invalid_markup_ru', '⚠️ Наценка должна быть числом от 0 до 100.'),
-                    ('invalid_markup_en', '⚠️ Markup must be a number between 0 and 100.'),
-                    ('markup_set_ru', '✅ Наценка установлена: {markup}%'),
-                    ('markup_set_en', '✅ Markup set: {markup}%'),
+                    ('invalid_markup_ru', '⚠️ Наценка должна быть от 0 до 100.'),
+                    ('invalid_markup_en', '⚠️ Markup must be between 0 and 100.'),
+                    ('markup_set_ru', '✅ Наценка: {markup}%'),
+                    ('markup_set_en', '✅ Markup: {markup}%'),
                     ('markup_format_ru', '⚠️ Формат: markup_percentage'),
                     ('markup_format_en', '⚠️ Format: markup_percentage'),
-                    ('invalid_channel_ru', '⚠️ Неверный канал. Используйте @channel.'),
+                    ('invalid_channel_ru', '⚠️ Неверный канал. Используй @channel.'),
                     ('invalid_channel_en', '⚠️ Invalid channel. Use @channel.'),
-                    ('channel_set_ru', '✅ Канал установлен: {channel}'),
-                    ('channel_set_en', '✅ Channel set: {channel}'),
+                    ('channel_set_ru', '✅ Канал: {channel}'),
+                    ('channel_set_en', '✅ Channel: {channel}'),
                     ('channel_format_ru', '⚠️ Формат: @channel'),
                     ('channel_format_en', '⚠️ Format: @channel'),
-                    ('stats_ru', '📈 Статистика:\n🌟 Звёзд продано: {total_stars_sold}\n💵 Прибыль USD: ${total_profit_usd:.2f}\n💰 Прибыль TON: {total_profit_ton:.6f}'),
-                    ('stats_en', '📈 Statistics:\n🌟 Stars sold: {total_stars_sold}\n💵 Profit USD: ${total_profit_usd:.2f}\n💰 Profit TON: {total_profit_ton:.6f}'),
+                    ('stats_ru', '📊 Статистика:\n🌟 Продано: {total_stars_sold} звёзд\n💵 Прибыль: ${total_profit_usd:.2f}\n💰 TON: {total_profit_ton:.6f}'),
+                    ('stats_en', '📊 Statistics:\n🌟 Sold: {total_stars_sold} stars\n💵 Profit: ${total_profit_usd:.2f}\n💰 TON: {total_profit_ton:.6f}'),
                     ('reset_profit_ru', '✅ Прибыль сброшена.'),
                     ('reset_profit_en', '✅ Profit reset.'),
                     ('cancel_ru', '❌ Операция отменена.'),
                     ('cancel_en', '❌ Operation cancelled.'),
                     ('card_payment_set_ru', '✅ Оплата картой: {status}'),
-                    ('card_payment_set_en', '✅ Card payment: {status}')
+                    ('card_payment_set_en', '✅ Card payment: {status}'),
+                    ('admin_added_ru', '✅ Пользователь {user_id} добавлен в админы.'),
+                    ('admin_added_en', '✅ User {user_id} added as admin.'),
+                    ('admin_removed_ru', '✅ Пользователь {user_id} удалён из админов.'),
+                    ('admin_removed_en', '✅ User {user_id} removed from admins.'),
+                    ('invalid_admin_id_ru', '⚠️ Неверный ID пользователя.'),
+                    ('invalid_admin_id_en', '⚠️ Invalid user ID.'),
+                    ('admin_already_exists_ru', '⚠️ Пользователь {user_id} уже админ.'),
+                    ('admin_already_exists_en', '⚠️ User {user_id} is already an admin.'),
+                    ('admin_not_found_ru', '⚠️ Пользователь {user_id} не является админом.'),
+                    ('admin_not_found_en', '⚠️ User {user_id} is not an admin.')
                 ON CONFLICT (key) DO NOTHING;
             """)
             conn.commit()
@@ -585,6 +591,40 @@ def get_user_data(user_id, field):
                 return result[0]
     return None
 
+# Добавление администратора
+async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not await is_admin(user_id):
+        await update.message.reply_text(get_text("access_denied", user_id))
+        return ConversationHandler.END
+    
+    keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    message = await update.message.reply_text(
+        get_text("add_admin_prompt", user_id),
+        reply_markup=reply_markup
+    )
+    context.user_data['input_prompt_id'] = message.message_id
+    context.user_data['input_state'] = 'add_admin'
+    return ADD_ADMIN
+
+# Удаление администратора
+async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not await is_admin(user_id):
+        await update.message.reply_text(get_text("access_denied", user_id))
+        return ConversationHandler.END
+    
+    keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    message = await update.message.reply_text(
+        get_text("remove_admin_prompt", user_id),
+        reply_markup=reply_markup
+    )
+    context.user_data['input_prompt_id'] = message.message_id
+    context.user_data['input_state'] = 'remove_admin'
+    return REMOVE_ADMIN
+
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -632,7 +672,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # Удаляем предыдущее главное меню
     last_main_menu_id = context.user_data.get('last_main_menu_id')
     if last_main_menu_id:
         try:
@@ -668,7 +707,6 @@ async def show_buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stars = context.user_data.get('buy_stars', '####')
     payment_method = context.user_data.get('payment_method', '####')
     
-    # Расчёт стоимости с наценкой
     base_price_usd = float(get_setting("stars_price_usd") or 0.81) * (int(stars) / 50 if stars != '####' else 1)
     markup = float(get_setting("markup_percentage") or MARKUP_PERCENTAGE)
     price_usd = base_price_usd * (1 + markup / 100)
@@ -693,7 +731,6 @@ async def show_buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Удаляем предыдущее меню покупки
     buy_menu_id = context.user_data.get('buy_menu_id')
     if buy_menu_id:
         try:
@@ -701,7 +738,6 @@ async def show_buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
     
-    # Удаляем предыдущее сообщение запроса
     input_prompt_id = context.user_data.get('input_prompt_id')
     if input_prompt_id:
         try:
@@ -710,14 +746,12 @@ async def show_buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         context.user_data['input_prompt_id'] = None
     
-    # Отправляем новое меню
     message = await (update.message or update.callback_query.message).reply_text(
         get_text("buy_stars_prompt", user_id),
         reply_markup=reply_markup
     )
     context.user_data['buy_menu_id'] = message.message_id
     
-    # Таймер удаления 30 секунд
     context.job_queue.run_once(
         callback=lambda x: delete_buy_menu(context, user_id),
         when=30,
@@ -752,7 +786,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.answer()
     
-    # Удалить главное меню при переходе в подменю
     last_main_menu_id = context.user_data.get('last_main_menu_id')
     if last_main_menu_id:
         try:
@@ -961,7 +994,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_buy_menu(update, context)
             return BUY_STARS_USERNAME
         
-        # Расчёт стоимости с наценкой
         base_price_usd = float(get_setting("stars_price_usd") or 0.81) * (int(stars) / 50)
         markup = float(get_setting("markup_percentage") or MARKUP_PERCENTAGE)
         price_usd = base_price_usd * (1 + markup / 100)
@@ -1093,7 +1125,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data={'user_id': user_id}
                 )
             else:
-                message = await query.message.reply_text("❌ Не удалось выдать звёзды. Обратитесь в техподдержку.")
+                message = await query.message.reply_text("❌ Не удалось выдать звёзды. Обратитесь в поддержку.")
                 context.user_data['input_prompt_id'] = message.message_id
                 context.job_queue.run_once(
                     callback=lambda x: delete_input_prompt(context, user_id),
@@ -1102,7 +1134,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             await show_main_menu(update, context)
         else:
-            message = await query.message.reply_text("⚠️ Оплата не подтверждена. Попробуйте снова.")
+            message = await query.message.reply_text("⚠️ Оплата не подтверждена. Попробуй снова.")
             context.user_data['input_prompt_id'] = message.message_id
             context.job_queue.run_once(
                 callback=lambda x: delete_input_prompt(context, user_id),
@@ -1264,15 +1296,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "admin_panel" and await is_admin(user_id):
         keyboard = [
-            [InlineKeyboardButton(get_text("edit_text_btn", user_id), callback_data="edit_text")],
-            [InlineKeyboardButton(get_text("set_price_btn", user_id), callback_data="set_price")],
-            [InlineKeyboardButton(get_text("set_percent_btn", user_id), callback_data="set_percent")],
-            [InlineKeyboardButton(get_text("set_commissions_btn", user_id), callback_data="set_commissions")],
-            [InlineKeyboardButton(get_text("set_review_channel_btn", user_id), callback_data="set_review_channel")],
-            [InlineKeyboardButton(get_text("set_card_payment_btn", user_id), callback_data="set_card_payment")],
-            [InlineKeyboardButton(get_text("set_markup_btn", user_id), callback_data="set_markup")],
-            [InlineKeyboardButton(get_text("stats_btn", user_id), callback_data="stats")],
-            [InlineKeyboardButton(get_text("reset_profit_btn", user_id), callback_data="reset_profit")],
+            [InlineKeyboardButton(get_text("edit_text_btn", user_id), callback_data="edit_text"),
+             InlineKeyboardButton(get_text("set_price_btn", user_id), callback_data="set_price")],
+            [InlineKeyboardButton(get_text("set_percent_btn", user_id), callback_data="set_percent"),
+             InlineKeyboardButton(get_text("set_commissions_btn", user_id), callback_data="set_commissions")],
+            [InlineKeyboardButton(get_text("set_review_channel_btn", user_id), callback_data="set_review_channel"),
+             InlineKeyboardButton(get_text("set_card_payment_btn", user_id), callback_data="set_card_payment")],
+            [InlineKeyboardButton(get_text("set_markup_btn", user_id), callback_data="set_markup"),
+             InlineKeyboardButton(get_text("stats_btn", user_id), callback_data="stats")],
+            [InlineKeyboardButton(get_text("manage_admins_btn", user_id), callback_data="manage_admins")],
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1284,6 +1316,43 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data={'user_id': user_id}
         )
     
+    elif query.data == "manage_admins" and await is_admin(user_id):
+        keyboard = [
+            [InlineKeyboardButton(get_text("add_admin_btn", user_id), callback_data="add_admin"),
+             InlineKeyboardButton(get_text("remove_admin_btn", user_id), callback_data="remove_admin")],
+            [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        message = await query.message.reply_text("👑 Управление админами", reply_markup=reply_markup)
+        context.user_data['input_prompt_id'] = message.message_id
+        context.job_queue.run_once(
+            callback=lambda x: delete_input_prompt(context, user_id),
+            when=5,
+            data={'user_id': user_id}
+        )
+    
+    elif query.data == "add_admin" and await is_admin(user_id):
+        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        message = await query.message.reply_text(
+            get_text("add_admin_prompt", user_id),
+            reply_markup=reply_markup
+        )
+        context.user_data['input_prompt_id'] = message.message_id
+        context.user_data['input_state'] = 'add_admin'
+        return ADD_ADMIN
+    
+    elif query.data == "remove_admin" and await is_admin(user_id):
+        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        message = await query.message.reply_text(
+            get_text("remove_admin_prompt", user_id),
+            reply_markup=reply_markup
+        )
+        context.user_data['input_prompt_id'] = message.message_id
+        context.user_data['input_state'] = 'remove_admin'
+        return REMOVE_ADMIN
+    
     elif query.data == "edit_text" and await is_admin(user_id):
         keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1291,7 +1360,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_text("edit_text_prompt", user_id),
             reply_markup=reply_markup
         )
-        
         context.user_data['input_prompt_id'] = message.message_id
         context.user_data['input_state'] = 'edit_text'
         return EDIT_TEXT
@@ -1303,7 +1371,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_text("set_price_prompt", user_id),
             reply_markup=reply_markup
         )
-        
         context.user_data['input_prompt_id'] = message.message_id
         context.user_data['input_state'] = 'set_price'
         return SET_PRICE
@@ -1315,7 +1382,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_text("set_percent_prompt", user_id),
             reply_markup=reply_markup
         )
-        
         context.user_data['input_prompt_id'] = message.message_id
         context.user_data['input_state'] = 'set_percent'
         return SET_PERCENT
@@ -1327,7 +1393,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_text("set_commissions_prompt", user_id),
             reply_markup=reply_markup
         )
-        
         context.user_data['input_prompt_id'] = message.message_id
         context.user_data['input_state'] = 'set_commissions'
         return SET_COMMISSIONS
@@ -1339,7 +1404,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_text("set_review_channel_prompt", user_id),
             reply_markup=reply_markup
         )
-        
         context.user_data['input_prompt_id'] = message.message_id
         context.user_data['input_state'] = 'set_review_channel'
         return SET_REVIEW_CHANNEL
@@ -1351,7 +1415,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_text("set_card_payment_prompt", user_id),
             reply_markup=reply_markup
         )
-        
         context.user_data['input_prompt_id'] = message.message_id
         context.user_data['input_state'] = 'set_card_payment'
         return SET_CARD_PAYMENT
@@ -1363,7 +1426,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_text("set_markup_prompt", user_id),
             reply_markup=reply_markup
         )
-        
         context.user_data['input_prompt_id'] = message.message_id
         context.user_data['input_state'] = 'set_markup'
         return SET_MARKUP
@@ -1375,20 +1437,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
-        
         reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("stats", user_id, total_stars_sold=total_stars_sold, total_profit_usd=total_profit_usd, total_profit_ton=total_profit_ton),
             reply_markup=reply_markup
         )
-        
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
             callback=lambda x: delete_input_prompt(context, user_id),
             when=5,
             data={'user_id': user_id}
         )
-        
+    
     elif query.data == "reset_profit" and await is_admin(user_id):
         update_setting("total_profit_usd", "0")
         update_setting("total_profit_ton", "0")
@@ -1396,20 +1456,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]
         ]
-        
         reply_markup = InlineKeyboardMarkup(keyboard)
         message = await query.message.reply_text(
             get_text("reset_profit", user_id),
             reply_markup=reply_markup
         )
-        
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
             callback=lambda x: delete_input_prompt(context, user_id),
             when=5,
             data={'user_id': user_id}
         )
-        
+
 # Обработка текстового ввода
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1432,7 +1490,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == 'buy_username':
         if text.startswith('@'):
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+                        reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
                 get_text("buy_invalid_username", user_id),
                 reply_markup=reply_markup
@@ -1447,7 +1505,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['buy_username'] = text
         await show_buy_menu(update, context)
         return BUY_STARS_USERNAME
-    
+
     elif state == 'buy_amount':
         try:
             stars = int(text)
@@ -1473,7 +1531,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
-                get_text("buy_invalid_amount", user_id, min_stars=min_stars),
+                get_text("buy_invalid_amount", user_id, min_stars=get_setting("min_stars_purchase") or 10),
                 reply_markup=reply_markup
             )
             context.user_data['input_prompt_id'] = message.message_id
@@ -1485,38 +1543,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return BUY_STARS_AMOUNT
 
     elif state == 'edit_text' and await is_admin(user_id):
-        try:
-            key, value = text.split(':', 1)
-            key = key.strip()
-            value = value.strip()
-            if not key.endswith(('_ru', '_en')):
-                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                message = await update.message.reply_text(
-                    get_text("invalid_text_key", user_id),
-                    reply_markup=reply_markup
-                )
-                context.user_data['input_prompt_id'] = message.message_id
-                context.job_queue.run_once(
-                    callback=lambda x: delete_input_prompt(context, user_id),
-                    when=5,
-                    data={'user_id': user_id}
-                )
-                return EDIT_TEXT
-            update_text(key, value)
-            log_admin_action(user_id, f"Edited text: {key}")
-            message = await update.message.reply_text(
-                get_text("text_updated", user_id, key=key)
-            )
-            context.user_data['input_prompt_id'] = message.message_id
-            context.job_queue.run_once(
-                callback=lambda x: delete_input_prompt(context, user_id),
-                when=5,
-                data={'user_id': user_id}
-            )
-            await show_main_menu(update, context)
-            return ConversationHandler.END
-        except ValueError:
+        if ':' not in text or len(text.split(':', 1)) != 2:
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
@@ -1524,30 +1551,47 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
             context.user_data['input_prompt_id'] = message.message_id
-            context.job_queue.run_once(
-                callback=lambda x: delete_input_prompt(context, user_id),
-                when=5,
-                data={'user_id': user_id}
-            )
             return EDIT_TEXT
+        key, value = text.split(':', 1)
+        key = key.strip()
+        value = value.strip()
+        if not key.endswith(('_ru', '_en')):
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("invalid_text_key", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            return EDIT_TEXT
+        update_text(key, value)
+        log_admin_action(user_id, f"Edited text: {key}")
+        message = await update.message.reply_text(
+            get_text("text_updated", user_id, key=key)
+        )
+        context.user_data['input_prompt_id'] = message.message_id
+        context.job_queue.run_once(
+            callback=lambda x: delete_input_prompt(context, user_id),
+            when=5,
+            data={'user_id': user_id}
+        )
+        await show_main_menu(update, context)
+        return ConversationHandler.END
 
     elif state == 'set_price' and await is_admin(user_id):
+        if ':' not in text or len(text.split(':', 1)) != 2:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("price_format", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            return SET_PRICE
         try:
-            price_usd, stars = map(float, text.split(':'))
+            price_usd, stars = map(float, text.split(':', 1))
             if price_usd <= 0 or stars <= 0:
-                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                message = await update.message.reply_text(
-                    get_text("invalid_price", user_id),
-                    reply_markup=reply_markup
-                )
-                context.user_data['input_prompt_id'] = message.message_id
-                context.job_queue.run_once(
-                    callback=lambda x: delete_input_prompt(context, user_id),
-                    when=5,
-                    data={'user_id': user_id}
-                )
-                return SET_PRICE
+                raise ValueError
             update_setting("stars_price_usd", price_usd)
             update_setting("stars_per_purchase", stars)
             log_admin_action(user_id, f"Set price: ${price_usd} for {stars} stars")
@@ -1566,20 +1610,24 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
-                get_text("price_format", user_id),
+                get_text("invalid_price", user_id),
                 reply_markup=reply_markup
             )
             context.user_data['input_prompt_id'] = message.message_id
-            context.job_queue.run_once(
-                callback=lambda x: delete_input_prompt(context, user_id),
-                when=5,
-                data={'user_id': user_id}
-            )
             return SET_PRICE
 
     elif state == 'set_percent' and await is_admin(user_id):
+        if ':' not in text or len(text.split(':', 1)) != 2:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("percent_format", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            return SET_PERCENT
         try:
-            ref_bonus, profit = map(float, text.split(':'))
+            ref_bonus, profit = map(float, text.split(':', 1))
             if not (0 <= ref_bonus <= 100 and 10 <= profit <= 50):
                 keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1588,15 +1636,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=reply_markup
                 )
                 context.user_data['input_prompt_id'] = message.message_id
-                context.job_queue.run_once(
-                    callback=lambda x: delete_input_prompt(context, user_id),
-                    when=5,
-                    data={'user_id': user_id}
-                )
                 return SET_PERCENT
             update_setting("ref_bonus_percent", ref_bonus)
             update_setting("profit_percent", profit)
-            log_admin_action(user_id, f"Set percentages: ref_bonus={ref_bonus}%, profit={profit}%")
+            log_admin_action(user_id, f"Set percentages: ref_bonus {ref_bonus}%, profit {profit}%")
             message = await update.message.reply_text(
                 get_text("percent_set", user_id, ref_bonus=ref_bonus, profit=profit)
             )
@@ -1612,21 +1655,25 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
-                get_text("percent_format", user_id),
+                get_text("invalid_percent", user_id),
                 reply_markup=reply_markup
             )
             context.user_data['input_prompt_id'] = message.message_id
-            context.job_queue.run_once(
-                callback=lambda x: delete_input_prompt(context, user_id),
-                when=5,
-                data={'user_id': user_id}
-            )
             return SET_PERCENT
 
     elif state == 'set_commissions' and await is_admin(user_id):
+        if text.count(':') != 2:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("commissions_format", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            return SET_COMMISSIONS
         try:
             cryptobot, ton, card = map(float, text.split(':'))
-            if not (0 <= cryptobot <= 100 and 0 <= ton <= 100 and 0 <= card <= 100):
+            if not all(0 <= x <= 100 for x in [cryptobot, ton, card]):
                 keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 message = await update.message.reply_text(
@@ -1634,16 +1681,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=reply_markup
                 )
                 context.user_data['input_prompt_id'] = message.message_id
-                context.job_queue.run_once(
-                    callback=lambda x: delete_input_prompt(context, user_id),
-                    when=5,
-                    data={'user_id': user_id}
-                )
                 return SET_COMMISSIONS
             update_setting("cryptobot_commission", cryptobot)
             update_setting("ton_commission", ton)
             update_setting("card_commission", card)
-            log_admin_action(user_id, f"Set commissions: cryptobot={cryptobot}%, ton={ton}%, card={card}%")
+            log_admin_action(user_id, f"Set commissions: CryptoBot {cryptobot}%, TON {ton}%, Card {card}%")
             message = await update.message.reply_text(
                 get_text("commissions_set", user_id, cryptobot=cryptobot, ton=ton, card=card)
             )
@@ -1659,15 +1701,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
-                get_text("commissions_format", user_id),
+                get_text("invalid_commissions", user_id),
                 reply_markup=reply_markup
             )
             context.user_data['input_prompt_id'] = message.message_id
-            context.job_queue.run_once(
-                callback=lambda x: delete_input_prompt(context, user_id),
-                when=5,
-                data={'user_id': user_id}
-            )
             return SET_COMMISSIONS
 
     elif state == 'set_review_channel' and await is_admin(user_id):
@@ -1679,11 +1716,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
             context.user_data['input_prompt_id'] = message.message_id
-            context.job_queue.run_once(
-                callback=lambda x: delete_input_prompt(context, user_id),
-                when=5,
-                data={'user_id': user_id}
-            )
             return SET_REVIEW_CHANNEL
         update_setting("review_channel", text)
         log_admin_action(user_id, f"Set review channel: {text}")
@@ -1708,16 +1740,37 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
             context.user_data['input_prompt_id'] = message.message_id
-            context.job_queue.run_once(
-                callback=lambda x: delete_input_prompt(context, user_id),
-                when=5,
-                data={'user_id': user_id}
-            )
             return SET_CARD_PAYMENT
         update_setting("card_payment_enabled", text.lower())
         log_admin_action(user_id, f"Set card payment: {text.lower()}")
         message = await update.message.reply_text(
             get_text("card_payment_set", user_id, status=text.lower())
+        )
+        context.user_data['input_prompt_id'] = message.message_id
+        context.job_queue.run_once(
+            callback=lambda x: delete_input_prompt(context, user_id)),
+            when=5,
+            data={'user_id': user_id}
+        )
+        await show_main_menu(update, context)
+        return ConversationHandler.END
+
+    elif state == 'set_markup' and await is_admin(user_id):
+    try:
+        markup = float(text)
+        if not 0 <= markup <= 100:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel"))]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("invalid_markup", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            return SET_MARKUP
+        update_setting("markup_percentage", markup)
+        log_admin_action(user_id, f"Set markup: {markup}%")
+        message = await update.message.reply_text(
+            get_text("markup_set", user_id, markup=markup)
         )
         context.user_data['input_prompt_id'] = message.message_id
         context.job_queue.run_once(
@@ -1727,28 +1780,34 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await show_main_menu(update, context)
         return ConversationHandler.END
+    except ValueError:
+        keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        message = await update.message.reply_text(
+            get_text("markup_format", user_id),
+            reply_markup=reply_markup
+        )
+        context.user_data['input_prompt_id'] = message.message_id
+        return SET_MARKUP
 
-    elif state == 'set_markup' and await is_admin(user_id):
+    elif state == 'add_admin' and await is_admin(user_id):
         try:
-            markup = float(text)
-            if not (0 <= markup <= 100):
+            admin_id = int(text)
+            admin_ids = get_setting("admin_ids") or [6956377285]
+            if admin_id in admin_ids:
                 keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 message = await update.message.reply_text(
-                    get_text("invalid_markup", user_id),
+                    get_text("admin_already_exists", user_id, user_id=admin_id),
                     reply_markup=reply_markup
                 )
                 context.user_data['input_prompt_id'] = message.message_id
-                context.job_queue.run_once(
-                    callback=lambda x: delete_input_prompt(context, user_id),
-                    when=5,
-                    data={'user_id': user_id}
-                )
-                return SET_MARKUP
-            update_setting("markup_percentage", markup)
-            log_admin_action(user_id, f"Set markup: {markup}%")
+                return ADD_ADMIN
+            admin_ids.append(admin_id)
+            update_setting("admin_ids", admin_ids)
+            log_admin_action(user_id, f"Added admin: {admin_id}")
             message = await update.message.reply_text(
-                get_text("markup_set", user_id, markup=markup)
+                get_text("admin_added", user_id, user_id=admin_id)
             )
             context.user_data['input_prompt_id'] = message.message_id
             context.job_queue.run_once(
@@ -1762,7 +1821,30 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             message = await update.message.reply_text(
-                get_text("markup_format", user_id)
+                get_text("invalid_admin_id", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            return ADD_ADMIN
+
+    elif state == 'remove_admin' and await is_admin(user_id):
+        try:
+            admin_id = int(text)
+            admin_ids = get_setting("admin_ids") or [6956377285]
+            if admin_id not in admin_ids:
+                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                message = await update.message.reply_text(
+                    get_text("admin_not_found", user_id, user_id=admin_id),
+                    reply_markup=reply_markup
+                )
+                context.user_data['input_prompt_id'] = message.message_id
+                return REMOVE_ADMIN
+            admin_ids.remove(admin_id)
+            update_setting("admin_ids", admin_ids)
+            log_admin_action(user_id, f"Removed admin: {admin_id}")
+            message = await update.message.reply_text(
+                get_text("admin_removed", user_id, user_id=admin_id)
             )
             context.user_data['input_prompt_id'] = message.message_id
             context.job_queue.run_once(
@@ -1770,32 +1852,43 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 when=5,
                 data={'user_id': user_id}
             )
-            return SET_MARKUP
+            await show_main_menu(update, context)
+            return ConversationHandler.END
+        except ValueError:
+            keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await update.message.reply_text(
+                get_text("invalid_admin_id", user_id),
+                reply_markup=reply_markup
+            )
+            context.user_data['input_prompt_id'] = message.message_id
+            return REMOVE_ADMIN
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.effective_user:
         user_id = update.effective_user.id
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="⚠️ An error occurred. Please try again later."
-            )
-        except Exception as e:
-            logger.error(f"Failed to send error message to user {user_id}: {e}")
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=get_text("tech_support", user_id, support_channel=get_setting("support_channel") or "@support_channel")
+        )
 
-# Регистрация обработчиков
-def setup_handlers(application: Application):
+# Главная функция
+def main():
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    init_db()
+
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
+            CommandHandler("addadmin", cmd_add_admin),
+            CommandHandler("removeadmin", cmd_remove_admin),
             CallbackQueryHandler(button)
         ],
         states={
-            CHOOSE_LANGUAGE: [
-                CallbackQueryHandler(button)
-            ],
+            CHOOSE_LANGUAGE: [CallbackQueryHandler(button)],
             BUY_STARS_USERNAME: [
                 CallbackQueryHandler(button),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
@@ -1805,7 +1898,8 @@ def setup_handlers(application: Application):
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
             ],
             BUY_STARS_PAYMENT_METHOD: [
-                CallbackQueryHandler(button)
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
             ],
             EDIT_TEXT: [
                 CallbackQueryHandler(button),
@@ -1834,84 +1928,26 @@ def setup_handlers(application: Application):
             SET_MARKUP: [
                 CallbackQueryHandler(button),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            ADD_ADMIN: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            REMOVE_ADMIN: [
+                CallbackQueryHandler(button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
             ]
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CallbackQueryHandler(button, pattern="^cancel$")
-        ]
+        fallbacks=[CommandHandler("start", start)]
     )
+
     application.add_handler(conv_handler)
     application.add_error_handler(error_handler)
 
-# Команда /cancel
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    input_prompt_id = context.user_data.get('input_prompt_id')
-    buy_menu_id = context.user_data.get('buy_menu_id')
-    
-    if input_prompt_id:
-        try:
-            await context.bot.delete_message(chat_id=user_id, message_id=input_prompt_id)
-        except Exception:
-            pass
-        context.user_data['input_prompt_id'] = None
-    
-    if buy_menu_id:
-        try:
-            await context.bot.delete_message(chat_id=user_id, message_id=buy_menu_id)
-        except Exception:
-            pass
-        context.user_data['buy_menu_id'] = None
-    
-    context.user_data['buy_username'] = None
-    context.user_data['buy_stars'] = None
-    context.user_data['payment_method'] = None
-    context.user_data['input_state'] = None
-    
-    message = await update.message.reply_text(get_text("cancel", user_id))
-    context.user_data['input_prompt_id'] = message.message_id
-    context.job_queue.run_once(
-        callback=lambda x: delete_input_prompt(context, user_id),
-        when=5,
-        data={'user_id': user_id}
-    )
-    await show_main_menu(update, context)
-    return ConversationHandler.END
+    application.job_queue.run_repeating(update_ton_price, interval=3600, first=10)
+    application.job_queue.run_repeating(payment_checker, interval=30, first=10)
 
-# Запуск бота
-async def main():
-    try:
-        init_db()
-        application = Application.builder().token(BOT_TOKEN).build()
-        setup_handlers(application)
-        
-        # Периодическое обновление курса TON
-        application.job_queue.run_repeating(
-            update_ton_price,
-            interval=3600,
-            first=0
-        )
-        
-        # Запуск проверки оплаты
-        application.job_queue.run_repeating(
-            payment_checker,
-            interval=30,
-            first=0
-        )
-        
-        logger.info("Starting bot...")
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        
-        # Держим приложение активным
-        while True:
-            await asyncio.sleep(3600)
-            
-    except Exception as e:
-        logger.error(f"Bot failed to start: {e}")
-        raise e
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
