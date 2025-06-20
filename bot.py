@@ -1873,8 +1873,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=get_text("tech_support", user_id, support_channel=get_setting("support_channel") or "@support_channel")
         )
 
-# Главная функция
-Command /addadmin
+# Command /addadmin
 async def cmd_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not await is_admin(user_id):
