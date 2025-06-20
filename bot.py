@@ -1444,7 +1444,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             stars = int(text)
             min_stars = int(get_setting("min_stars_purchase") or 10)
             if stars < min_stars:
-                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]  # Removed extra bracket
+                keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 message = await update.message.reply_text(
                     get_text("buy_invalid_amount", user_id, min_stars=min_stars),
