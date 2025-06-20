@@ -1775,7 +1775,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
-    if update.effective_user:
+    if update and update.effective_user:
         user_id = update.effective_user.id
         try:
             await context.bot.send_message(
