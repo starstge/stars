@@ -1731,7 +1731,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return ConversationHandler.END
 
-        elif state == 'set_card_payment' and await is_admin(user_id):
+        elif state == 'set_card_payment':
+            if not await is_admin(user_id):
+                await update.message.reply_text(get_text("access_denied", user_id))
+                return ConversationHandler.END
             if text.lower() not in ('true', 'false'):
                 keyboard = [[InlineKeyboardButton(get_text("cancel_btn", user_id), callback_data="cancel")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
