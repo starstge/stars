@@ -1788,7 +1788,7 @@ def main():
         },
         fallbacks=[CommandHandler("start", start), CallbackQueryHandler(button, pattern="cancel|back")],
         allow_reentry=True,
-        per_message=True  # Устраняет PTBUserWarning
+        per_message=False
     )
     
     application.add_handler(conv_handler)
