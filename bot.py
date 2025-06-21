@@ -1171,7 +1171,7 @@ async def main():
             ],
             EDIT_USER_STARS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                CallbackQueryHandler(button_handler, pattern=r^edit_user_stars_|cancel$"),
+                CallbackQueryHandler(button_handler, pattern=r"^edit_user_stars_|cancel$"),
             ],
             EDIT_USER_REF_BONUS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
