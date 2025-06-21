@@ -6,6 +6,8 @@ import asyncio
 import aiohttp
 import aiohttp.web
 import psycopg2
+from datetime import datetime
+import pytz
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from functools import lru_cache
@@ -165,11 +167,14 @@ def init_db():
         logger.error(f"Failed to initialize database: {e}")
         raise
 
-def get_db_connection():
-    """Получает соединение из пула."""
-    if not db_pool:
-        raise ValueError("Database pool not initialized")
-    return db_pool.getconn()
+async def get_db_connection():
+    """Возвращает асинхронное соединение с базой данных."""
+    try:
+        conn = await asyncpg.connect(os.getenv("POSTGRES_URL"))
+        return conn
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        raise
 
 def release_db_connection(conn):
     """Возвращает соединение в пул."""
@@ -287,19 +292,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"/start command received: user_id={user_id}, username={username}, ref_id={ref_id}")
 
     try:
-        async with get_db_connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "INSERT INTO users (user_id, username, referrer_id, language) VALUES (%s, %s, %s, %s) "
-                    "ON CONFLICT (user_id) DO UPDATE SET username = %s",
-                    (user_id, username, ref_id, 'ru', username)
+        async with (await get_db_connection()) as conn:
+            await conn.execute(
+                """
+                INSERT INTO users (user_id, username, referrer_id, language)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id) DO UPDATE SET username = $5
+                """,
+                user_id, username, ref_id, 'ru', username
+            )
+            if ref_id:
+                await conn.execute(
+                    """
+                    UPDATE users
+                    SET referrals = referrals || $1
+                    WHERE user_id = $2
+                    """,
+                    json.dumps({"user_id": user_id, "username": username}), ref_id
                 )
-                if ref_id:
-                    await cur.execute(
-                        "UPDATE users SET referrals = referrals || %s WHERE user_id = %s",
-                        (json.dumps({"user_id": user_id, "username": username}), ref_id)
-                    )
-                await conn.commit()
+
+        # Отправка сообщения в канал о новом пользователе
+        channel_id = "-1001234567890"  # Замени на реальный chat_id
+        join_time = datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z')
+        channel_message = f"Новый пользователь: @{username}\nВремя: {join_time}"
+        await context.bot.send_message(chat_id=channel_id, text=channel_message)
+        logger.info(f"Sent new user notification to channel: {channel_message}")
 
         keyboard = [
             [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE)],
@@ -308,13 +325,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS)],
             [InlineKeyboardButton("⭐ Купить звезды", callback_data=BUY_STARS)],
         ]
-        async with get_db_connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute("SELECT value FROM settings WHERE key = 'admin_ids'")
-                result = await cur.fetchone()
-                admin_ids = json.loads(result[0]) if result else []
-                if user_id in admin_ids:
-                    keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
+        async with (await get_db_connection()) as conn:
+            admin_ids = json.loads((await conn.fetchval("SELECT value FROM settings WHERE key = 'admin_ids'")) or '[]')
+            if user_id in admin_ids:
+                keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
         reply_markup = InlineKeyboardMarkup(keyboard)
         text = await get_text("welcome", user_id, total_stars_sold=get_setting("total_stars_sold") or 0)
         logger.info(f"Sending welcome message to user_id={user_id}: {text}")
