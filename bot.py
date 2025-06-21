@@ -198,13 +198,12 @@ def update_setting(key, value):
             conn.commit()
 
 def get_text(key, user_id, **kwargs):
-    language = get_user_language(user_id)
-    key_with_lang = f"{key}_{language}"
+    language = get_user_language(user_id)  # Keep for potential future use
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT value FROM texts WHERE key = %s", (key_with_lang,))
+            cur.execute("SELECT value FROM texts WHERE key = %s", (key,))
             result = cur.fetchone()
-            return result[0].format(**kwargs) if result else f"Text not found: {key_with_lang}"
+            return result[0].format(**kwargs) if result else f"Text not found: {key}"
 
 def update_text(key, value):
     with get_db_connection() as conn:
@@ -1153,6 +1152,8 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['last_message_id'] = message.message_id
             return RESET_PROFIT
 
+import asyncio
+
 async def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -1209,14 +1210,20 @@ async def main():
             CommandHandler("cancel", start),
             CallbackQueryHandler(button_handler, pattern=r"^cancel|back$"),
         ],
+        per_message=True,  # Address PTBUserWarning
     )
     app.add_handler(conv_handler)
     app.job_queue.run_repeating(update_ton_price, interval=600, first=10)
-    await app.run_polling()
+    await app.initialize()
+    await app.updater.start_polling()
+    await app.start()
+    try:
+        while True:
+            await asyncio.sleep(3600)  # Keep the bot running
+    except KeyboardInterrupt:
+        await app.stop()
+        await app.updater.stop()
+        await app.shutdown()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    finally:
-        loop.close()
+    asyncio.run(main())
