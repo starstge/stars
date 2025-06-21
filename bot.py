@@ -640,7 +640,7 @@ async def show_edit_profit_menu(update: Update, context: ContextTypes.DEFAULT_TY
     )
     context.user_data['last_message_id'] = message.message_id
     context.user_data['input_state'] = 'profit_percent'
-    return RESET_PROFILET
+    return RESET_PROFIT
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -675,8 +675,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_user_data(context, user_id)
         message = await query.message.reply_text(
-            get_text("buy_username_prompt", user_id), reply_markup=reply_markup)
-        )
+            get_text("buy_username_prompt", user_id), reply_markup=reply_markup
+        ) 
         context.user_data['last_message_id'] = message.message_id
         context.user_data['input_state'] = 'buy_username'
         return BUY_STARS_USERNAME
