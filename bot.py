@@ -128,7 +128,7 @@ async def init_db():
                     ('card_commission', '30'),
                     ('card_payment_enabled', 'false'),
                     ('min_stars_purchase', '10'),
-                    ('markup_percentage', %s)
+                    ('markup_percentage', $1)
                 ON CONFLICT (key) DO NOTHING;
                 INSERT INTO texts (key, value)
                 VALUES
