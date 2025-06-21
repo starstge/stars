@@ -6,14 +6,16 @@ import asyncio
 import aiohttp
 import psycopg2
 import uuid
+from functools import lru_cache
 from urllib.parse import urlparse
+from psycopg2.pool import SimpleConnectionPool
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     filters, ContextTypes, ConversationHandler
 )
-
+db_pool = None
 # Загрузка .env
 load_dotenv()
 
@@ -39,7 +41,7 @@ MARKUP_PERCENTAGE = float(os.getenv("MARKUP_PERCENTAGE", 10))
 async def set_webhook_manually():
     bot = Bot(token=BOT_TOKEN)
     await bot.set_webhook(
-        url="https://stars-ejwz.onrender.com/7579031437:AAEW97bQvRIt0M1MTnWBLhdvi9PkK_5dw0g",
+        url=f"https://stars-ejwz.onrender.com/{BOT_TOKEN}",
         allowed_updates=["message", "callback_query"]
     )
     logger.info("Webhook установлен вручную")
@@ -62,7 +64,27 @@ def get_db_connection():
         dbname=dbname, user=user, password=password, host=host, port=port
     )
 
+
+@lru_cache(maxsize=128)
+def get_setting(key):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM settings WHERE key = %s", (key,))
+            result = cur.fetchone()
+        release_db_connection(conn)
+    return result[0] if result else None
+
 def init_db():
+    global db_pool
+    db_pool = SimpleConnectionPool(
+        minconn=1,
+        maxconn=10,
+        host="dpg-d19qr395pdvs73a3ao2g-a.oregon-postgres.render.com",
+        port=5432,
+        dbname="stars_bot",
+        user=os.getenv("POSTGRES_USER"),
+        password=os.getenv("POSTGRES_PASSWORD")
+    )
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -321,6 +343,12 @@ def get_setting(key):
                         else result[0])
     return None
 
+def get_db_connection():
+    return db_pool.getconn()
+
+def release_db_connection(conn):
+    db_pool.putconn(conn)
+
 def update_setting(key, value):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -499,22 +527,21 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
     while True:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT user_id, username, stars_bought, address, memo, amount_ton, cryptobot_invoice_id "
-                            "FROM users WHERE stars_bought > 0 AND (address IS NOT NULL OR cryptobot_invoice_id IS NOT NULL)")
+                cur.execute("SELECT user_id, username, stars_bought, address, memo, amount_ton "
+                            "FROM users WHERE stars_bought > 0 AND address IS NOT NULL")
                 pending = cur.fetchall()
-        for user_id, username, stars, address, memo, amount_ton, invoice_id in pending:
+            release_db_connection(conn)
+        for user_id, username, stars, address, memo, amount_ton in pending:
             paid = False
-            if invoice_id:
-                paid = await check_cryptobot_payment(invoice_id)
-            elif address and memo and amount_ton:
+            if address and memo and amount_ton:
                 paid = await check_ton_payment(address, memo, amount_ton)
             
             if paid and await issue_stars_api(username, stars):
                 with get_db_connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute(
-                            "UPDATE users SET stars_bought = 0, address = NULL, memo = NULL, amount_ton = NULL, "
-                            "cryptobot_invoice_id = NULL WHERE user_id = %s",
+                            "UPDATE users SET stars_bought = 0, address = NULL, memo = NULL, amount_ton = NULL "
+                            "WHERE user_id = %s",
                             (user_id,)
                         )
                         total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars
@@ -526,11 +553,11 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                         update_setting("total_profit_usd", total_profit_usd)
                         update_setting("total_profit_ton", total_profit_ton)
                         conn.commit()
+                    release_db_connection(conn)
                 # Уведомляем админа о покупке
                 currency = "TON" if amount_ton else "USD"
                 amount = amount_ton if amount_ton else base_price_usd * (1 + markup / 100)
                 await notify_admin_purchase(context, user_id, username, stars, amount, currency)
-                # Отправляем сообщение пользователю
                 await context.bot.send_message(
                     user_id=user_id,
                     text=get_text("buy_success", user_id=user_id, username=username, stars=stars)
@@ -548,13 +575,14 @@ async def payment_checker(context: ContextTypes.DEFAULT_TYPE):
                                 (ref_bonus_ton, json.dumps({"amount": ref_bonus_ton, "timestamp": time.time()}), referrer_id)
                             )
                             conn.commit()
+                        release_db_connection(conn)
                     await context.bot.send_message(
                         referrer_id,
                         get_text("ref_info", referrer_id, ref_bonus_ton=ref_bonus_ton, 
                                  bot_username=context.bot.name.lstrip("@"), user_id=referrer_id, 
                                  ref_count=len(get_user_data(referrer_id, "referrals") or []))
                     )
-        await asyncio.sleep(30)
+        await asyncio.sleep(60)  # Увеличен интервал
 
 async def clear_previous_message(context: ContextTypes.DEFAULT_TYPE, user_id):
     message_id = context.user_data.get('last_message_id')
@@ -567,8 +595,9 @@ async def clear_previous_message(context: ContextTypes.DEFAULT_TYPE, user_id):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    username = update.effective_user.username or f"user_{user_id}"
-    ref_id = context.args[0].split("ref_")[-1] if context.args and "ref_" in context.args[0] else None
+    logger.info(f"Команда /start от пользователя {user_id}")
+    await clear_previous_message(context, user_id)
+    await show_main_menu(update, context)
     
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -735,10 +764,10 @@ async def notify_admin_purchase(context: ContextTypes.DEFAULT_TYPE, buyer_id: in
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
-                text=f"New purchase!\nUser ID: {buyer_id}\nUsername: {username or 'N/A'}\nStars: {stars}\nAmount: {amount:.2f} {currency}"
+                text=f"Новая покупка!\nID пользователя: {buyer_id}\nИмя пользователя: {username or 'Нет'}\nЗвёзды: {stars}\nСумма: {amount:.2f} {currency}"
             )
         except Exception as e:
-            logger.error(f"Failed to notify admin {admin_id} about purchase: {e}")
+            logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
 
 async def show_manage_admins_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -770,11 +799,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка при очистке предыдущего сообщения для {user_id}: {e}")
     
-    if data == "cancel":
-        await show_main_menu(update, context)
-        return ConversationHandler.END
-    
-    elif data == "back":
+    if data in ["cancel", "back"]:
         await show_main_menu(update, context)
         return ConversationHandler.END
     
@@ -1834,7 +1859,8 @@ def main():
             REMOVE_ADMIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
             USER_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
             EDIT_USER_STARS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
-            EDIT_USER_REF_BONUS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+            EDIT_USER_REF_BONUS: [CallbackQueryHandler(button)],  # Исправлено
+            RESET_PROFIT: [CallbackQueryHandler(button)],
         },
         fallbacks=[CommandHandler("start", start), CallbackQueryHandler(button, pattern="cancel|back")],
         allow_reentry=True,
@@ -1848,7 +1874,6 @@ def main():
     application.job_queue.run_repeating(payment_checker, interval=60, first=0)  # Увеличен интервал
     
     logger.info("Установка вебхука...")
-    import asyncio
     asyncio.run(set_webhook_manually())
     
     logger.info("Запуск бота с вебхуком...")
