@@ -547,11 +547,11 @@ async def show_edit_text_menu(update: Update, context: ContextTypes.DEFAULT):
     user_id = update.effective_user.id
     keyboard = [
         [InlineKeyboardButton("Welcome", text callback_data="edit_text_welcome"),
-         InlineKeyboardButton("Buy Stars Prompt", callback_data="edit_text_buy_stars_prompt")],
+        [InlineKeyboardButton("Buy Stars Prompt", callback_data="edit_text_buy_stars_prompt")],
         [InlineKeyboardButton("Profile", callback_data="edit_text_profile"),
-         InlineKeyboardButton("Referrals", callback_data="edit_text_referrals")],
+        [InlineKeyboardButton("Referrals", callback_data="edit_text_referrals")],
         [InlineKeyboardButton("Support", callback_data="edit_text_support"),
-         InlineKeyboardButton("Reviews", callback_data="edit_text_reviews")],
+        [InlineKeyboardButton("Reviews", callback_data="edit_text_reviews")],
         [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="admin_panel")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
