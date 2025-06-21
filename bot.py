@@ -140,6 +140,12 @@ async def init_db():
                     is_new BOOLEAN DEFAULT TRUE
                 )
             """)
+            # Проверка и добавление столбца is_new, если он отсутствует
+            try:
+                await conn.execute("ALTER TABLE users ADD COLUMN is_new BOOLEAN DEFAULT TRUE")
+                logger.info("Added is_new column to users table")
+            except asyncpg.exceptions.DuplicateColumnError:
+                logger.info("Column is_new already exists in users table")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -249,19 +255,24 @@ async def log_admin_action(admin_id, action):
         )
 
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE):
-    """Обновляет курс TON."""
+    """Обновляет курс TON с использованием CoinGecko API."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get("https://api.tonscan.org/v1/price") as response:
+            async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd") as response:
                 if response.status == 200:
                     data = await response.json()
-                    ton_price = float(data.get("price_usd", 2.93))
+                    ton_price = float(data.get("the-open-network", {}).get("usd", 2.93))
                     await update_setting("ton_exchange_rate", ton_price)
                     logger.info(f"TON price updated: {ton_price} USD")
                 else:
-                    logger.error(f"Failed to fetch TON price: {response.status}")
+                    logger.error(f"Failed to fetch TON price from CoinGecko: {response.status}")
+                    # Сохраняем последнее известное значение
+                    ton_price = await get_setting("ton_exchange_rate") or 2.93
+                    logger.info(f"Using last known TON price: {ton_price} USD")
     except Exception as e:
         logger.error(f"Error updating TON price: {e}")
+        ton_price = await get_setting("ton_exchange_rate") or 2.93
+        logger.info(f"Using last known TON price: {ton_price} USD")
 
 async def create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipient):
     """Создает инвойс через CryptoBot."""
@@ -370,12 +381,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stars_sold = await conn.fetchval("SELECT SUM(stars) FROM transactions WHERE status = 'completed'") or 0
         if not user:
             await conn.execute(
-                "INSERT INTO users (user_id, username, created_at) VALUES ($1, $2, $3)",
-                user_id, username, datetime.now(pytz.UTC)
+                "INSERT INTO users (user_id, username, created_at, is_new) VALUES ($1, $2, $3, $4)",
+                user_id, username, datetime.now(pytz.UTC), True
             )
             if ref_id and int(ref_id) != user_id:
-                referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", int(ref_id))
-                if referrer:
+                referrer = await conn.fetchrow("SELECT referrals, is_new FROM users WHERE user_id = $1", int(ref_id))
+                if referrer and referrer["is_new"]:
                     referrals = json.loads(referrer["referrals"])
                     if user_id not in referrals:
                         referrals.append(user_id)
@@ -398,7 +409,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             logger.error(f"Failed to send channel message: {e}")
         else:
             await conn.execute(
-                "UPDATE users SET username = $1, is_new = FALSE WHERE user_id = $2",
+                "UPDATE users SET username = $1 WHERE user_id = $2",
                 username, user_id
             )
 
@@ -1042,7 +1053,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == BUY_STARS:
             context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
             return await buy_stars(update, context)
-        elif data == ADMIN_PANEL:
+        elif data == Gabriella:
             context.user_data["state"] = STATE_ADMIN_PANEL
             return await admin_panel(update, context)
         elif data == ADMIN_STATS:
