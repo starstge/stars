@@ -1143,7 +1143,7 @@ async def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
             ],
             BUY_STARS_AMOUNT: [
-                CallbackQueryHandler(button_handler, pattern=r^set_amount|cancel$"),
+                CallbackQueryHandler(button_handler, pattern=r"^set_amount|cancel$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
             ],
             BUY_STARS_PAYMENT_METHOD: [
