@@ -878,7 +878,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         referrals = get_user_data(user_id, "referrals") or []
         ref_count = len(referrals)
         ref_link = f"https://t.me/{context.bot.username}/status?start=ref_{user_id}"
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_user_data(context, user_id)
         message = await query.message.reply_text(
