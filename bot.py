@@ -772,9 +772,26 @@ async def handle_text_input(update, context):
 
 async def webhook_handler(request):
     """Обрабатывает входящие webhook-запросы от Telegram."""
-    update = Update.de_json(await request.json(), request.app['bot'])
-    await request.app['application'].process_update(update)
+    try:
+        json_data = await request.json()
+        logger.info(f"Received webhook data: {json_data}")
+        update = Update.de_json(json_data, request.app['bot'])
+        if update is None:
+            logger.error("Failed to parse update from JSON")
+            return aiohttp.web.Response(text="OK")
+        await request.app['application'].process_update(update)
+        logger.info("Webhook update processed successfully")
+    except json.JSONDecodeError:
+        logger.error("Invalid JSON received in webhook")
+        return aiohttp.web.Response(text="OK")
+    except Exception as e:
+        logger.error(f"Webhook processing error: {e}")
+        return aiohttp.web.Response(text="OK")
     return aiohttp.web.Response(text="OK")
+
+async def root_handler(request):
+    """Обработчик корневого пути для Render."""
+    return aiohttp.web.Response(text="Stars Bot is running")
 
 async def main():
     """Запускает бот с webhook."""
