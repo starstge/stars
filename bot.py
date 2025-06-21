@@ -275,7 +275,7 @@ async def create_ton_payment(user_id, username, stars):
     amount_usd = base_price_usd * (1 + markup / 100) * (1 + commission)
     ton_price = float(get_setting("ton_exchange_rate") or 2.93)
     amount_ton = amount_usd / ton_price
-    memo = f"order_{user_id}_{tint(time.time())}
+    memo = f"order_{user_id}_{tint(time.time())}"
     address = OWNER_WALLET
 
     with get_db_connection() as conn:
