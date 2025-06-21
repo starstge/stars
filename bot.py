@@ -596,7 +596,7 @@ async def show_user_info(update: Update, context: ContextTypes.DEFAULT_TYPE, use
         [InlineKeyboardButton("Change Stars", callback_data=f"edit_user_stars_{user_id}")],
         [InlineKeyboardButton("Change Ref. Bonus", callback_data=f"edit_user_ref_bonus_{user_id}")],
         [InlineKeyboardButton(get_text("back_btn", user_id), callback_data="user_stats")],
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup == InlineKeyboardMarkup(keyboard)
     await clear_user_data(context, user_id)
     message = await (update.message or update.callback_query.message).reply_text(
         get_text("user_info", user_id, username=username, stars_bought=stars_bought,
