@@ -154,7 +154,7 @@ def init_db():
                         ('cancel_btn_ru', '❌ Отмена'),
                         ('cancel_btn_en', '❌ Cancel')
                     ON CONFLICT (key) DO NOTHING;
-                """.format(MARKUP_PERCENTAGE))
+                """, (str(MARKUP_PERCENTAGE),))
                 conn.commit()
         logger.info("Database pool initialized successfully")
     except Exception as e:
