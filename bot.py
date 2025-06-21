@@ -585,10 +585,10 @@ async def show_user_info(update: Update, context: ContextTypes.DEFAULT_TYPE, use
             user_data = cur.fetchone()
     if not user_data:
         await clear_user_data(context, user_id)
-        message = await update.message or update.callback_query.message
-            message = await (update.message or update.callback_query.message).reply_text("User not found.")
-            context.user_data['last_message_id'] = message.message_id
-            return
+        message = await (update.message or update.callback_query.message).reply_text("User not found.")
+        context.user_data['last_message_id'] = message.message_id
+        return
+
         
     user_id, username, stars_bought, ref_bonus_ton, referrals = user_data
     ref_count = len(json.loads(referrals) if referrals else 0)
