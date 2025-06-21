@@ -4,6 +4,7 @@ import json
 import logging
 import asyncio
 import aiohttp
+import aiohttp.web
 import psycopg2
 from urllib.parse import urlparse
 from dotenv import load_dotenv
@@ -283,7 +284,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or f"user_{user_id}"
     args = context.args
     ref_id = int(args[0].split('_')[-1]) if args and args[0].startswith('ref_') else None
-    logger.info(f"/start command by user {user_id}, ref_id={ref_id}")
+    logger.info(f"/start command received: user_id={user_id}, username={username}, ref_id={ref_id}")
 
     async with get_db_connection() as conn:
         async with conn.cursor() as cur:
@@ -315,10 +316,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = await get_text("welcome", user_id, total_stars_sold=get_setting("total_stars_sold") or 0)
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup)
+    logger.info(f"Sending welcome message to user_id={user_id}: {text}")
+    try:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Failed to send welcome message to user_id={user_id}: {e}")
     return ConversationHandler.END
 
 async def admin_panel(update, context):
@@ -764,12 +769,22 @@ async def handle_text_input(update, context):
 
     return ConversationHandler.END
 
+
+async def webhook_handler(request):
+    """Обрабатывает входящие webhook-запросы от Telegram."""
+    update = Update.de_json(await request.json(), request.app['bot'])
+    await request.app['application'].process_update(update)
+    return aiohttp.web.Response(text="OK")
+
 async def main():
-    """Запускает бот."""
+    """Запускает бот с webhook."""
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("cancel", start),
+        ],
         states={
             STATE_CHOOSE_LANGUAGE: [CallbackQueryHandler(button_handler, pattern=r"^lang_|^cancel$")],
             STATE_BUY_STARS_AMOUNT: [
@@ -816,15 +831,38 @@ async def main():
     )
     app.add_handler(conv_handler)
     app.job_queue.run_repeating(update_ton_price, interval=600, first=10)
+    logger.info("Bot application initialized")
+
+    # Настройка webhook
+    webhook_app = aiohttp.web.Application()
+    webhook_app['application'] = app
+    webhook_app['bot'] = app.bot
+    webhook_app.router.add_post('/webhook', webhook_handler)
+
+    # Получение URL и порта от Render
+    port = int(os.getenv("PORT", 8080))
+    webhook_url = os.getenv("WEBHOOK_URL", f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook")
+    logger.info(f"Setting webhook URL: {webhook_url}")
+
     await app.initialize()
-    await app.updater.start_polling()
+    await app.bot.set_webhook(webhook_url)
     await app.start()
+
+    # Запуск HTTP-сервера
+    runner = aiohttp.web.AppRunner(webhook_app)
+    await runner.setup()
+    site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"Webhook server started on port {port}")
+
     try:
         while True:
             await asyncio.sleep(3600)
     except KeyboardInterrupt:
+        logger.info("Shutting down bot")
+        await app.bot.delete_webhook()
         await app.stop()
-        await app.updater.stop()
+        await runner.cleanup()
         await app.shutdown()
         
 if __name__ == "__main__":
