@@ -81,11 +81,14 @@ async def init_db():
     """Инициализирует базу данных."""
     try:
         async with (await get_db_pool()) as conn:
+            # Создание таблиц
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+            """)
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     username TEXT NOT NULL,
@@ -100,16 +103,23 @@ async def init_db():
                     cryptobot_invoice_id TEXT,
                     language TEXT DEFAULT 'ru'
                 );
+            """)
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS admin_log (
                     id SERIAL PRIMARY KEY,
                     user_id BIGINT,
                     action TEXT NOT NULL,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+            """)
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS texts (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+            """)
+            # Вставка данных в settings
+            await conn.execute("""
                 INSERT INTO settings (key, value)
                 VALUES
                     ('admin_ids', '[6956377285]'),
@@ -130,6 +140,9 @@ async def init_db():
                     ('min_stars_purchase', '10'),
                     ('markup_percentage', $1)
                 ON CONFLICT (key) DO NOTHING;
+            """, os.getenv("MARKUP_PERCENTAGE", "10"))
+            # Вставка данных в texts
+            await conn.execute("""
                 INSERT INTO texts (key, value)
                 VALUES
                     ('welcome', '🌟 Привет! Это Stars Bot — твой помощник для покупки Telegram Stars! 🚀\nПродано звёзд: {{total_stars_sold}}'),
@@ -150,7 +163,7 @@ async def init_db():
                     ('back_btn', '🔙 Назад'),
                     ('cancel_btn', '❌ Отмена')
                 ON CONFLICT (key) DO NOTHING;
-            """, os.getenv("MARKUP_PERCENTAGE", "10"))
+            """)
             logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
