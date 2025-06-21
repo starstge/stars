@@ -75,7 +75,7 @@ def init_db():
         )
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(f"""
                     CREATE TABLE IF NOT EXISTS settings (
                         key TEXT PRIMARY KEY,
                         value TEXT NOT NULL
@@ -122,29 +122,29 @@ def init_db():
                         ('card_commission', '30'),
                         ('card_payment_enabled', 'false'),
                         ('min_stars_purchase', '10'),
-                        ('markup_percentage', %s)
+                        ('markup_percentage', '{MARKUP_PERCENTAGE}')
                     ON CONFLICT (key) DO NOTHING;
                     INSERT INTO texts (key, value)
                     VALUES
-                        ('welcome', '🌟 Привет! Это Stars Bot — твой помощник для покупки Telegram Stars! 🚀\nПродано звёзд: {total_stars_sold}'),
-                        ('buy_prompt', '💸 Оплатите {amount_ton:.6f} TON\nЗвёзд: {stars}\nАдрес: {address}\nМемо: {memo}\nДля: @{username}'),
-                        ('buy_success', '🎉 Оплата прошла! @{username} получил {stars} звёзд!'),
-                        ('profile', '👤 Профиль\nИмя: @{username}\nКуплено звезд: {stars_bought}\nРеф. бонус: {ref_bonus_ton:.6f} TON'),
-                        ('referrals', '🤝 Реферальная система\nРефералов: {ref_count}\nРеф. бонус: {ref_bonus_ton:.6f} TON\nСсылка: {ref_link}'),
-                        ('tech_support', '🛠 Свяжитесь с поддержкой: {support_channel}'),
-                        ('reviews', '📝 Отзывы: {review_channel}'),
+                        ('welcome', '🌟 Привет! Это Stars Bot — твой помощник для покупки Telegram Stars! 🚀\nПродано звёзд: {{total_stars_sold}}'),
+                        ('buy_prompt', '💸 Оплатите {{amount_ton:.6f}} TON\nЗвёзд: {{stars}}\nАдрес: {{address}}\nМемо: {{memo}}\nДля: @{{username}}'),
+                        ('buy_success', '🎉 Оплата прошла! @{{username}} получил {{stars}} звёзд!'),
+                        ('profile', '👤 Профиль\nИмя: @{{username}}\nКуплено звезд: {{stars_bought}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON'),
+                        ('referrals', '🤝 Реферальная система\nРефералов: {{ref_count}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON\nСсылка: {{ref_link}}'),
+                        ('tech_support', '🛠 Свяжитесь с поддержкой: {{support_channel}}'),
+                        ('reviews', '📝 Отзывы: {{review_channel}}'),
                         ('admin_panel', '🛠 Админ-панель'),
-                        ('stats', '📊 Статистика\nПрибыль: {total_profit_ton:.6f} TON\nЗвёзд продано: {total_stars_sold}\nПользователей: {user_count}'),
+                        ('stats', '📊 Статистика\nПрибыль: {{total_profit_ton:.6f}} TON\nЗвёзд продано: {{total_stars_sold}}\nПользователей: {{user_count}}'),
                         ('edit_text_menu', '📝 Изменить текст'),
                         ('user_stats', '👤 Статистика пользователей\nВведите ID или username для поиска (или /cancel):'),
-                        ('user_info', '👤 @{username}\nЗвёзд куплено: {stars_bought}\nРеф. бонус: {ref_bonus_ton:.6f} TON\nРефералов: {ref_count}'),
+                        ('user_info', '👤 @{{username}}\nЗвёзд куплено: {{stars_bought}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON\nРефералов: {{ref_count}}'),
                         ('edit_markup', '💸 Изменить наценку (%)'),
                         ('manage_admins', '👑 Управление админами'),
                         ('edit_profit', '📈 Изменить прибыль (%)'),
                         ('back_btn', '🔙 Назад'),
                         ('cancel_btn', '❌ Отмена')
                     ON CONFLICT (key) DO NOTHING;
-                """, (str(MARKUP_PERCENTAGE),))  # Исправлено: добавлен заполнитель %s
+                """)
                 conn.commit()
         logger.info("Database pool initialized successfully")
     except Exception as e:
