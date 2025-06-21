@@ -76,105 +76,110 @@ STATE_USER_SEARCH = 15
 db_pool = None
 
 
-def init_db():
-    """Инициализирует пул соединений с базой данных."""
-    global db_pool
+async def init_db():
+    """Инициализирует базу данных."""
     try:
-        parsed_url = urlparse(POSTGRES_URL)
-        dbname = parsed_url.path.lstrip('/')
-        user = parsed_url.username
-        password = parsed_url.password
-        host = parsed_url.hostname
-        port = parsed_url.port or 5432
-        db_pool = SimpleConnectionPool(
-            minconn=1, maxconn=10, host=host, port=port, dbname=dbname, user=user, password=password
-        )
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"""
-                    CREATE TABLE IF NOT EXISTS settings (
-                        key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id BIGINT PRIMARY KEY,
-                        username TEXT NOT NULL,
-                        stars_bought INTEGER DEFAULT 0,
-                        ref_bonus_ton FLOAT DEFAULT 0.0,
-                        referrer_id BIGINT,
-                        referrals JSONB DEFAULT '[]',
-                        bonus_history JSONB DEFAULT '[]',
-                        address TEXT,
-                        memo TEXT,
-                        amount_ton FLOAT,
-                        cryptobot_invoice_id TEXT,
-                        language TEXT DEFAULT 'ru'
-                    );
-                    CREATE TABLE IF NOT EXISTS admin_log (
-                        id SERIAL PRIMARY KEY,
-                        user_id BIGINT,
-                        action TEXT NOT NULL,
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                    CREATE TABLE IF NOT EXISTS texts (
-                        key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL
-                    );
-                    INSERT INTO settings (key, value)
-                    VALUES
-                        ('admin_ids', '[6956377285]'),
-                        ('ref_bonus_percent', '30'),
-                        ('profit_percent', '20'),
-                        ('total_stars_sold', '0'),
-                        ('total_profit_usd', '0'),
-                        ('total_profit_ton', '0'),
-                        ('stars_price_usd', '0.81'),
-                        ('stars_per_purchase', '50'),
-                        ('ton_exchange_rate', '2.93'),
-                        ('review_channel', '@sacoectasy'),
-                        ('support_channel', '@support_channel'),
-                        ('cryptobot_commission', '25'),
-                        ('ton_commission', '20'),
-                        ('card_commission', '30'),
-                        ('card_payment_enabled', 'false'),
-                        ('min_stars_purchase', '10'),
-                        ('markup_percentage', '{MARKUP_PERCENTAGE}')
-                    ON CONFLICT (key) DO NOTHING;
-                    INSERT INTO texts (key, value)
-                    VALUES
-                        ('welcome', '🌟 Привет! Это Stars Bot — твой помощник для покупки Telegram Stars! 🚀\nПродано звёзд: {{total_stars_sold}}'),
-                        ('buy_prompt', '💸 Оплатите {{amount_ton:.6f}} TON\nЗвёзд: {{stars}}\nАдрес: {{address}}\nМемо: {{memo}}\nДля: @{{username}}'),
-                        ('buy_success', '🎉 Оплата прошла! @{{username}} получил {{stars}} звёзд!'),
-                        ('profile', '👤 Профиль\nИмя: @{{username}}\nКуплено звезд: {{stars_bought}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON'),
-                        ('referrals', '🤝 Реферальная система\nРефералов: {{ref_count}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON\nСсылка: {{ref_link}}'),
-                        ('tech_support', '🛠 Свяжитесь с поддержкой: {{support_channel}}'),
-                        ('reviews', '📝 Отзывы: {{review_channel}}'),
-                        ('admin_panel', '🛠 Админ-панель'),
-                        ('stats', '📊 Статистика\nПрибыль: {{total_profit_ton:.6f}} TON\nЗвёзд продано: {{total_stars_sold}}\nПользователей: {{user_count}}'),
-                        ('edit_text_menu', '📝 Изменить текст'),
-                        ('user_stats', '👤 Статистика пользователей\nВведите ID или username для поиска (или /cancel):'),
-                        ('user_info', '👤 @{{username}}\nЗвёзд куплено: {{stars_bought}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON\nРефералов: {{ref_count}}'),
-                        ('edit_markup', '💸 Изменить наценку (%)'),
-                        ('manage_admins', '👑 Управление админами'),
-                        ('edit_profit', '📈 Изменить прибыль (%)'),
-                        ('back_btn', '🔙 Назад'),
-                        ('cancel_btn', '❌ Отмена')
-                    ON CONFLICT (key) DO NOTHING;
-                """)
-                conn.commit()
-        logger.info("Database pool initialized successfully")
+        async with (await get_db_pool()) as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    stars_bought INTEGER DEFAULT 0,
+                    ref_bonus_ton FLOAT DEFAULT 0.0,
+                    referrer_id BIGINT,
+                    referrals JSONB DEFAULT '[]',
+                    bonus_history JSONB DEFAULT '[]',
+                    address TEXT,
+                    memo TEXT,
+                    amount_ton FLOAT,
+                    cryptobot_invoice_id TEXT,
+                    language TEXT DEFAULT 'ru'
+                );
+                CREATE TABLE IF NOT EXISTS admin_log (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    action TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS texts (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                INSERT INTO settings (key, value)
+                VALUES
+                    ('admin_ids', '[6956377285]'),
+                    ('ref_bonus_percent', '30'),
+                    ('profit_percent', '20'),
+                    ('total_stars_sold', '0'),
+                    ('total_profit_usd', '0'),
+                    ('total_profit_ton', '0'),
+                    ('stars_price_usd', '0.81'),
+                    ('stars_per_purchase', '50'),
+                    ('ton_exchange_rate', '2.93'),
+                    ('review_channel', '@sacoectasy'),
+                    ('support_channel', '@support_channel'),
+                    ('cryptobot_commission', '25'),
+                    ('ton_commission', '20'),
+                    ('card_commission', '30'),
+                    ('card_payment_enabled', 'false'),
+                    ('min_stars_purchase', '10'),
+                    ('markup_percentage', %s)
+                ON CONFLICT (key) DO NOTHING;
+                INSERT INTO texts (key, value)
+                VALUES
+                    ('welcome', '🌟 Привет! Это Stars Bot — твой помощник для покупки Telegram Stars! 🚀\nПродано звёзд: {{total_stars_sold}}'),
+                    ('buy_prompt', '💸 Оплатите {{amount_ton:.6f}} TON\nЗвёзд: {{stars}}\nАдрес: {{address}}\nМемо: {{memo}}\nДля: @{{username}}'),
+                    ('buy_success', '🎉 Оплата прошла! @{{username}} получил {{stars}} звёзд!'),
+                    ('profile', '👤 Профиль\nИмя: @{{username}}\nКуплено звезд: {{stars_bought}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON'),
+                    ('referrals', '🤝 Реферальная система\nРефералов: {{ref_count}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON\nСсылка: {{ref_link}}'),
+                    ('tech_support', '🛠 Свяжитесь с поддержкой: {{support_channel}}'),
+                    ('reviews', '📝 Отзывы: {{review_channel}}'),
+                    ('admin_panel', '🛠 Админ-панель'),
+                    ('stats', '📊 Статистика\nПрибыль: {{total_profit_ton:.6f}} TON\nЗвёзд продано: {{total_stars_sold}}\nПользователей: {{user_count}}'),
+                    ('edit_text_menu', '📝 Изменить текст'),
+                    ('user_stats', '👤 Статистика пользователей\nВведите ID или username для поиска (или /cancel):'),
+                    ('user_info', '👤 @{{username}}\nЗвёзд куплено: {{stars_bought}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON\nРефералов: {{ref_count}}'),
+                    ('edit_markup', '💸 Изменить наценку (%)'),
+                    ('manage_admins', '👑 Управление админами'),
+                    ('edit_profit', '📈 Изменить прибыль (%)'),
+                    ('back_btn', '🔙 Назад'),
+                    ('cancel_btn', '❌ Отмена')
+                ON CONFLICT (key) DO NOTHING;
+            """, os.getenv("MARKUP_PERCENTAGE", "10"))
+            logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
-
-async def get_db_connection():
-    """Возвращает асинхронное соединение с базой данных."""
-    try:
-        conn = await asyncpg.connect(os.getenv("POSTGRES_URL"))
-        return conn
-    except Exception as e:
-        logger.error(f"Database connection error: {e}")
-        raise
+        
+async def get_db_pool():
+    """Инициализирует пул соединений с базой данных."""
+    global db_pool
+    if db_pool is None:
+        try:
+            parsed_url = urlparse(os.getenv("POSTGRES_URL"))
+            dbname = parsed_url.path.lstrip('/')
+            user = parsed_url.username
+            password = parsed_url.password
+            host = parsed_url.hostname
+            port = parsed_url.port or 5432
+            db_pool = await asyncpg.create_pool(
+                min_size=1,
+                max_size=10,
+                host=host,
+                port=port,
+                database=dbname,
+                user=user,
+                password=password
+            )
+            logger.info("Database pool initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize database pool: {e}")
+            raise
+    return db_pool
 
 def release_db_connection(conn):
     """Возвращает соединение в пул."""
@@ -283,6 +288,9 @@ async def check_ton_payment(address, memo, amount_ton):
                     await asyncio.sleep(2 ** attempt)
         return False
 
+from datetime import datetime
+import pytz
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start и возврата в главное меню."""
     user_id = update.effective_user.id
@@ -292,7 +300,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"/start command received: user_id={user_id}, username={username}, ref_id={ref_id}")
 
     try:
-        async with (await get_db_connection()) as conn:
+        async with (await get_db_pool()) as conn:
             await conn.execute(
                 """
                 INSERT INTO users (user_id, username, referrer_id, language)
@@ -325,12 +333,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS)],
             [InlineKeyboardButton("⭐ Купить звезды", callback_data=BUY_STARS)],
         ]
-        async with (await get_db_connection()) as conn:
+        async with (await get_db_pool()) as conn:
             admin_ids = json.loads((await conn.fetchval("SELECT value FROM settings WHERE key = 'admin_ids'")) or '[]')
             if user_id in admin_ids:
                 keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        text = await get_text("welcome", user_id, total_stars_sold=get_setting("total_stars_sold") or 0)
+        text = await get_text("welcome", user_id, total_stars_sold=(await get_setting("total_stars_sold")) or 0)
         logger.info(f"Sending welcome message to user_id={user_id}: {text}")
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
@@ -526,6 +534,17 @@ async def buy_stars(update, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
     return BUY_STARS_AMOUNT
+
+async def get_setting(key):
+    """Получает значение настройки из базы данных."""
+    try:
+        async with (await get_db_pool()) as conn:
+            value = await conn.fetchval("SELECT value FROM settings WHERE key = $1", key)
+            return value
+    except Exception as e:
+        logger.error(f"Error getting setting {key}: {e}")
+        return None
+
 
 async def check_payment(update, context):
     """Проверяет оплату по кнопке."""
@@ -813,7 +832,7 @@ async def root_handler(request):
 
 async def main():
     """Запускает бот с webhook."""
-    init_db()
+    await init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[
