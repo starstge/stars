@@ -36,6 +36,15 @@ MARKUP_PERCENTAGE = float(os.getenv("MARKUP_PERCENTAGE", 10))
  SET_CARD_PAYMENT, SET_MARKUP, ADD_ADMIN, REMOVE_ADMIN, USER_SEARCH, 
  EDIT_USER_STARS, EDIT_USER_REF_BONUS, RESET_PROFIT) = range(17)
 
+async def set_webhook_manually():
+    bot = Bot(token=BOT_TOKEN)
+    await bot.set_webhook(
+        url="https://stars-ejwz.onrender.com/7579031437:AAEW97bQvRIt0M1MTnWBLhdvi9PkK_5dw0g",
+        allowed_updates=["message", "callback_query"]
+    )
+    logger.info("Webhook установлен вручную")
+
+
 def get_db_connection():
     if not POSTGRES_URL:
         logger.error("POSTGRES_URL or DATABASE_URL not set")
@@ -746,8 +755,49 @@ async def show_manage_admins_menu(update: Update, context: ContextTypes.DEFAULT_
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
-    username = query.from_user.username or f"user_{user_id}"
+    if not query:
+        logger.error("Callback query отсутствует")
+        return
+    
+    await query.answer()
+    user_id = update.effective_user.id
+    data = query.data
+    
+    logger.info(f"Получен callback-запрос: {data} от пользователя {user_id}")
+    
+    try:
+        await clear_previous_message(context, user_id)
+    except Exception as e:
+        logger.error(f"Ошибка при очистке предыдущего сообщения для {user_id}: {e}")
+    
+    if data == "cancel":
+        await show_main_menu(update, context)
+        return ConversationHandler.END
+    
+    elif data == "back":
+        await show_main_menu(update, context)
+        return ConversationHandler.END
+    
+    elif data == "reviews":
+        review_channel = get_setting("review_channel") or "@sacoectasy"
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            message = await query.message.reply_text(
+                get_text("reviews", user_id, review_channel=review_channel),
+                reply_markup=reply_markup
+            )
+            context.user_data['last_message_id'] = message.message_id
+            context.job_queue.run_once(
+                lambda x: clear_previous_message(context, user_id), 5, data={'user_id': user_id}
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения reviews для {user_id}: {e}")
+    
+    else:
+        logger.warning(f"Необработанный callback-запрос: {data} от {user_id}")
+        await show_main_menu(update, context)
+        return ConversationHandler.END
     
     await query.answer()
     
@@ -1795,24 +1845,20 @@ def main():
     application.add_error_handler(error_handler)
     
     application.job_queue.run_repeating(update_ton_price, interval=3600, first=0)
-    application.job_queue.run_repeating(payment_checker, interval=30, first=0)
+    application.job_queue.run_repeating(payment_checker, interval=60, first=0)  # Увеличен интервал
+    
+    logger.info("Установка вебхука...")
+    import asyncio
+    asyncio.run(set_webhook_manually())
     
     logger.info("Запуск бота с вебхуком...")
     application.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 8443)),
         url_path=f"/{BOT_TOKEN}",
-        webhook_url=f"https://stars-ejwz.onrender.com/{BOT_TOKEN}"
+        webhook_url=f"https://stars-ejwz.onrender.com/{BOT_TOKEN}",
+        allowed_updates=["message", "callback_query"]
     )
-    
-    application.add_handler(conv_handler)
-    application.add_error_handler(error_handler)
-    
-    application.job_queue.run_repeating(update_ton_price, interval=3600, first=0)
-    application.job_queue.run_repeating(payment_checker, interval=30, first=0)
-    
-    logger.info("Starting bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
