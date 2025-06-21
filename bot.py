@@ -255,31 +255,26 @@ async def log_admin_action(admin_id, action):
         )
 
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE):
-    """Обновляет курс TON с использованием KuCoin API."""
+    """Обновляет курс TON с использованием CoinGecko API."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get("https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=TON-USDT") as response:
+            async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd") as response:
                 if response.status == 200:
                     data = await response.json()
-                    if data.get("code") == "200000":
-                        ton_price = float(data.get("data", {}).get("price", 2.93))
-                        await update_setting("ton_exchange_rate", ton_price)
-                        context.bot_data["ton_price"] = ton_price  # Кэшируем в памяти
-                        logger.info(f"TON price updated from KuCoin: {ton_price} USD")
-                    else:
-                        logger.error(f"KuCoin API error: {data.get('msg', 'Unknown error')}")
-                        ton_price = context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93)
-                        logger.info(f"Using cached TON price: {ton_price} USD")
+                    ton_price = float(data.get("the-open-network", {}).get("usd", 2.93))
+                    await update_setting("ton_exchange_rate", ton_price)
+                    context.bot_data["ton_price"] = ton_price  # Кэшируем в памяти
+                    logger.info(f"TON price updated from CoinGecko: {ton_price} USD")
                 elif response.status == 429:
-                    logger.warning("Rate limit exceeded for KuCoin API. Using cached TON price.")
+                    logger.warning("Rate limit exceeded for CoinGecko API. Using cached TON price.")
                     ton_price = context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93)
                     logger.info(f"Using cached TON price: {ton_price} USD")
                 else:
-                    logger.error(f"Failed to fetch TON price from KuCoin: {response.status}")
+                    logger.error(f"Failed to fetch TON price from CoinGecko: {response.status}")
                     ton_price = context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93)
                     logger.info(f"Using cached TON price: {ton_price} USD")
     except Exception as e:
-        logger.error(f"Error updating TON price from KuCoin: {e}")
+        logger.error(f"Error updating TON price from CoinGecko: {e}")
         ton_price = context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93)
         logger.info(f"Using cached TON price: {ton_price} USD")
 
@@ -881,16 +876,16 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text.lstrip("@")
                     )
                 if result:
-                    user_id, username, stars_bought, ref_bonus_ton, referrals = result
+                    selected_user_id, username, stars_bought, ref_bonus_ton, referrals = result
                     context.user_data["selected_user"] = {
-                        "user_id": user_id,
+                        "user_id": selected_user_id,
                         "username": username,
                         "stars_bought": stars_bought,
                         "ref_bonus_ton": ref_bonus_ton,
                         "ref_count": len(json.loads(referrals)) if referrals != '[]' else 0
                     }
                     context.user_data["state"] = STATE_EDIT_USER
-                    text = await get_text("user_info", user_id, username=username, user_id=user_id,
+                    text = await get_text("user_info", selected_user_id, username=username, user_id=selected_user_id,
                                         stars_bought=stars_bought, ref_bonus_ton=ref_bonus_ton,
                                         ref_count=context.user_data["selected_user"]["ref_count"])
                     keyboard = [
