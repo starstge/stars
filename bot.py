@@ -286,44 +286,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ref_id = int(args[0].split('_')[-1]) if args and args[0].startswith('ref_') else None
     logger.info(f"/start command received: user_id={user_id}, username={username}, ref_id={ref_id}")
 
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "INSERT INTO users (user_id, username, referrer_id, language) VALUES (%s, %s, %s, %s) "
-                "ON CONFLICT (user_id) DO UPDATE SET username = %s",
-                (user_id, username, ref_id, 'ru', username)
-            )
-            if ref_id:
-                await cur.execute(
-                    "UPDATE users SET referrals = referrals || %s WHERE user_id = %s",
-                    (json.dumps({"user_id": user_id, "username": username}), ref_id)
-                )
-            await conn.commit()
-
-    keyboard = [
-        [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE)],
-        [InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
-        [InlineKeyboardButton("🛠 Поддержка", callback_data=SUPPORT)],
-        [InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS)],
-        [InlineKeyboardButton("⭐ Купить звезды", callback_data=BUY_STARS)],
-    ]
-    async with get_db_connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT value FROM settings WHERE key = 'admin_ids'")
-            result = await cur.fetchone()
-            admin_ids = json.loads(result[0]) if result else []
-            if user_id in admin_ids:
-                keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    text = await get_text("welcome", user_id, total_stars_sold=get_setting("total_stars_sold") or 0)
-    logger.info(f"Sending welcome message to user_id={user_id}: {text}")
     try:
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO users (user_id, username, referrer_id, language) VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (user_id) DO UPDATE SET username = %s",
+                    (user_id, username, ref_id, 'ru', username)
+                )
+                if ref_id:
+                    await cur.execute(
+                        "UPDATE users SET referrals = referrals || %s WHERE user_id = %s",
+                        (json.dumps({"user_id": user_id, "username": username}), ref_id)
+                    )
+                await conn.commit()
+
+        keyboard = [
+            [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE)],
+            [InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
+            [InlineKeyboardButton("🛠 Поддержка", callback_data=SUPPORT)],
+            [InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS)],
+            [InlineKeyboardButton("⭐ Купить звезды", callback_data=BUY_STARS)],
+        ]
+        async with get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT value FROM settings WHERE key = 'admin_ids'")
+                result = await cur.fetchone()
+                admin_ids = json.loads(result[0]) if result else []
+                if user_id in admin_ids:
+                    keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        text = await get_text("welcome", user_id, total_stars_sold=get_setting("total_stars_sold") or 0)
+        logger.info(f"Sending welcome message to user_id={user_id}: {text}")
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         else:
             await update.message.reply_text(text, reply_markup=reply_markup)
     except Exception as e:
-        logger.error(f"Failed to send welcome message to user_id={user_id}: {e}")
+        logger.error(f"Error in start handler for user_id={user_id}: {e}")
+        await update.message.reply_text("Произошла ошибка, попробуйте позже.")
     return ConversationHandler.END
 
 async def admin_panel(update, context):
@@ -784,6 +785,9 @@ async def webhook_handler(request):
     except json.JSONDecodeError:
         logger.error("Invalid JSON received in webhook")
         return aiohttp.web.Response(text="OK")
+    except KeyError as e:
+        logger.error(f"KeyError in webhook handler: {e}")
+        return aiohttp.web.Response(text="OK")
     except Exception as e:
         logger.error(f"Webhook processing error: {e}")
         return aiohttp.web.Response(text="OK")
@@ -844,7 +848,7 @@ async def main():
             CommandHandler("cancel", start),
             CallbackQueryHandler(button_handler, pattern=r"^cancel|^" + BACK_TO_MENU + "$"),
         ],
-        per_message=True,
+        per_message=False,
     )
     app.add_handler(conv_handler)
     app.job_queue.run_repeating(update_ton_price, interval=600, first=10)
@@ -855,14 +859,22 @@ async def main():
     webhook_app['application'] = app
     webhook_app['bot'] = app.bot
     webhook_app.router.add_post('/webhook', webhook_handler)
+    webhook_app.router.add_get('/', root_handler)
 
-    # Получение URL и порта от Render
+    # Формирование webhook URL
+    render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "stars-ejwz.onrender.com")
+    webhook_url = f"https://{render_hostname}/webhook"
     port = int(os.getenv("PORT", 8080))
-    webhook_url = os.getenv("WEBHOOK_URL", f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook")
     logger.info(f"Setting webhook URL: {webhook_url}")
 
     await app.initialize()
-    await app.bot.set_webhook(webhook_url)
+    try:
+        await app.bot.set_webhook(webhook_url)
+        logger.info(f"Webhook set successfully: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+        raise
+
     await app.start()
 
     # Запуск HTTP-сервера
