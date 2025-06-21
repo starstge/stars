@@ -51,10 +51,23 @@ CHECK_PAYMENT = "check_payment"
 TOP_REFERRALS = "top_referrals"
 TOP_PURCHASES = "top_purchases"
 
-# Состояния для ConversationHandler
-(CHOOSE_LANGUAGE, BUY_STARS_AMOUNT, BUY_STARS_PAYMENT_METHOD, ADMIN_PANEL, ADMIN_STATS,
- ADMIN_EDIT_TEXTS, ADMIN_USER_STATS, ADMIN_EDIT_MARKUP, ADMIN_MANAGE_ADMINS, ADMIN_EDIT_PROFIT,
- PROFILE, TOP_REFERRALS, TOP_PURCHASES, REFERRALS, EDIT_TEXT, USER_SEARCH) = range(16)
+# Константы состояний для ConversationHandler
+STATE_CHOOSE_LANGUAGE = 0
+STATE_BUY_STARS_AMOUNT = 1
+STATE_BUY_STARS_PAYMENT_METHOD = 2
+STATE_ADMIN_PANEL = 3
+STATE_ADMIN_STATS = 4
+STATE_ADMIN_EDIT_TEXTS = 5
+STATE_EDIT_TEXT = 6
+STATE_ADMIN_USER_STATS = 7
+STATE_ADMIN_EDIT_MARKUP = 8
+STATE_ADMIN_MANAGE_ADMINS = 9
+STATE_ADMIN_EDIT_PROFIT = 10
+STATE_PROFILE = 11
+STATE_TOP_REFERRALS = 12
+STATE_TOP_PURCHASES = 13
+STATE_REFERRALS = 14
+STATE_USER_SEARCH = 15
 
 # Пул соединений
 db_pool = None
@@ -758,41 +771,41 @@ async def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CHOOSE_LANGUAGE: [CallbackQueryHandler(button_handler, pattern=r"^lang_|^cancel$")],
-            BUY_STARS_AMOUNT: [
+            STATE_CHOOSE_LANGUAGE: [CallbackQueryHandler(button_handler, pattern=r"^lang_|^cancel$")],
+            STATE_BUY_STARS_AMOUNT: [
                 CallbackQueryHandler(button_handler, pattern=r"^cancel$|^" + BACK_TO_MENU + "$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
             ],
-            BUY_STARS_PAYMENT_METHOD: [
+            STATE_BUY_STARS_PAYMENT_METHOD: [
                 CallbackQueryHandler(button_handler, pattern=r"^" + CHECK_PAYMENT + "$|^" + BACK_TO_MENU + "$"),
             ],
-            ADMIN_PANEL: [CallbackQueryHandler(button_handler, pattern=r"^admin_|^" + BACK_TO_MENU + "$")],
-            ADMIN_STATS: [CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$")],
-            ADMIN_EDIT_TEXTS: [CallbackQueryHandler(button_handler, pattern=r"^edit_text_|^" + BACK_TO_ADMIN + "$")],
-            EDIT_TEXT: [
+            STATE_ADMIN_PANEL: [CallbackQueryHandler(button_handler, pattern=r"^admin_|^" + BACK_TO_MENU + "$")],
+            STATE_ADMIN_STATS: [CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$")],
+            STATE_ADMIN_EDIT_TEXTS: [CallbackQueryHandler(button_handler, pattern=r"^edit_text_|^" + BACK_TO_ADMIN + "$")],
+            STATE_EDIT_TEXT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
                 CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$"),
             ],
-            ADMIN_USER_STATS: [
+            STATE_ADMIN_USER_STATS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
                 CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$"),
             ],
-            ADMIN_EDIT_MARKUP: [
+            STATE_ADMIN_EDIT_MARKUP: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
                 CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$"),
             ],
-            ADMIN_MANAGE_ADMINS: [
+            STATE_ADMIN_MANAGE_ADMINS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
                 CallbackQueryHandler(button_handler, pattern=r"^(add_admin|remove_admin|^" + BACK_TO_ADMIN + "$)"),
             ],
-            ADMIN_EDIT_PROFIT: [
+            STATE_ADMIN_EDIT_PROFIT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
                 CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$"),
             ],
-            PROFILE: [CallbackQueryHandler(button_handler, pattern=r"^top_|^" + BACK_TO_MENU + "$")],
-            TOP_REFERRALS: [CallbackQueryHandler(button_handler, pattern=r"^" + PROFILE + "$")],
-            TOP_PURCHASES: [CallbackQueryHandler(button_handler, pattern=r"^" + PROFILE + "$")],
-            REFERRALS: [CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_MENU + "$")],
+            STATE_PROFILE: [CallbackQueryHandler(button_handler, pattern=r"^top_|^" + BACK_TO_MENU + "$")],
+            STATE_TOP_REFERRALS: [CallbackQueryHandler(button_handler, pattern=r"^" + PROFILE + "$")],
+            STATE_TOP_PURCHASES: [CallbackQueryHandler(button_handler, pattern=r"^" + PROFILE + "$")],
+            STATE_REFERRALS: [CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_MENU + "$")],
         },
         fallbacks=[
             CommandHandler("start", start),
