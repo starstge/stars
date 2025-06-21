@@ -1156,8 +1156,12 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    async def main():
+    init_db()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     conv_handler = ConversationHandler(
-        entry_points={
+        entry_points=[CommandHandler("start", start)],
+        states={
             CHOOSE_LANGUAGE: [CallbackQueryHandler(button_handler, pattern=r"^lang_|^cancel$")],
             BUY_STARS_USERNAME: [
                 CallbackQueryHandler(button_handler, pattern=r"^set_username|payment_|confirm_|check_|cancel$"),
@@ -1168,7 +1172,7 @@ async def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
             ],
             BUY_STARS_PAYMENT_METHOD: [
-                CallbackQueryHandler(button_handler, pattern=r"^payment_|cancel$"),
+                CallbackQueryHandler(button_handler, pattern=r"^payment_"),
             ],
             SET_TEXT_KEY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
@@ -1213,6 +1217,7 @@ async def main():
     app.add_handler(conv_handler)
     app.job_queue.run_repeating(update_ton_price, interval=600, first=10)
     await app.run_polling()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
