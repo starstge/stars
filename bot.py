@@ -59,6 +59,7 @@ TOP_PURCHASES = "top_purchases"
 # Пул соединений
 db_pool = None
 
+
 def init_db():
     """Инициализирует пул соединений с базой данных."""
     global db_pool
@@ -121,7 +122,7 @@ def init_db():
                         ('card_commission', '30'),
                         ('card_payment_enabled', 'false'),
                         ('min_stars_purchase', '10'),
-                        ('markup_percentage', '{}')
+                        ('markup_percentage', %s)
                     ON CONFLICT (key) DO NOTHING;
                     INSERT INTO texts (key, value)
                     VALUES
@@ -143,7 +144,7 @@ def init_db():
                         ('back_btn', '🔙 Назад'),
                         ('cancel_btn', '❌ Отмена')
                     ON CONFLICT (key) DO NOTHING;
-                """, (str(MARKUP_PERCENTAGE),))
+                """, (str(MARKUP_PERCENTAGE),))  # Исправлено: добавлен заполнитель %s
                 conn.commit()
         logger.info("Database pool initialized successfully")
     except Exception as e:
