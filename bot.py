@@ -889,7 +889,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "tech_support":
         support_channel = get_setting("support_channel") or "@support_channel"
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_user_data(context, user_id)
         message = await query.message.reply_text(
@@ -900,7 +900,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "reviews":
         review_channel = get_setting("review_channel") or "@sacoectasy"
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_user_data(context, user_id)
         message = await query.message.reply_text(
@@ -924,7 +924,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("edit_text_"):
         text_key = data.split("_")[-1]
         context.user_data['edit_text_key'] = text_key
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="edit_text_menu")]]]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="edit_text_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_user_data(context, user_id)
         message = await query.message.reply_text(
@@ -946,7 +946,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("edit_markup_"):
         markup_type = data.split("_")[-1]
         context.user_data['markup_type'] = markup_type
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="edit_markup")]]]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="edit_markup")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_user_data(context, user_id)
         message = await query.message.reply_text(
@@ -963,7 +963,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data in ["add_admin", "remove_admin"]:
         context.user_data['admin_action'] = data
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="manage_admins")]]]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="manage_admins")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_user_data(context, user_id)
         message = await query.message.reply_text(
@@ -981,7 +981,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("edit_user_stars_"):
         target_user_id = int(data.split("_")[-1])
         context.user_data['target_user_id'] = target_user_id
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="user_stats")]]]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="user_stats")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_user_data(context, user_id)
         message = await query.message.reply_text(
@@ -995,7 +995,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("edit_user_ref_bonus_"):
         target_user_id = int(data.split("_")[-1])
         context.user_data['target_user_id'] = target_user_id
-        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="user_stats")]]]
+        keyboard = [[InlineKeyboardButton(get_text("back_btn", user_id), callback_data="user_stats")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await clear_user_data(context, user_id)
         message = await query.message.reply_text(
