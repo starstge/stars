@@ -831,7 +831,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 "amount_ton = NULL, cryptobot_invoice_id = NULL WHERE user_id = %s",
                                 (user_id,)
                             )
-                            total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars)
+                            total_stars_sold = int(get_setting("total_stars_sold") or 0) + stars
                             base_price_usd = float(get_setting("stars_price_usd") or 0.81) * (stars / 50)
                             markup = float(get_setting("markup_percentage") or MARKUP_PERCENTAGE)
                             total_profit_usd = float(get_setting("total_profit_usd") or 0) + (base_price_usd * (markup / 100))
