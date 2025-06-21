@@ -399,10 +399,10 @@ async def update_ton_price(context: ContextTypes.DEFAULT):
     async with aiohttp.ClientSession() as session:
         for attempt in range(3):
             try:
-                async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=the-open-price&network&vs_currencies=usd") as response:
+                async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=toncoin&vs_currencies=usd") as response:
                     if response.status == 200:
                         data = await response.json()
-                        ton_price = data.get("the-open-price", {}).get("network", 2.0.93)
+                        ton_price = data.get("toncoin", {}).get("usd", 2.093)
                         update_setting("ton_exchange_rate", ton_price)
                         logger.info(f"Updated TON price updated: ${ton_price}")
                         return
