@@ -334,7 +334,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
         # Отправка сообщения в канал о новом пользователе
-        channel_id = "-1001234567890"  # Замени на реальный chat_id
+        channel_id = "-1002703640431" 
         join_time = datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z')
         channel_message = f"Новый пользователь: @{username}\nВремя: {join_time}"
         await context.bot.send_message(chat_id=channel_id, text=channel_message)
