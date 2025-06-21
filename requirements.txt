@@ -3,3 +3,4 @@ psycopg2-binary==2.9.9
 aiohttp==3.9.5
 python-dotenv==1.0.1
 cachetools==5.3.3
+asyncpg==0.29.0
