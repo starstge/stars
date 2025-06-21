@@ -580,7 +580,7 @@ async def show_user_info(update: Update, context: ContextTypes.DEFAULT_TYPE, use
         with conn.cursor() as cur:
             cur.execute(
                 SELECT "SELECT user_id, username, stars_bought, ref_bonus_ton, referrals FROM users WHERE username = %s",
-                (@username,)
+                (username,)
             )
             user_data = cur.fetchone()
     if not user_data:
