@@ -304,10 +304,9 @@ async def check_ton_payment(address, memo, amount_ton):
                         for tx in transactions.get("transactions", []):
                             if tx.get("memo") == memo and float(tx.get("amount", 0)) / 1e9 >= amount_ton:
                                 return True
-                            return False
-                        elif response.status == 429:
-                            await asyncio.sleep(2 ** attempt)
-                        return False
+                        return False  # винесено з for
+                    elif response.status == 429:
+                        await asyncio.sleep(2 ** attempt)
                     else:
                         logger.error(f"TON API failed: {response.status}")
                         return False
@@ -315,7 +314,7 @@ async def check_ton_payment(address, memo, amount_ton):
                 logger.error(f"TON payment check error: {e}")
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
-            return False
+        return False 
 
 async def create_cryptobot_invoice(user_id, username, stars, is_fiat):
     base_price_usd = float(get_setting("stars_price_usd") or 0.81) * (stars / 50)
