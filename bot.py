@@ -340,12 +340,17 @@ async def create_cryptobot_invoice(user_id, username, stars, is_fiat):
                             invoice = data.get("result", {})
                             with get_db_connection() as conn:
                                 with conn.cursor() as cur:
-                                    cur.execute(
-                                        UPDATE users SET stars_bought = %s, username = %s, cryptobot_invoice_id = %s
-                                        WHERE user_id = %s
-                                        (stars, username, invoice.get('invoice_id'), user_id)
-                                    )
-                                    conn.commit()
+                                cur.execute(
+                                    """
+                                    UPDATE users
+                                    SET stars_bought = %s,
+                                        username = %s,
+                                        cryptobot_invoice_id = %s
+                                    WHERE user_id = %s
+                                    """,
+                                    (stars, username, invoice.get('invoice_id'), user_id)
+                                )
+                                conn.commit()
                             return invoice
                         logger.error(f"CryptoBot error: {data.get('error')}")
                     elif response.status == 429:
