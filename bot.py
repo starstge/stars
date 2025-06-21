@@ -53,7 +53,7 @@ TOP_REFERRALS = "top_referrals"
 TOP_PURCHASES = "top_purchases"
 
 # Константы состояний для ConversationHandler
-STATE_CHOOSE_LANGUAGE = 0
+STATE_MAIN_MENU = 0
 STATE_BUY_STARS_AMOUNT = 1
 STATE_BUY_STARS_PAYMENT_METHOD = 2
 STATE_ADMIN_PANEL = 3
@@ -168,7 +168,7 @@ async def init_db():
             await conn.execute("""
                 INSERT INTO texts (key, value)
                 VALUES
-                    ('welcome', '🌟 Привет! Это Stars Bot — твой помощник для покупки Telegram Stars! 🚀\nПродано звёзд: {{total_stars_sold}}'),
+                    ('welcome', '🌟 Добро пожаловать! Купите Telegram Stars за TON.\nЗвезд продано: {{total_stars_sold}}'),
                     ('buy_prompt', '💸 Оплатите {{amount_ton:.6f}} TON\nЗвёзд: {{stars}}\nАдрес: {{address}}\nМемо: {{memo}}\nДля: @{{username}}'),
                     ('buy_success', '🎉 Оплата прошла! @{{username}} получил {{stars}} звёзд!'),
                     ('profile', '👤 Профиль\nИмя: @{{username}}\nКуплено звезд: {{stars_bought}}\nРеф. бонус: {{ref_bonus_ton:.6f}} TON'),
@@ -304,7 +304,7 @@ async def check_ton_payment(address, memo, amount_ton):
             except Exception as e:
                 logger.error(f"TON payment check error: {e}")
                 if attempt < 2:
-                    asyncio.sleep(2 ** attempt)
+                    await asyncio.sleep(2 ** attempt)
         return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -317,14 +317,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         async with (await get_db_pool()) as conn:
-            await conn.execute(
+            # Проверяем, новый ли пользователь
+            result = await conn.fetchrow(
                 """
                 INSERT INTO users (user_id, username, referrer_id, language)
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (user_id) DO UPDATE SET username = $5
+                RETURNING (xmax = 0) AS is_new
                 """,
                 user_id, username, ref_id, 'ru', username
             )
+            is_new_user = result['is_new'] if result else False
+
             if ref_id:
                 await conn.execute(
                     """
@@ -335,22 +339,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     json.dumps({"user_id": user_id, "username": username}), ref_id
                 )
 
-        # Отправка сообщения в канал о новом пользователе
-        channel_id = "-1002703640431"  # Проверь, что это правильный chat_id
-        join_time = datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z')
-        channel_message = f"Новый пользователь: @{username}\nВремя: {join_time}"
-        try:
-            await context.bot.send_message(chat_id=channel_id, text=channel_message)
-            logger.info(f"Sent new user notification to channel: {channel_message}")
-        except Exception as e:
-            logger.error(f"Failed to send channel message: {e}")
+        # Отправка уведомления в канал только для новых пользователей
+        if is_new_user:
+            channel_id = "-1002703640431"  # Проверь, что это правильный chat_id
+            join_time = datetime.now(pytz.timezone('Europe/Kiev')).strftime('%Y-%m-%d %H:%M:%S %Z')
+            channel_message = f"Новый пользователь: @{username}\nВремя: {join_time}"
+            try:
+                await context.bot.send_message(chat_id=channel_id, text=channel_message)
+                logger.info(f"Sent new user notification to channel: {channel_message}")
+            except Exception as e:
+                logger.error(f"Failed to send channel message: {e}")
 
+        # Формирование меню
         keyboard = [
-            [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE)],
-            [InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
-            [InlineKeyboardButton("🛠 Поддержка", callback_data=SUPPORT)],
-            [InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS)],
-            [InlineKeyboardButton("⭐ Купить звезды", callback_data=BUY_STARS)],
+            [
+                InlineKeyboardButton("👤 Профиль", callback_data=PROFILE),
+                InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)
+            ],
+            [
+                InlineKeyboardButton("🛠 Поддержка", callback_data=SUPPORT),
+                InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS)
+            ],
+            [InlineKeyboardButton("⭐ Купить звёзды", callback_data=BUY_STARS)],
         ]
         async with (await get_db_pool()) as conn:
             admin_ids = json.loads((await conn.fetchval("SELECT value FROM settings WHERE key = 'admin_ids'")) or '[]')
@@ -366,14 +376,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in start handler for user_id={user_id}: {e}")
         await update.message.reply_text("Произошла ошибка, попробуйте позже.")
-    return ConversationHandler.END
+    return STATE_MAIN_MENU
 
 async def admin_panel(update, context):
     """Отображает админ-панель."""
     user_id = update.effective_user.id
     if not await is_admin(user_id):
         await update.callback_query.answer("Доступ запрещен!")
-        return ConversationHandler.END
+        return STATE_MAIN_MENU
     keyboard = [
         [InlineKeyboardButton("📊 Статистика", callback_data=ADMIN_STATS)],
         [InlineKeyboardButton("📝 Изменить тексты", callback_data=ADMIN_EDIT_TEXTS)],
@@ -563,6 +573,34 @@ async def referrals(update, context):
         await update.callback_query.edit_message_text("Ошибка при загрузке рефералов.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_REFERRALS
 
+async def support(update, context):
+    """Показывает информацию о техподдержке."""
+    user_id = update.effective_user.id
+    try:
+        text = await get_text("tech_support", user_id, support_channel=await get_setting("support_channel"))
+        keyboard = [[InlineKeyboardButton("⬅ Назад", callback_data=BACK_TO_MENU)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        return STATE_MAIN_MENU
+    except Exception as e:
+        logger.error(f"Error in support for user_id={user_id}: {e}")
+        await update.callback_query.edit_message_text("Ошибка при загрузке техподдержки.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ Назад", callback_data=BACK_TO_MENU)]]))
+        return STATE_MAIN_MENU
+
+async def reviews(update, context):
+    """Показывает информацию об отзывах."""
+    user_id = update.effective_user.id
+    try:
+        text = await get_text("reviews", user_id, review_channel=await get_setting("review_channel"))
+        keyboard = [[InlineKeyboardButton("⬅ Назад", callback_data=BACK_TO_MENU)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        return STATE_MAIN_MENU
+    except Exception as e:
+        logger.error(f"Error in reviews for user_id={user_id}: {e}")
+        await update.callback_query.edit_message_text("Ошибка при загрузке отзывов.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ Назад", callback_data=BACK_TO_MENU)]]))
+        return STATE_MAIN_MENU
+
 async def buy_stars(update, context):
     """Начинает процесс покупки звезд."""
     user_id = update.effective_user.id
@@ -616,7 +654,7 @@ async def check_payment(update, context):
             keyboard = [[InlineKeyboardButton("⬅ Назад", callback_data=BACK_TO_MENU)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
-            return ConversationHandler.END
+            return STATE_MAIN_MENU
         else:
             text = "Оплата не подтверждена. Попробуйте снова."
             keyboard = [
@@ -635,6 +673,8 @@ async def button_handler(update, context):
     """Обрабатывает нажатия кнопок."""
     query = update.callback_query
     data = query.data
+    user_id = update.effective_user.id
+    logger.info(f"Button pressed: user_id={user_id}, callback_data={data}")
     try:
         if data == BACK_TO_MENU:
             return await start(update, context)
@@ -645,17 +685,9 @@ async def button_handler(update, context):
         elif data == REFERRALS:
             return await referrals(update, context)
         elif data == SUPPORT:
-            text = await get_text("tech_support", update.effective_user.id, support_channel=await get_setting("support_channel"))
-            keyboard = [[InlineKeyboardButton("⬅ Назад", callback_data=BACK_TO_MENU)]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(text, reply_markup=reply_markup)
-            return ConversationHandler.END
+            return await support(update, context)
         elif data == REVIEWS:
-            text = await get_text("reviews", update.effective_user.id, review_channel=await get_setting("review_channel"))
-            keyboard = [[InlineKeyboardButton("⬅ Назад", callback_data=BACK_TO_MENU)]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(text, reply_markup=reply_markup)
-            return ConversationHandler.END
+            return await reviews(update, context)
         elif data == BUY_STARS:
             return await buy_stars(update, context)
         elif data == ADMIN_PANEL:
@@ -699,17 +731,17 @@ async def button_handler(update, context):
             async with (await get_db_pool()) as conn:
                 await conn.execute(
                     "UPDATE users SET language = $1 WHERE user_id = $2",
-                    language, update.effective_user.id
+                    language, user_id
                 )
             return await start(update, context)
         elif data == "cancel":
             return await start(update, context)
         await query.answer()
-        return ConversationHandler.END
+        return STATE_MAIN_MENU
     except Exception as e:
-        logger.error(f"Error in button_handler: {e}")
+        logger.error(f"Error in button_handler for user_id={user_id}, callback_data={data}: {e}")
         await query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅ Назад", callback_data=BACK_TO_MENU)]]))
-        return ConversationHandler.END
+        return STATE_MAIN_MENU
 
 async def handle_text_input(update, context):
     """Обрабатывает текстовый ввод."""
@@ -717,6 +749,7 @@ async def handle_text_input(update, context):
     text = update.message.text.strip()
     state = context.user_data.get("state", update.current_state)
     input_state = context.user_data.get("input_state")
+    logger.info(f"Text input received: user_id={user_id}, state={state}, input_state={input_state}, text={text}")
 
     try:
         if state == STATE_BUY_STARS_AMOUNT:
@@ -845,11 +878,11 @@ async def handle_text_input(update, context):
                 await update.message.reply_text("Введите корректный ID!")
                 return STATE_ADMIN_MANAGE_ADMINS
 
-        return ConversationHandler.END
+        return STATE_MAIN_MENU
     except Exception as e:
         logger.error(f"Error in handle_text_input for user_id={user_id}: {e}")
         await update.message.reply_text("Произошла ошибка.")
-        return ConversationHandler.END
+        return STATE_MAIN_MENU
 
 async def webhook_handler(request):
     """Обрабатывает входящие webhook-запросы от Telegram."""
@@ -888,41 +921,57 @@ async def main():
                 CommandHandler("cancel", start),
             ],
             states={
-                STATE_CHOOSE_LANGUAGE: [CallbackQueryHandler(button_handler, pattern=r"^lang_|^cancel$")],
+                STATE_MAIN_MENU: [
+                    CallbackQueryHandler(button_handler, pattern=f"^{PROFILE}$|^{REFERRALS}$|^{SUPPORT}$|^{REVIEWS}$|^{BUY_STARS}$|^{ADMIN_PANEL}$|^{BACK_TO_MENU}$|^cancel$")
+                ],
                 STATE_BUY_STARS_AMOUNT: [
-                    CallbackQueryHandler(button_handler, pattern=r"^cancel$|^" + BACK_TO_MENU + "$"),
+                    CallbackQueryHandler(button_handler, pattern=f"^{BACK_TO_MENU}$|^cancel$"),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
                 ],
                 STATE_BUY_STARS_PAYMENT_METHOD: [
-                    CallbackQueryHandler(button_handler, pattern=r"^" + CHECK_PAYMENT + "$|^" + BACK_TO_MENU + "$"),
+                    CallbackQueryHandler(button_handler, pattern=f"^{CHECK_PAYMENT}$|^{BACK_TO_MENU}$"),
                 ],
-                STATE_ADMIN_PANEL: [CallbackQueryHandler(button_handler, pattern=r"^admin_|^" + BACK_TO_MENU + "$")],
-                STATE_ADMIN_STATS: [CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$")],
-                STATE_ADMIN_EDIT_TEXTS: [CallbackQueryHandler(button_handler, pattern=r"^edit_text_|^" + BACK_TO_ADMIN + "$")],
+                STATE_ADMIN_PANEL: [
+                    CallbackQueryHandler(button_handler, pattern=f"^{ADMIN_STATS}$|^{ADMIN_EDIT_TEXTS}$|^{ADMIN_USER_STATS}$|^{ADMIN_EDIT_MARKUP}$|^{ADMIN_MANAGE_ADMINS}$|^{ADMIN_EDIT_PROFIT}$|^{BACK_TO_MENU}$")
+                ],
+                STATE_ADMIN_STATS: [
+                    CallbackQueryHandler(button_handler, pattern=f"^{BACK_TO_ADMIN}$")
+                ],
+                STATE_ADMIN_EDIT_TEXTS: [
+                    CallbackQueryHandler(button_handler, pattern=r"^edit_text_|^" + BACK_TO_ADMIN + "$")
+                ],
                 STATE_EDIT_TEXT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$"),
+                    CallbackQueryHandler(button_handler, pattern=f"^{BACK_TO_ADMIN}$")
                 ],
                 STATE_ADMIN_USER_STATS: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$"),
+                    CallbackQueryHandler(button_handler, pattern=f"^{BACK_TO_ADMIN}$")
                 ],
                 STATE_ADMIN_EDIT_MARKUP: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$"),
+                    CallbackQueryHandler(button_handler, pattern=f"^{BACK_TO_ADMIN}$")
                 ],
                 STATE_ADMIN_MANAGE_ADMINS: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(button_handler, pattern=r"^(add_admin|remove_admin|^" + BACK_TO_ADMIN + "$)"),
+                    CallbackQueryHandler(button_handler, pattern=r"^(add_admin|remove_admin|^" + BACK_TO_ADMIN + "$)")
                 ],
                 STATE_ADMIN_EDIT_PROFIT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_ADMIN + "$"),
+                    CallbackQueryHandler(button_handler, pattern=f"^{BACK_TO_ADMIN}$")
                 ],
-                STATE_PROFILE: [CallbackQueryHandler(button_handler, pattern=r"^top_|^" + BACK_TO_MENU + "$")],
-                STATE_TOP_REFERRALS: [CallbackQueryHandler(button_handler, pattern=r"^" + PROFILE + "$")],
-                STATE_TOP_PURCHASES: [CallbackQueryHandler(button_handler, pattern=r"^" + PROFILE + "$")],
-                STATE_REFERRALS: [CallbackQueryHandler(button_handler, pattern=r"^" + BACK_TO_MENU + "$")],
+                STATE_PROFILE: [
+                    CallbackQueryHandler(button_handler, pattern=f"^{TOP_REFERRALS}$|^{TOP_PURCHASES}$|^{BACK_TO_MENU}$")
+                ],
+                STATE_TOP_REFERRALS: [
+                    CallbackQueryHandler(button_handler, pattern=f"^{PROFILE}$")
+                ],
+                STATE_TOP_PURCHASES: [
+                    CallbackQueryHandler(button_handler, pattern=f"^{PROFILE}$")
+                ],
+                STATE_REFERRALS: [
+                    CallbackQueryHandler(button_handler, pattern=f"^{BACK_TO_MENU}$")
+                ],
             },
             fallbacks=[
                 CommandHandler("start", start),
