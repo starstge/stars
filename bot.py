@@ -1156,9 +1156,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    async def main():
-    init_db()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -1213,11 +1210,9 @@ async def main():
             CallbackQueryHandler(button_handler, pattern=r"^cancel|back$"),
         ],
     )
-
     app.add_handler(conv_handler)
     app.job_queue.run_repeating(update_ton_price, interval=600, first=10)
     await app.run_polling()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
