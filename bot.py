@@ -281,9 +281,11 @@ async def create_ton_payment(user_id, username, stars):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                UPDATE users SET stars_bought = %s, username = %s, address = %s, memo = %s, amount_ton = %s
+                """
+                UPDATE users 
+                SET stars_bought = %s, username = %s, address = %s, memo = %s, amount_ton = %s
                 WHERE user_id = %s
-                (stars, username, address, memo, amount_ton, user_id)
+                """,
             )
             conn.commit()
 
