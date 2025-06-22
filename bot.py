@@ -1431,9 +1431,16 @@ async def main():
         webhook_app.router.add_post('/webhook', webhook_handler)
         webhook_app.router.add_get('/', root_handler)
 
-        port = int(os.getenv("PORT", 8443))
-        webhook_url = os.getenv("WEBHOOK_URL", f"https://yourdomain.com:{port}/webhook")
-        
+        # Убедитесь, что порт входит в список разрешённых Telegram
+        ALLOWED_PORTS = [80, 88, 443, 8443]
+        port = int(os.getenv("PORT", 443))  # По умолчанию 443 (HTTPS)
+        if port not in ALLOWED_PORTS:
+            logger.error(f"Invalid port {port}. Telegram allows only ports: {ALLOWED_PORTS}")
+            raise ValueError(f"Port {port} is not allowed by Telegram. Use one of: {ALLOWED_PORTS}")
+
+        webhook_url = os.getenv("WEBHOOK_URL", f"https://mybotdomain.com:{port}/webhook")
+        logger.info(f"Setting webhook with port={port} and URL={webhook_url}")
+
         # Установка webhook
         await app.bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook set to {webhook_url}")
