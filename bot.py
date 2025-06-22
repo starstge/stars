@@ -108,7 +108,7 @@ async def get_db_pool():
     """Инициализирует и возвращает пул соединений с базой данных."""
     global db_pool
     async with _db_pool_lock:
-        if db_pool is None or db_pool.closed:
+        if db_pool is None or db_pool._closed:
             logger.info("Creating new database pool")
             try:
                 parsed_url = urlparse(POSTGRES_URL)
