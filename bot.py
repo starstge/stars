@@ -1018,7 +1018,7 @@ async def top_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return STATE_TOP_REFERRALS
     except Exception as e:
         logger.error(f"Error in top_referrals handler for user_id={user_id}: {e}", exc_info=True)
-        await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]))
+        await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def top_purchases(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1040,7 +1040,7 @@ async def top_purchases(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return STATE_TOP_PURCHASES
     except Exception as e:
         logger.error(f"Error in top_purchases handler for user_id={user_id}: {e}", exc_info=True)
-        await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]])
+        await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
