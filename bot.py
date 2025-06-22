@@ -1671,20 +1671,19 @@ async def update_ton_price_job(context: ContextTypes.DEFAULT_TYPE):
     await update_ton_price(context)
 
 async def main():
-    """Основная функция для запуска бота."""
     try:
         logger.info("Starting bot initialization")
         await init_db()
         application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-        # Инициализация начального курса TON
+        # Initialize TON price
         application.bot_data["ton_price"] = await get_setting("ton_exchange_rate") or 2.93
         logger.info(f"Initial TON price set: {application.bot_data['ton_price']} USD")
 
-        # Настройка периодического обновления курса TON (каждые 10 минут)
+        # Schedule TON price update job
         application.job_queue.run_repeating(update_ton_price_job, interval=600, first=10)
 
-        # Настройка ConversationHandler
+        # Set up ConversationHandler
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", start)],
             states={
@@ -1762,17 +1761,39 @@ async def main():
             allow_reentry=True
         )
 
-        # Добавление обработчиков
+        # Add handlers
         application.add_handler(conv_handler)
         application.add_handler(CommandHandler("cancel", cancel))
         application.add_error_handler(error_handler)
 
-        # Запуск бота
+        # Start polling
         logger.info("Bot starting polling")
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        await application.initialize()  # Initialize the application
+        await application.start()  # Start the application
+        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)  # Start polling
+        logger.info("Bot is running")
+        
+        # Keep the application running
+        try:
+            await asyncio.Event().wait()  # Keep the event loop alive
+        except KeyboardInterrupt:
+            logger.info("Shutting down bot")
+        finally:
+            await application.updater.stop()  # Stop polling
+            await application.stop()  # Stop the application
+            await application.shutdown()  # Shut down the application
+            logger.info("Bot shutdown complete")
+
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
         raise
 
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    finally:
+        if not loop.is_closed():
+            loop.close()
 if __name__ == "__main__":
     asyncio.run(main())
