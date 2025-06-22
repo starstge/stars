@@ -1404,7 +1404,8 @@ async def main():
                 CommandHandler("start", start),
                 CommandHandler("cancel", start),
             ],
-            allow_reentry=True
+            allow_reentry=True,
+            per_message=True  # Устанавливаем per_message=True для устранения PTBUserWarning
         )
         app.add_handler(conv_handler)
 
@@ -1431,26 +1432,28 @@ async def main():
         webhook_app.router.add_post('/webhook', webhook_handler)
         webhook_app.router.add_get('/', root_handler)
 
-        # Убедитесь, что порт входит в список разрешённых Telegram
-        ALLOWED_PORTS = [80, 88, 443, 8443]
-        port = int(os.getenv("PORT", 443))  # По умолчанию 443 (HTTPS)
-        if port not in ALLOWED_PORTS:
-            logger.error(f"Invalid port {port}. Telegram allows only ports: {ALLOWED_PORTS}")
-            raise ValueError(f"Port {port} is not allowed by Telegram. Use one of: {ALLOWED_PORTS}")
+        # Внутренний порт для приложения (задаётся Render)
+        internal_port = int(os.getenv("PORT", 8080))  # Принимаем порт Render (например, 8080)
 
-        webhook_url = os.getenv("WEBHOOK_URL", f"https://mybotdomain.com:{port}/webhook")
-        logger.info(f"Setting webhook with port={port} and URL={webhook_url}")
+        # Внешний порт для webhook (должен быть 80, 88, 443 или 8443)
+        webhook_port = 443  # Фиксируем 443 для HTTPS
+        webhook_url = os.getenv("WEBHOOK_URL", f"https://your-bot-domain.onrender.com/webhook")
+        logger.info(f"Setting webhook with internal_port={internal_port}, webhook_port={webhook_port}, URL={webhook_url}")
 
         # Установка webhook
-        await app.bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set to {webhook_url}")
+        try:
+            await app.bot.set_webhook(url=webhook_url)
+            logger.info(f"Webhook set to {webhook_url}")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+            raise
 
-        # Запуск сервера
+        # Запуск сервера на внутреннем порте
         runner = aiohttp.web.AppRunner(webhook_app)
         await runner.setup()
-        site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
+        site = aiohttp.web.TCPSite(runner, '0.0.0.0', internal_port)
         await site.start()
-        logger.info(f"Server started on port {port}")
+        logger.info(f"Server started on port {internal_port}")
 
         # Инициализация бота
         await app.initialize()
