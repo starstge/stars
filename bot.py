@@ -1405,7 +1405,7 @@ async def main():
                 CommandHandler("cancel", start),
             ],
             allow_reentry=True,
-            per_message=True  # Устанавливаем per_message=True для устранения PTBUserWarning
+            per_message=True  # Устраняет PTBUserWarning
         )
         app.add_handler(conv_handler)
 
@@ -1433,11 +1433,11 @@ async def main():
         webhook_app.router.add_get('/', root_handler)
 
         # Внутренний порт для приложения (задаётся Render)
-        internal_port = int(os.getenv("PORT", 8080))  # Принимаем порт Render (например, 8080)
+        internal_port = int(os.getenv("PORT", 8080))  # Render использует 8080
 
         # Внешний порт для webhook (должен быть 80, 88, 443 или 8443)
         webhook_port = 443  # Фиксируем 443 для HTTPS
-        webhook_url = os.getenv("WEBHOOK_URL", f"https://your-bot-domain.onrender.com/webhook")
+        webhook_url = os.getenv("WEBHOOK_URL", f"https://stars-ejwz.onrender.com/webhook")
         logger.info(f"Setting webhook with internal_port={internal_port}, webhook_port={webhook_port}, URL={webhook_url}")
 
         # Установка webhook
