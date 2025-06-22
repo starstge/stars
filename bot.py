@@ -1004,11 +1004,11 @@ async def top_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Tops: referrals command for user_id={user_id}")
     try:
         async with (await get_db_pool()) as conn:
-            users = await conn.fetch("SELECT username, referrals FROM users ORDER BY jsonb_array_length(refs::jsonb) DESC LIMIT 5")
+            users = await conn.fetch("SELECT username, referrals FROM users ORDER BY jsonb_array_length(referrals::jsonb) DESC LIMIT 5")
             text = "🏆 Топ рефералов:\n"
             for i, user in enumerate(users, 1):
                 ref_count = len(json.loads(user['referrals'])) if user['referrals'] != '[]' else 0
-                text += f"{i}. @{user['username']}: {ref_count} рефералов}\n"
+                text += f"{i}. @{user['username']}: {ref_count} рефералов\n"  # Fixed: removed extra }
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=PROFILE)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
