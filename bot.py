@@ -734,7 +734,7 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Checks payment status."""
     user_id = update.effective_user.id
-    logger.info(f"Checking payment command for user_id={user_id}"))
+    logger.info(f"Checking payment command for user_id={user_id}")
     try:
         buy_data = context.user_data.get("buy_data", {})
         recipient = buy_data.get("recipient")
@@ -746,7 +746,7 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if payment_method in ["ton_space", "cryptobot_crypto"]:
                 success = await check_ton_payment(buy_data["address"], buy_data["memo"], buy_data["amount_ton"])
             elif payment_method == "cryptobot_card":
-                success = check_cryptobot_payment(buy_data["invoice_id"]))
+                success = check_cryptobot_payment(buy_data["invoice_id"])
 
             if success:
                 if await issue_stars(recipient, stars, user_id):
