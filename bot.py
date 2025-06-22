@@ -209,7 +209,7 @@ async def init_db():
             }
             for key, value in default_texts.items():
                 await conn.execute(
-                    "INSERT INTO texts (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
+                    "INSERT INTO texts (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
                     key, value
                 )
             logger.info("Database initialized successfully")
