@@ -995,7 +995,7 @@ async def admin_edit_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STATE_ADMIN_EDIT_PROFIT
     except Exception as e:
         logger.error(f"Error in admin_edit_profit handler for user_id={user_id}: {e}", exc_info=True)
-        await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]])
+        await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def top_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
