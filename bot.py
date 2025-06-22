@@ -1401,7 +1401,7 @@ async def main():
                 ],
             },
             fallbacks=[
-                ommandHandler("start", start),
+                CommandHandler("start", start),
                 CommandHandler("cancel", start),
             ],
             allow_reentry=True
