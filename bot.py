@@ -1734,10 +1734,12 @@ async def shutdown(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error during shutdown: {e}", exc_info=True)
 
-def main():
+async def main():
     """Запускает бота."""
     try:
         logger.info("Starting bot")
+        await init_db()  # Инициализация БД внутри async main
+
         application = ApplicationBuilder().token(BOT_TOKEN).build()
         application.job_queue.run_repeating(update_ton_price, interval=600, first=10)
 
@@ -1749,30 +1751,55 @@ def main():
                 STATE_REFERRALS: [CallbackQueryHandler(button_callback)],
                 STATE_TOP_REFERRALS: [CallbackQueryHandler(button_callback)],
                 STATE_TOP_PURCHASES: [CallbackQueryHandler(button_callback)],
-                STATE_BUY_STARS_RECIPIENT: [CallbackQueryHandler(button_callback), MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
-                STATE_BUY_STARS_AMOUNT: [CallbackQueryHandler(button_callback), MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+                STATE_BUY_STARS_RECIPIENT: [
+                    CallbackQueryHandler(button_callback),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+                ],
+                STATE_BUY_STARS_AMOUNT: [
+                    CallbackQueryHandler(button_callback),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+                ],
                 STATE_BUY_STARS_PAYMENT_METHOD: [CallbackQueryHandler(button_callback)],
                 STATE_BUY_STARS_CONFIRM: [CallbackQueryHandler(button_callback)],
                 STATE_ADMIN_PANEL: [CallbackQueryHandler(button_callback)],
                 STATE_ADMIN_STATS: [CallbackQueryHandler(button_callback)],
                 STATE_ADMIN_EDIT_TEXTS: [CallbackQueryHandler(button_callback)],
-                STATE_EDIT_TEXT: [CallbackQueryHandler(button_callback), MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+                STATE_EDIT_TEXT: [
+                    CallbackQueryHandler(button_callback),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+                ],
                 STATE_ADMIN_USER_STATS: [CallbackQueryHandler(button_callback)],
-                STATE_USER_SEARCH: [CallbackQueryHandler(button_callback), MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
+                STATE_USER_SEARCH: [
+                    CallbackQueryHandler(button_callback),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+                ],
                 STATE_LIST_USERS: [CallbackQueryHandler(button_callback)],
-                STATE_EDIT_USER: [CallbackQueryHandler(button_callback), MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
-                STATE_ADMIN_EDIT_MARKUP: [CallbackQueryHandler(button_callback), MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
-                STATE_ADMIN_MANAGE_ADMINS: [CallbackQueryHandler(button_callback), MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)],
-                STATE_ADMIN_EDIT_PROFIT: [CallbackQueryHandler(button_callback), MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)]
+                STATE_EDIT_USER: [
+                    CallbackQueryHandler(button_callback),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+                ],
+                STATE_ADMIN_EDIT_MARKUP: [
+                    CallbackQueryHandler(button_callback),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+                ],
+                STATE_ADMIN_MANAGE_ADMINS: [
+                    CallbackQueryHandler(button_callback),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+                ],
+                STATE_ADMIN_EDIT_PROFIT: [
+                    CallbackQueryHandler(button_callback),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+                ],
             },
-            fallbacks=[CommandHandler("start", start)]
+            fallbacks=[CommandHandler("start", start)],
         )
 
         application.add_handler(conv_handler)
-        application.run_polling()
+
+        await application.run_polling()
+
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    asyncio.run(init_db())
-    main()
+    asyncio.run(main())
