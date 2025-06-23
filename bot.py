@@ -109,20 +109,15 @@ db_pool = None
 _db_pool_lock = asyncio.Lock()
 
 async def check_environment():
-    """Проверяет наличие необходимых переменных окружения."""
-    required_vars = [
-        ("BOT_TOKEN", BOT_TOKEN),
-        ("POSTGRES_URL", POSTGRES_URL),
-        ("SPLIT_API_TOKEN", SPLIT_API_TOKEN),
-        ("CRYPTOBOT_API_TOKEN", CRYPTOBOT_API_TOKEN),
-        ("TON_SPACE_API_TOKEN", TON_SPACE_API_TOKEN),
-        ("OWNER_WALLET", OWNER_WALLET),
-    ]
-    for var_name, var_value in required_vars:
-        if not var_value:
-            logger.error(f"Missing environment variable: {var_name}")
+    required_vars = ["BOT_TOKEN", "POSTGRES_URL"]  # Only critical variables
+    optional_vars = ["TON_SPACE_API_TOKEN", "CRYPTOBOT_API_TOKEN"]  # Optional payment-related variables
+    for var_name in required_vars:
+        if not os.getenv(var_name):
+            logger.error(f"Missing required environment variable: {var_name}")
             raise ValueError(f"Environment variable {var_name} is not set")
-    logger.info("All required environment variables are set")
+    for var_name in optional_vars:
+        if not os.getenv(var_name):
+            logger.warning(f"Optional environment variable {var_name} is not set. Related payment features may be disabled.")
 
 async def get_db_pool():
     """Инициализирует и возвращает пул соединений с базой данных."""
