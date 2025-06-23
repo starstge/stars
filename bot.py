@@ -1824,6 +1824,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update and update.message:
         await update.message.reply_text("Произошла ошибка. Попробуйте снова.")
 
+
 def main():
     """Запускает бота."""
     try:
@@ -1942,7 +1943,7 @@ def main():
                 ]
             },
             fallbacks=[CommandHandler("start", start, filters=filters.ChatType.PRIVATE)],
-            per_message=True
+            per_message=False  # Исправление: изменили на False
         )
 
         app.add_handler(conv_handler)
@@ -1953,17 +1954,30 @@ def main():
 
         app.job_queue.run_repeating(update_ton_price_job, interval=3600, first=10)
 
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
-        logger.info("Bot started successfully")
+        # Создаем новый событийный цикл
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(app.run_polling(allowed_updates=Update.ALL_TYPES))
+            logger.info("Bot started successfully")
+        finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+            logger.info("Event loop closed")
     except Exception as e:
         logger.error(f"Failed to start bot: {e}", exc_info=True)
         raise
 
 if __name__ == "__main__":
+    import asyncio
     try:
-        asyncio.run(init_db())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(init_db())
         main()
     except Exception as e:
         logger.error(f"Main execution failed: {e}", exc_info=True)
     finally:
-        asyncio.run(close_db_pool())
+        loop.run_until_complete(close_db_pool())
+        loop.close()
+        logger.info("Main event loop closed")
