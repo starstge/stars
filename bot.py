@@ -1769,7 +1769,7 @@ async def safe_shutdown(application: Application):
         logger.error(f"Error during shutdown: {e}", exc_info=True)
 
 async def main():
-    """Основная функция для запуска бота."""
+    application = None
     try:
         await initialize()
         application = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -1853,7 +1853,7 @@ async def main():
             fallbacks=[
                 CommandHandler("start", start)
             ],
-            per_message=False  # PTBUserWarning: Non-critical, see PTB FAQ
+            per_message=False
         )
 
         application.add_handler(conv_handler)
@@ -1866,14 +1866,18 @@ async def main():
 
         # Keep the bot running until interrupted
         while True:
-            await asyncio.sleep(3600)  # Sleep to prevent tight loop
+            await asyncio.sleep(3600)
 
     except KeyboardInterrupt:
         logger.info("Received shutdown signal")
-        await safe_shutdown(application)
+        if application:
+            await safe_shutdown(application)
     except Exception as e:
         logger.error(f"Unexpected error in main: {e}", exc_info=True)
-        await safe_shutdown(application)
+        if application:
+            await safe_shutdown(application)
+        else:
+            await close_db_pool()  # Ensure DB pool is closed if initialization failed
         raise
 
 if __name__ == "__main__":
