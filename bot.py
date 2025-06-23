@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
-    filters, ContextTypes, ConversationHandler, JobQueue
+    filters, ContextTypes, ConversationHandler, JobQueue, ApplicationContext
 )
 from telegram.error import BadRequest
 
