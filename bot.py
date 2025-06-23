@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
-    filters, ContextTypes, ConversationHandler, JobQueue, ApplicationContext
+    filters, ContextTypes, ConversationHandler, JobQueue, ContextTypes
 )
 from telegram.error import BadRequest
 
@@ -1724,7 +1724,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
-async def shutdown(context: ApplicationContext):
+async def shutdown(context: ContextTypes.DEFAULT_TYPE):
     """Очистка при завершении работы."""
     logger.info("Shutting down bot")
     try:
