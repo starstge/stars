@@ -1,20 +1,22 @@
+import asyncio
 import asyncpg
 import os
 import time
 import json
 import logging
-import asyncio
 import aiohttp
 import pytz
 from datetime import datetime
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import (
-    Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
     filters, ContextTypes, ConversationHandler, JobQueue
 )
 from telegram.error import BadRequest
+import random
+import string
 
 # Логирование
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -28,14 +30,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TON_API_KEY = os.getenv("TON_API_KEY")
 POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 SPLIT_API_TOKEN = os.getenv("SPLIT_API_TOKEN")
-OWNER_WALLET = os.getenv("OWNER_WALLET")
 CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN")
 TON_SPACE_API_TOKEN = os.getenv("TON_SPACE_API_TOKEN")
-MARKUP_PERCENTAGE = float(os.getenv("MARKUP_PERCENTAGE", 10))
+OWNER_WALLET = os.getenv("OWNER_WALLET") or "YOUR_TON_WALLET_ADDRESS"
+PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")  # For Telegram Crypto Pay
 SPLIT_API_URL = "https://api.split.tg/buy/stars"
 CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
-TON_SPACE_API_URL = "https://api.ton.space/v1"  # Hypothetical endpoint
-CHANNEL_ID = "-1002703640431"
+TON_SPACE_API_URL = "https://api.ton.space/v1"
+SUPPORT_CHANNEL = "@CheapStarsShop_support"
+NEWS_CHANNEL = "@cheapstarshop_news"
+TWIN_ACCOUNT_ID = 6956377285  # Your twin account ID for auto-start
+PRICE_USD_PER_50 = 0.81  # Price for 50 stars in USD
 
 # Константы callback_data
 BACK_TO_MENU = "back_to_menu"
@@ -58,6 +63,7 @@ TOP_PURCHASES = "top_purchases"
 PAY_CRYPTO = "pay_crypto"
 PAY_CARD = "pay_card"
 PAY_TON_SPACE = "pay_ton_space"
+PAY_CRYPTOBOT = "pay_cryptobot"
 EDIT_TEXT_WELCOME = "edit_text_welcome"
 EDIT_TEXT_BUY_PROMPT = "edit_text_buy_prompt"
 EDIT_TEXT_PROFILE = "edit_text_profile"
@@ -80,47 +86,48 @@ SET_PAYMENT = "set_payment"
 CONFIRM_PAYMENT = "confirm_payment"
 LIST_USERS = "list_users"
 SELECT_USER = "select_user_"
+SELECT_CRYPTO_TYPE = "select_crypto_type"
 
 # Константы состояний для ConversationHandler
 STATE_MAIN_MENU = 0
 STATE_BUY_STARS_RECIPIENT = 1
 STATE_BUY_STARS_AMOUNT = 2
 STATE_BUY_STARS_PAYMENT_METHOD = 3
-STATE_BUY_STARS_CONFIRM = 4
-STATE_ADMIN_PANEL = 5
-STATE_ADMIN_STATS = 6
-STATE_ADMIN_EDIT_TEXTS = 7
-STATE_EDIT_TEXT = 8
-STATE_ADMIN_EDIT_MARKUP = 9
-STATE_EDIT_MARKUP_TYPE = 10
-STATE_ADMIN_MANAGE_ADMINS = 11
-STATE_ADMIN_EDIT_PROFIT = 12
-STATE_PROFILE = 13
-STATE_TOP_REFERRALS = 14
-STATE_TOP_PURCHASES = 15
-STATE_REFERRALS = 16
-STATE_USER_SEARCH = 17
-STATE_EDIT_USER = 18
-STATE_LIST_USERS = 19
-STATE_ADMIN_USER_STATS = 20
+STATE_BUY_STARS_CRYPTO_TYPE = 4
+STATE_BUY_STARS_CONFIRM = 5
+STATE_ADMIN_PANEL = 6
+STATE_ADMIN_STATS = 7
+STATE_ADMIN_EDIT_TEXTS = 8
+STATE_EDIT_TEXT = 9
+STATE_ADMIN_EDIT_MARKUP = 10
+STATE_EDIT_MARKUP_TYPE = 11
+STATE_ADMIN_MANAGE_ADMINS = 12
+STATE_ADMIN_EDIT_PROFIT = 13
+STATE_PROFILE = 14
+STATE_TOP_REFERRALS = 15
+STATE_TOP_PURCHASES = 16
+STATE_REFERRALS = 17
+STATE_USER_SEARCH = 18
+STATE_EDIT_USER = 19
+STATE_LIST_USERS = 20
+STATE_ADMIN_USER_STATS = 21
 
 # Глобальный пул базы данных
 db_pool = None
 _db_pool_lock = asyncio.Lock()
 
 async def check_environment():
-    required_vars = ["BOT_TOKEN", "POSTGRES_URL"]  # Only critical variables
-    optional_vars = ["TON_SPACE_API_TOKEN", "CRYPTOBOT_API_TOKEN"]  # Optional payment-related variables
+    required_vars = ["BOT_TOKEN", "POSTGRES_URL", "SPLIT_API_TOKEN", "PROVIDER_TOKEN"]
+    optional_vars = ["TON_SPACE_API_TOKEN", "CRYPTOBOT_API_TOKEN", "TON_API_KEY"]
     for var_name in required_vars:
         if not os.getenv(var_name):
             logger.error(f"Missing required environment variable: {var_name}")
             raise ValueError(f"Environment variable {var_name} is not set")
     for var_name in optional_vars:
         if not os.getenv(var_name):
-            logger.warning(f"Optional environment variable {var_name} is not set. Related payment features may be disabled.")
+            logger.warning(f"Optional environment variable {var_name} is not set.")
 
 async def get_db_pool():
-    """Инициализирует и возвращает пул соединений с базой данных."""
     global db_pool
     async with _db_pool_lock:
         if db_pool is None or db_pool._closed:
@@ -148,22 +155,19 @@ async def get_db_pool():
                 raise
         return db_pool
 
-
 async def ensure_db_pool():
-    """Обеспечивает доступность пула базы данных с повторными попытками."""
     max_retries = 3
     for attempt in range(max_retries):
         try:
             return await get_db_pool()
         except Exception as e:
-            logger.error(f"Attempt {attempt + 1}/{max_retries} to connect to DB failed: {e}", exc_info=True)
+            logger.error(f"Attempt {attempt + 1}/{max_retries} to connect to DB failed: {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(2)
             else:
                 raise
 
 async def close_db_pool():
-    """Закрывает пул соединений с базой данных."""
     global db_pool
     async with _db_pool_lock:
         if db_pool and not db_pool._closed:
@@ -173,7 +177,6 @@ async def close_db_pool():
         db_pool = None
 
 async def init_db():
-    """Инициализирует базу данных."""
     logger.info("Initializing database")
     async with (await ensure_db_pool()) as conn:
         try:
@@ -190,9 +193,8 @@ async def init_db():
             """)
             try:
                 await conn.execute("ALTER TABLE users ADD COLUMN is_new BOOLEAN DEFAULT TRUE")
-                logger.info("Added is_new column to users table")
             except asyncpg.exceptions.DuplicateColumnError:
-                logger.info("Column is_new already exists in users table")
+                pass
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -211,11 +213,13 @@ async def init_db():
                     user_id BIGINT,
                     stars INTEGER,
                     amount_ton FLOAT,
+                    amount_usd FLOAT,
                     payment_method TEXT,
                     recipient TEXT,
                     status TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    invoice_id TEXT
+                    invoice_id TEXT,
+                    payload TEXT
                 )
             """)
             await conn.execute("""
@@ -228,7 +232,7 @@ async def init_db():
             """)
             default_settings = [
                 ("admin_ids", [6956377285]),
-                ("stars_price_usd", 0.81),
+                ("stars_price_usd", PRICE_USD_PER_50 / 50),  # Price per star
                 ("ton_exchange_rate", 2.93),
                 ("markup_ton_space", 20),
                 ("markup_cryptobot_crypto", 25),
@@ -245,12 +249,12 @@ async def init_db():
                     key, json.dumps(value)
                 )
             default_texts = {
-                "welcome": "Добро пожаловать! Купите Telegram Stars за TON.\nЗвезд продано: {stars_sold}\nВы купили: {stars_bought} звезд",
-                "buy_prompt": "Оплатите {amount_ton:.6f} TON\nСсылка: {address}\nMemo: {memo}\nДля: @{recipient}\nЗвезды: {stars}\nМетод: {method}",
+                "welcome": "Добро пожаловать в @CheapStarsShop! Купите Telegram Stars за TON.\nЗвезд продано: {stars_sold}\nВы купили: {stars_bought} звезд",
+                "buy_prompt": "Оплатите {amount_ton:.6f} TON\nСсылка: {address}\nДля: @{recipient}\nЗвезды: {stars}\nМетод: {method}",
                 "profile": "👤 Профиль\nЗвезд куплено: {stars_bought}\nРеф. бонус: {ref_bonus_ton} TON\nРефералов: {ref_count}",
                 "referrals": "🤝 Рефералы\nВаша ссылка: {ref_link}\nРефералов: {ref_count}\nБонус: {ref_bonus_ton} TON",
-                "tech_support": "🛠 Поддержка: @stars_support",
-                "reviews": "📝 Отзывы: @stars_reviews",
+                "tech_support": f"🛠 Поддержка: {SUPPORT_CHANNEL}",
+                "reviews": f"📝 Новости и отзывы: {NEWS_CHANNEL}",
                 "buy_success": "Оплата прошла! @{recipient} получил {stars} звезд.",
                 "user_info": "Пользователь: @{username}\nID: {user_id}\nЗвезд куплено: {stars_bought}\nРеф. бонус: {ref_bonus_ton} TON\nРефералов: {ref_count}"
             }
@@ -265,17 +269,15 @@ async def init_db():
             raise
 
 async def get_setting(key):
-    """Получает значение настройки."""
     async with (await ensure_db_pool()) as conn:
         try:
             result = await conn.fetchrow("SELECT value FROM settings WHERE key = $1", key)
             return json.loads(result["value"]) if result else None
         except Exception as e:
-            logger.error(f"Error getting setting {key}: {e}", exc_info=True)
+            logger.error(f"Error getting setting {key}: {e}")
             return None
 
 async def update_setting(key, value):
-    """Обновляет настройку."""
     async with (await ensure_db_pool()) as conn:
         try:
             await conn.execute(
@@ -284,22 +286,20 @@ async def update_setting(key, value):
             )
             logger.info(f"Setting {key} updated to {value}")
         except Exception as e:
-            logger.error(f"Error updating setting {key}: {e}", exc_info=True)
+            logger.error(f"Error updating setting {key}: {e}")
             raise
 
 async def get_text(key, **kwargs):
-    """Получает текст по ключу."""
     async with (await ensure_db_pool()) as conn:
         try:
             result = await conn.fetchrow("SELECT value FROM texts WHERE key = $1", key)
             text = result["value"] if result else ""
             return text.format(**kwargs)
         except Exception as e:
-            logger.error(f"Error getting text {key}: {e}", exc_info=True)
+            logger.error(f"Error getting text {key}: {e}")
             return ""
 
 async def update_text(key, value):
-    """Обновляет текст."""
     async with (await ensure_db_pool()) as conn:
         try:
             await conn.execute(
@@ -308,11 +308,10 @@ async def update_text(key, value):
             )
             logger.info(f"Text {key} updated to {value}")
         except Exception as e:
-            logger.error(f"Error updating text {key}: {e}", exc_info=True)
+            logger.error(f"Error updating text {key}: {e}")
             raise
 
 async def log_admin_action(admin_id, action):
-    """Логирует действие админа."""
     async with (await ensure_db_pool()) as conn:
         try:
             await conn.execute(
@@ -321,10 +320,9 @@ async def log_admin_action(admin_id, action):
             )
             logger.info(f"Admin action logged: admin_id={admin_id}, action={action}")
         except Exception as e:
-            logger.error(f"Error logging admin action: {e}", exc_info=True)
+            logger.error(f"Error logging admin action: {e}")
 
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE):
-    """Обновляет курс TON с использованием CoinGecko API."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd") as response:
@@ -333,120 +331,63 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE):
                     ton_price = float(data.get("the-open-network", {}).get("usd", 2.93))
                     await update_setting("ton_exchange_rate", ton_price)
                     context.bot_data["ton_price"] = ton_price
-                    logger.info(f"TON price updated from CoinGecko: {ton_price} USD")
-                elif response.status == 429:
-                    logger.warning("Rate limit exceeded for CoinGecko API. Using cached TON price.")
-                    ton_price = context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93)
-                    logger.info(f"Using cached TON price: {ton_price} USD")
+                    logger.info(f"TON price updated: {ton_price} USD")
                 else:
-                    logger.error(f"Failed to fetch TON price from CoinGecko: {response.status}")
+                    logger.error(f"Failed to fetch TON price: {response.status}")
                     ton_price = context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93)
                     logger.info(f"Using cached TON price: {ton_price} USD")
+        return ton_price
     except Exception as e:
-        logger.error(f"Error updating TON price from CoinGecko: {e}", exc_info=True)
+        logger.error(f"Error updating TON price: {e}")
         ton_price = context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93)
         logger.info(f"Using cached TON price: {ton_price} USD")
+        return ton_price
 
-async def create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipient):
-    """Создает инвойс через CryptoBot с повторными попытками."""
+async def generate_payload(user_id):
+    rand = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    return f"{user_id}_{rand}"
+
+async def create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipient, payload):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            api_token = CRYPTOBOT_API_TOKEN
-            if not api_token:
-                logger.error("CRYPTOBOT_API_TOKEN is not set")
+            if not CRYPTOBOT_API_TOKEN or not PROVIDER_TOKEN:
+                logger.error("CRYPTOBOT_API_TOKEN or PROVIDER_TOKEN is not set")
                 return None, None
-
-            headers = {"Crypto-Pay-API-Token": api_token}
-            payload = {
-                "asset": currency,
-                "amount": str(amount_usd),
-                "description": f"Purchase of {stars} stars for @{recipient.lstrip('@')}",
-                "paid_btn_name": "openChannel",
-                "paid_btn_url": f"https://t.me/{os.getenv('BOT_USERNAME')}",
-                "payload": json.dumps({"user_id": user_id, "stars": stars, "recipient": recipient})
-            }
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                async with session.post(f"{CRYPTOBOT_API_URL}/createInvoice", headers=headers, json=payload) as resp:
-                    data = await resp.json()
-                    if resp.status == 200 and data.get("ok"):
-                        invoice = data["result"]
-                        logger.info(f"CryptoBot invoice created: invoice_id={invoice['invoice_id']}, user_id={user_id}")
-                        return invoice["invoice_id"], invoice["pay_url"]
-                    else:
-                        logger.error(f"CryptoBot API error: status={resp.status}, response={data}")
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(2)
-                            continue
-                        return None, None
+            headers = {"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN}
+            amount_in_cents = int(amount_usd * 100)
+            prices = [LabeledPrice(label=f"{stars} звёзд", amount=amount_in_cents)]
+            async with (await ensure_db_pool()) as conn:
+                await conn.execute(
+                    "INSERT INTO transactions (user_id, stars, amount_usd, payment_method, recipient, status, payload) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    user_id, stars, amount_usd, f"cryptobot_{currency.lower()}", recipient, "pending", payload
+                )
+            return payload, f"https://t.me/{os.getenv('BOT_USERNAME')}?start=pay_{payload}"
         except Exception as e:
-            logger.error(f"Error creating CryptoBot invoice for user_id={user_id}, attempt {attempt + 1}/{max_retries}: {e}", exc_info=True)
+            logger.error(f"Error creating CryptoBot invoice: {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(2)
-                continue
-            return None, None
-    logger.error(f"Failed to create CryptoBot invoice after {max_retries} attempts for user_id={user_id}")
+            continue
     return None, None
 
-async def check_cryptobot_payment(invoice_id):
-    """Проверяет статус оплаты через CryptoBot с повторными попытками."""
+async def create_ton_space_invoice(amount_ton, user_id, stars, recipient, payload):
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            if not CRYPTOBOT_API_TOKEN:
-                logger.error("CRYPTOBOT_API_TOKEN is not set")
-                return False
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                headers = {"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN}
-                async with session.get(f"{CRYPTOBOT_API_URL}/getInvoices?invoice_ids={invoice_id}", headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("ok"):
-                            invoice = data["result"]["items"][0]
-                            status = invoice["status"] == "paid"
-                            logger.info(f"CryptoBot payment checked: invoice_id={invoice_id}, status={status}")
-                            return status
-                        else:
-                            logger.error(f"CryptoBot payment check failed: {data}")
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(2)
-                                continue
-                            return False
-                    else:
-                        logger.error(f"CryptoBot API error: status={resp.status}")
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(2)
-                            continue
-                        return False
-        except Exception as e:
-            logger.error(f"Error checking CryptoBot payment for invoice_id={invoice_id}, attempt {attempt + 1}/{max_retries}: {e}", exc_info=True)
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2)
-                continue
-            return False
-    logger.error(f"Failed to check CryptoBot payment after {max_retries} attempts for invoice_id={invoice_id}")
-    return False
-
-async def create_ton_space_invoice(amount_ton, user_id, stars, recipient):
-    """Создает инвойс через TON Space API с повторными попытками."""
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            api_token = TON_SPACE_API_TOKEN
-            if not api_token:
+            if not TON_SPACE_API_TOKEN:
                 logger.error("TON_SPACE_API_TOKEN is not set")
                 return None, None
-
-            headers = {"Authorization": f"Bearer {api_token}"}
-            payload = {
+            headers = {"Authorization": f"Bearer {TON_SPACE_API_TOKEN}"}
+            payload_data = {
                 "amount": str(amount_ton),
                 "currency": "TON",
                 "description": f"Purchase of {stars} stars for @{recipient.lstrip('@')}",
                 "callback_url": f"https://t.me/{os.getenv('BOT_USERNAME')}",
-                "metadata": json.dumps({"user_id": user_id, "stars": stars, "recipient": recipient})
+                "metadata": json.dumps({"user_id": user_id, "stars": stars, "recipient": recipient, "payload": payload})
             }
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                async with session.post(f"{TON_SPACE_API_URL}/invoices", headers=headers, json=payload) as resp:
+                async with session.post(f"{TON_SPACE_API_URL}/invoices", headers=headers, json=payload_data) as resp:
                     data = await resp.json()
                     if resp.status == 200 and data.get("status") == "success":
                         invoice = data["invoice"]
@@ -459,16 +400,13 @@ async def create_ton_space_invoice(amount_ton, user_id, stars, recipient):
                             continue
                         return None, None
         except Exception as e:
-            logger.error(f"Error creating TON Space invoice for user_id={user_id}, attempt {attempt + 1}/{max_retries}: {e}", exc_info=True)
+            logger.error(f"Error creating TON Space invoice: {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(2)
-                continue
-            return None, None
-    logger.error(f"Failed to create TON Space invoice after {max_retries} attempts for user_id={user_id}")
+            continue
     return None, None
 
 async def check_ton_space_payment(invoice_id):
-    """Проверяет статус оплаты через TON Space с повторными попытками."""
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -498,16 +436,14 @@ async def check_ton_space_payment(invoice_id):
                             continue
                         return False
         except Exception as e:
-            logger.error(f"Error checking TON Space payment for invoice_id={invoice_id}, attempt {attempt + 1}/{max_retries}: {e}", exc_info=True)
+            logger.error(f"Error checking TON Space payment: {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(2)
                 continue
             return False
-    logger.error(f"Failed to check TON Space payment after {max_retries} attempts for invoice_id={invoice_id}")
     return False
 
 async def issue_stars(recipient_username, stars, user_id):
-    """Выдает звезды через Split API с повторными попытками."""
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -539,41 +475,18 @@ async def issue_stars(recipient_username, stars, user_id):
                             continue
                         return False
         except Exception as e:
-            logger.error(f"Error issuing stars for user_id={user_id}, attempt {attempt + 1}/{max_retries}: {e}", exc_info=True)
+            logger.error(f"Error issuing stars: {e}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(2)
                 continue
             return False
-    logger.error(f"Failed to issue stars after {max_retries} attempts for user_id={user_id}")
     return False
 
-async def check_ton_payment(address, memo, amount_ton):
-    """Проверяет оплату TON."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Bearer {TON_API_KEY}"}
-            async with session.get(f"https://api.tonscan.org/v1/transactions?address={address}", headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    for tx in data.get("transactions", []):
-                        if tx.get("memo") == memo and abs(float(tx.get("amount_ton", 0)) - amount_ton) < 0.0001:
-                            logger.info(f"TON payment confirmed: memo={memo}, amount={amount_ton}")
-                            return True
-                    logger.info(f"TON payment not found: memo={memo}, amount={amount_ton}")
-                    return False
-                else:
-                    logger.error(f"TON API error: {resp.status}")
-                    return False
-    except Exception as e:
-        logger.error(f"Error checking TON payment: {e}", exc_info=True)
-        return False
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start."""
     user_id = update.effective_user.id
     username = update.effective_user.username or f"user_{user_id}"
     ref_id = context.args[0].split("_")[1] if context.args and context.args[0].startswith("ref_") else None
-    logger.info(f"Start command received: user_id={user_id}, username={username}, ref_id={ref_id}")
+    logger.info(f"Start command: user_id={user_id}, username={username}, ref_id={ref_id}")
 
     try:
         async with (await ensure_db_pool()) as conn:
@@ -585,7 +498,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "INSERT INTO users (user_id, username, created_at, is_new) VALUES ($1, $2, $3, $4)",
                     user_id, username, datetime.now(pytz.UTC), True
                 )
-                logger.info(f"New user created: user_id={user_id}, username={username}")
                 if ref_id and int(ref_id) != user_id:
                     referrer = await conn.fetchrow("SELECT referrals, is_new FROM users WHERE user_id = $1", int(ref_id))
                     if referrer and referrer["is_new"]:
@@ -601,20 +513,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 "UPDATE users SET ref_bonus_ton = ref_bonus_ton + $1 WHERE user_id = $2",
                                 ref_bonus, int(ref_id)
                             )
-                            logger.info(f"Referral added: user_id={user_id} to referrer={ref_id}")
                             try:
                                 await context.bot.send_message(
-                                    chat_id=CHANNEL_ID,
+                                    chat_id=NEWS_CHANNEL,
                                     text=f"Новый пользователь @{username} через реферала ID {ref_id}"
                                 )
                             except Exception as e:
-                                logger.error(f"Failed to send channel message: {e}", exc_info=True)
+                                logger.error(f"Failed to send channel message: {e}")
             else:
                 await conn.execute(
                     "UPDATE users SET username = $1 WHERE user_id = $2",
                     username, user_id
                 )
-                logger.info(f"User updated: user_id={user_id}, username={username}")
 
         text = await get_text("welcome", stars_sold=stars_sold, stars_bought=stars_bought)
         keyboard = [
@@ -634,19 +544,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(text, reply_markup=reply_markup)
         context.user_data.clear()
         context.user_data["state"] = STATE_MAIN_MENU
-        logger.info(f"Start command completed for user_id={user_id}")
         return STATE_MAIN_MENU
     except Exception as e:
-        logger.error(f"Error in start handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in start: {e}")
         if update.message:
             await update.message.reply_text("Произошла ошибка. Попробуйте снова.")
         context.user_data.clear()
         return STATE_MAIN_MENU
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик профиля."""
     user_id = update.effective_user.id
-    logger.info(f"Profile command for user_id={user_id}")
     try:
         async with (await ensure_db_pool()) as conn:
             user = await conn.fetchrow("SELECT stars_bought, ref_bonus_ton, referrals FROM users WHERE user_id = $1", user_id)
@@ -663,20 +570,17 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
                 context.user_data["state"] = STATE_PROFILE
                 await update.callback_query.answer()
-                logger.info(f"Profile displayed for user_id={user_id}")
                 return STATE_PROFILE
             else:
                 await update.callback_query.answer(text="Пользователь не найден.")
                 return STATE_MAIN_MENU
     except Exception as e:
-        logger.error(f"Error in profile handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in profile: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик рефералов."""
     user_id = update.effective_user.id
-    logger.info(f"Referrals command for user_id={user_id}")
     try:
         async with (await ensure_db_pool()) as conn:
             user = await conn.fetchrow("SELECT ref_bonus_ton, referrals FROM users WHERE user_id = $1", user_id)
@@ -690,20 +594,17 @@ async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
                 context.user_data["state"] = STATE_REFERRALS
                 await update.callback_query.answer()
-                logger.info(f"Referrals displayed for user_id={user_id}")
                 return STATE_REFERRALS
             else:
                 await update.callback_query.answer(text="Пользователь не найден.")
                 return STATE_MAIN_MENU
     except Exception as e:
-        logger.error(f"Error in referrals handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in referrals: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик поддержки."""
     user_id = update.effective_user.id
-    logger.info(f"Support command for user_id={user_id}")
     try:
         text = await get_text("tech_support")
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
@@ -711,17 +612,14 @@ async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         context.user_data["state"] = STATE_MAIN_MENU
         await update.callback_query.answer()
-        logger.info(f"Support displayed for user_id={user_id}")
         return STATE_MAIN_MENU
     except Exception as e:
-        logger.error(f"Error in support handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in support: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def reviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик отзывов."""
     user_id = update.effective_user.id
-    logger.info(f"Reviews command for user_id={user_id}")
     try:
         text = await get_text("reviews")
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
@@ -729,22 +627,19 @@ async def reviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         context.user_data["state"] = STATE_MAIN_MENU
         await update.callback_query.answer()
-        logger.info(f"Reviews displayed for user_id={user_id}")
         return STATE_MAIN_MENU
     except Exception as e:
-        logger.error(f"Error in reviews handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in reviews: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def buy_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начинает процесс покупки звезд."""
     user_id = update.effective_user.id
-    logger.info(f"Buy stars command for user_id={user_id}")
     try:
         context.user_data["buy_data"] = {}
         text = "Выберите параметры покупки:"
         buy_data = context.user_data["buy_data"]
-        recipient_display = buy_data.get("recipient", "-").lstrip("@")  # Исправление: убираем @ для отображения
+        recipient_display = buy_data.get("recipient", "-").lstrip("@")
         keyboard = [
             [InlineKeyboardButton(f"Кому звезды: @{recipient_display}", callback_data=SET_RECIPIENT)],
             [InlineKeyboardButton(f"Количество звезд: {buy_data.get('stars', '-')}", callback_data=SET_AMOUNT)],
@@ -756,17 +651,14 @@ async def buy_stars(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
         await update.callback_query.answer()
-        logger.info(f"Buy stars menu displayed for user_id={user_id}")
         return STATE_BUY_STARS_RECIPIENT
     except Exception as e:
-        logger.error(f"Error in buy_stars handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in buy_stars: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def set_recipient(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запрашивает username получателя."""
     user_id = update.effective_user.id
-    logger.info(f"Set recipient command for user_id={user_id}")
     try:
         text = "Введите username получателя звезд (например, @username):"
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
@@ -775,80 +667,88 @@ async def set_recipient(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["input_state"] = "recipient"
         context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
         await update.callback_query.answer()
-        logger.info(f"Recipient prompt displayed for user_id={user_id}")
         return STATE_BUY_STARS_RECIPIENT
     except Exception as e:
-        logger.error(f"Error in set_recipient handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in set_recipient: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def set_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запрашивает количество звезд."""
     user_id = update.effective_user.id
-    logger.info(f"Set amount command for user_id={user_id}")
     try:
-        text = "Введите количество звезд:"
+        text = "Введите количество звезд (кратно 50):"
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         context.user_data["input_state"] = "amount"
         context.user_data["state"] = STATE_BUY_STARS_AMOUNT
         await update.callback_query.answer()
-        logger.info(f"Amount prompt displayed for user_id={user_id}")
         return STATE_BUY_STARS_AMOUNT
     except Exception as e:
-        logger.error(f"Error in set_amount handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in set_amount: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def set_payment_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает выбор метода оплаты."""
     user_id = update.effective_user.id
-    logger.info(f"Set payment method command for user_id={user_id}")
     try:
+        buy_data = context.user_data.get("buy_data", {})
+        if not buy_data.get("recipient") or not buy_data.get("stars"):
+            await update.callback_query.message.reply_text("Сначала выберите получателя и количество звезд!")
+            return STATE_BUY_STARS_RECIPIENT
         text = "Выберите метод оплаты:"
         keyboard = [
-            [InlineKeyboardButton("Криптой", callback_data=PAY_CRYPTO)],
-            [InlineKeyboardButton("Картой", callback_data=PAY_CARD)],
-            [InlineKeyboardButton("TON Space", callback_data=PAY_TON_SPACE)],
+            [InlineKeyboardButton("Криптовалюта (+25%)", callback_data=SELECT_CRYPTO_TYPE)],
+            [InlineKeyboardButton("Карта (+25%)", callback_data=PAY_CARD)],
             [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         context.user_data["state"] = STATE_BUY_STARS_PAYMENT_METHOD
         await update.callback_query.answer()
-        logger.info(f"Payment method menu displayed for user_id={user_id}")
         return STATE_BUY_STARS_PAYMENT_METHOD
     except Exception as e:
-        logger.error(f"Error in set_payment_method handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in set_payment_method: {e}")
+        await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
+        return STATE_MAIN_MENU
+
+async def select_crypto_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    try:
+        text = "Выберите метод оплаты криптовалютой:"
+        keyboard = [
+            [InlineKeyboardButton("TON Space (+20%)", callback_data=PAY_TON_SPACE)],
+            [InlineKeyboardButton("CryptoBot (+25%)", callback_data=PAY_CRYPTOBOT)],
+            [InlineKeyboardButton("🔙 Назад", callback_data=SET_PAYMENT)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        context.user_data["state"] = STATE_BUY_STARS_CRYPTO_TYPE
+        await update.callback_query.answer()
+        return STATE_BUY_STARS_CRYPTO_TYPE
+    except Exception as e:
+        logger.error(f"Error in select_crypto_type: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     buy_data = context.user_data.get("buy_data", {})
-    logger.info(f"Confirm payment requested by user_id={user_id}")
     try:
         recipient = buy_data.get("recipient")
         stars = buy_data.get("stars")
         amount_ton = buy_data.get("amount_ton")
         pay_url = buy_data.get("pay_url")
         if not all([recipient, stars, amount_ton, pay_url]):
-            logger.error(f"Incomplete buy_data for user_id={user_id}: {buy_data}")
-            error_text = "Неполные данные для оплаты. Начните заново."
-            error_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BUY_STARS)]])
-            if update.callback_query:
-                await update.callback_query.message.reply_text(error_text, reply_markup=error_markup)
-            else:
-                await update.message.reply_text(error_text, reply_markup=error_markup)
+            logger.error(f"Incomplete buy_data: {buy_data}")
+            await update.callback_query.message.reply_text("Неполные данные для оплаты. Начните заново.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BUY_STARS)]]))
             return STATE_BUY_STARS
         text = await get_text(
-            "buy_prompt",  # Исправлено: используем buy_prompt вместо confirm_payment
+            "buy_prompt",
             recipient=recipient.lstrip("@"),
             stars=stars,
             amount_ton=f"{amount_ton:.6f}",
             address=pay_url,
-            memo="N/A",  # Memo не используется для CryptoBot/TON Space
             method=buy_data.get("payment_method", "unknown")
         )
         keyboard = [
@@ -857,7 +757,6 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Назад", callback_data=BUY_STARS)]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        # Store current message content to avoid redundant edits
         current_message = context.user_data.get("last_confirm_message", {})
         new_message = {"text": text, "reply_markup": reply_markup.to_dict()}
         if update.callback_query and current_message != new_message:
@@ -868,19 +767,12 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["last_confirm_message"] = new_message
         return STATE_BUY_STARS_CONFIRM
     except Exception as e:
-        logger.error(f"Error in confirm_payment handler for user_id={user_id}: {e}", exc_info=True)
-        error_text = "Произошла ошибка."
-        error_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]])
-        if update.callback_query:
-            await update.callback_query.message.reply_text(error_text, reply_markup=error_markup)
-        else:
-            await update.message.reply_text(error_text, reply_markup=error_markup)
+        logger.error(f"Error in confirm_payment: {e}")
+        await update.callback_query.message.reply_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверяет статус оплаты."""
     user_id = update.effective_user.id
-    logger.info(f"Checking payment command for user_id={user_id}")
     try:
         buy_data = context.user_data.get("buy_data", {})
         recipient = buy_data.get("recipient")
@@ -888,17 +780,13 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payment_method = buy_data.get("payment_method")
         invoice_id = buy_data.get("invoice_id")
         if not all([recipient, stars, payment_method, invoice_id]):
-            logger.error(f"Incomplete buy_data for payment check by user_id={user_id}: {buy_data}")
+            logger.error(f"Incomplete buy_data: {buy_data}")
             await update.callback_query.message.reply_text("Неполные данные для проверки оплаты. Начните заново.")
             return STATE_BUY_STARS
         success = False
-
         async with (await ensure_db_pool()) as conn:
             if payment_method == "ton_space_api":
                 success = await check_ton_space_payment(invoice_id)
-            elif payment_method in ["cryptobot_crypto", "cryptobot_card"]:
-                success = await check_cryptobot_payment(invoice_id)
-
             if success:
                 if await issue_stars(recipient, stars, user_id):
                     await conn.execute(
@@ -906,9 +794,8 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         stars, user_id
                     )
                     await conn.execute(
-                        "INSERT INTO transactions (user_id, stars, amount_ton, payment_method, recipient, status, invoice_id) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                        user_id, stars, buy_data["amount_ton"], payment_method, recipient, "completed", invoice_id
+                        "UPDATE transactions SET status = $1 WHERE invoice_id = $2",
+                        "completed", invoice_id
                     )
                     text = await get_text("buy_success", recipient=recipient.lstrip("@"), stars=stars)
                     await update.callback_query.message.reply_text(text)
@@ -916,32 +803,26 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context.user_data["state"] = STATE_MAIN_MENU
                     await start(update, context)
                     await update.callback_query.answer()
-                    logger.info(f"Payment successful for user_id={user_id}, stars={stars}, recipient={recipient}")
                     return STATE_MAIN_MENU
                 else:
                     await update.callback_query.message.reply_text("Ошибка выдачи звезд. Обратитесь в поддержку.")
-                    logger.error(f"Failed to issue stars for user_id={user_id}")
             else:
                 await update.callback_query.message.reply_text("Оплата не подтверждена. Попробуйте снова.")
-                logger.info(f"Payment not confirmed for user_id={user_id}")
             await update.callback_query.answer()
             return STATE_BUY_STARS_CONFIRM
     except Exception as e:
-        logger.error(f"Error in check_payment handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in check_payment: {e}")
         await update.callback_query.message.reply_text("Произошла ошибка.")
         return STATE_BUY_STARS_CONFIRM
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик админ-панели."""
     user_id = update.effective_user.id
-    logger.info(f"Admin panel command for user_id={user_id}")
     try:
         admin_ids = await get_setting("admin_ids") or [6956377285]
         if user_id not in admin_ids:
             await update.callback_query.edit_message_text("Доступ запрещен!")
             context.user_data["state"] = STATE_MAIN_MENU
             await update.callback_query.answer()
-            logger.info(f"Access denied to admin panel for user_id={user_id}")
             return STATE_MAIN_MENU
         text = "🛠️ Админ-панель"
         keyboard = [
@@ -957,17 +838,14 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         context.user_data["state"] = STATE_ADMIN_PANEL
         await update.callback_query.answer()
-        logger.info(f"Admin panel displayed for user_id={user_id}")
         return STATE_ADMIN_PANEL
     except Exception as e:
-        logger.error(f"Error in admin_panel handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in admin_panel: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отображает статистику."""
     user_id = update.effective_user.id
-    logger.info(f"Admin stats command for user_id={user_id}")
     try:
         async with (await ensure_db_pool()) as conn:
             profit_percent = float(await get_setting("profit_percent") or 10)
@@ -983,45 +861,14 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
             context.user_data["state"] = STATE_ADMIN_STATS
             await update.callback_query.answer()
-            logger.info(f"Admin stats displayed for user_id={user_id}")
             return STATE_ADMIN_STATS
-    except asyncpg.exceptions.InterfaceError as e:
-        logger.error(f"Database pool error in admin_stats for user_id={user_id}: {e}", exc_info=True)
-        try:
-            global db_pool
-            db_pool = None
-            async with (await ensure_db_pool()) as conn:
-                profit_percent = float(await get_setting("profit_percent") or 10)
-                total_profit = await conn.fetchval(
-                    "SELECT COALESCE(SUM(amount_ton * $1 / 100), 0) FROM transactions WHERE status = 'completed'",
-                    profit_percent
-                )
-                total_stars = await conn.fetchval("SELECT COALESCE(SUM(stars), 0) FROM transactions WHERE status = 'completed'")
-                total_users = await conn.fetchval("SELECT COALESCE(COUNT(*), 0) FROM users")
-                text = f"📊 Статистика\nПрибыль: {total_profit:.6f} TON\nЗвезд продано: {total_stars}\nПользователей: {total_users}"
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
-                context.user_data["state"] = STATE_ADMIN_STATS
-                await update.callback_query.answer()
-                logger.info(f"Admin stats displayed after retry for user_id={user_id}")
-                return STATE_ADMIN_STATS
-        except Exception as retry_e:
-            logger.error(f"Retry failed in admin_stats for user_id={user_id}: {retry_e}", exc_info=True)
-            await update.callback_query.edit_message_text(
-                "Ошибка базы данных.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]])
-            )
-            return STATE_MAIN_MENU
     except Exception as e:
-        logger.error(f"Error in admin_stats handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in admin_stats: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def admin_edit_texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Редактирование текстов."""
     user_id = update.effective_user.id
-    logger.info(f"Admin edit texts command for user_id={user_id}")
     try:
         text = "Выберите текст для редактирования:"
         keyboard = [
@@ -1032,10 +879,9 @@ async def admin_edit_texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Поддержка", callback_data=EDIT_TEXT_TECH_SUPPORT)],
             [InlineKeyboardButton("Отзывы", callback_data=EDIT_TEXT_REVIEWS)],
             [InlineKeyboardButton("Успешная покупка", callback_data=EDIT_TEXT_BUY_SUCCESS)],
-            [InlineKeyboardButton("🔙 Назад", callback_data= ConversationHandler.END)] # InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
+            [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        # Проверяем, вызвано ли через callback или текстовое сообщение
         current_message = context.user_data.get("last_admin_edit_texts_message", {})
         new_message = {"text": text, "reply_markup": reply_markup.to_dict()}
         if update.callback_query and current_message != new_message:
@@ -1045,14 +891,10 @@ async def admin_edit_texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif update.message:
             await update.message.reply_text(text, reply_markup=reply_markup)
             context.user_data["last_admin_edit_texts_message"] = new_message
-        else:
-            logger.error(f"No valid update type for user_id={user_id}")
-            return STATE_MAIN_MENU
         context.user_data["state"] = STATE_ADMIN_EDIT_TEXTS
-        logger.info(f"Edit texts menu displayed for user_id={user_id}")
         return STATE_ADMIN_EDIT_TEXTS
     except Exception as e:
-        logger.error(f"Error in admin_edit_texts handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in admin_edit_texts: {e}")
         error_text = "Произошла ошибка."
         error_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]])
         if update.callback_query:
@@ -1062,9 +904,7 @@ async def admin_edit_texts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STATE_MAIN_MENU
 
 async def edit_text_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Запрашивает новый текст."""
     user_id = update.effective_user.id
-    logger.info(f"Edit text prompt command for user_id={user_id}")
     try:
         text_key = update.callback_query.data
         context.user_data["text_key"] = text_key
@@ -1074,16 +914,14 @@ async def edit_text_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         context.user_data["state"] = STATE_EDIT_TEXT
         await update.callback_query.answer()
-        logger.info(f"Edit text prompt displayed for user_id={user_id}, text_key={text_key}")
         return STATE_EDIT_TEXT
     except Exception as e:
-        logger.error(f"Error in edit_text_prompt handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in edit_text_prompt: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def admin_user_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    logger.info(f"Admin user stats requested by user_id={user_id}")
     try:
         text = "Статистика пользователей\n\nВыберите действие:"
         keyboard = [
@@ -1096,9 +934,9 @@ async def admin_user_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         else:
             await update.message.reply_text(text, reply_markup=reply_markup)
-        return STATE_USER_SEARCH
+        return STATE_ADMIN_USER_STATS
     except Exception as e:
-        logger.error(f"Error in admin_user_stats handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in admin_user_stats: {e}")
         error_text = "Произошла ошибка."
         error_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]])
         if update.callback_query:
@@ -1108,9 +946,7 @@ async def admin_user_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return STATE_MAIN_MENU
 
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отображает список пользователей."""
     user_id = update.effective_user.id
-    logger.info(f"List users command for user_id={user_id}")
     try:
         async with (await ensure_db_pool()) as conn:
             users = await conn.fetch("SELECT user_id, username, stars_bought, referrals FROM users LIMIT 10")
@@ -1129,17 +965,14 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
             context.user_data["state"] = STATE_LIST_USERS
             await update.callback_query.answer()
-            logger.info(f"User list displayed for user_id={user_id}")
             return STATE_LIST_USERS
     except Exception as e:
-        logger.error(f"Error in list_users handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in list_users: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def admin_edit_markup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Изменение наценки."""
     user_id = update.effective_user.id
-    logger.info(f"Admin edit markup command for user_id={user_id}")
     try:
         text = "Выберите тип наценки:"
         keyboard = [
@@ -1153,17 +986,14 @@ async def admin_edit_markup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
         context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
         await update.callback_query.answer()
-        logger.info(f"Edit markup menu displayed for user_id={user_id}")
         return STATE_ADMIN_EDIT_MARKUP
     except Exception as e:
-        logger.error(f"Error in admin_edit_markup handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in admin_edit_markup: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Управление админами."""
     user_id = update.effective_user.id
-    logger.info(f"Admin manage admins command for user_id={user_id}")
     try:
         text = "Выберите действие:"
         keyboard = [
@@ -1172,7 +1002,6 @@ async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE
             [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        # Проверяем, отличается ли новое сообщение от текущего
         current_message = context.user_data.get("last_admin_manage_message", {})
         new_message = {"text": text, "reply_markup": reply_markup.to_dict()}
         if update.callback_query and current_message != new_message:
@@ -1184,10 +1013,9 @@ async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
         if update.callback_query:
             await update.callback_query.answer()
-        logger.info(f"Manage admins menu displayed for user_id={user_id}")
         return STATE_ADMIN_MANAGE_ADMINS
     except Exception as e:
-        logger.error(f"Error in admin_manage_admins handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in admin_manage_admins: {e}")
         error_text = "Произошла ошибка."
         error_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]])
         if update.callback_query:
@@ -1195,11 +1023,9 @@ async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             await update.message.reply_text(error_text, reply_markup=error_markup)
         return STATE_MAIN_MENU
-    
+
 async def admin_edit_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Изменение прибыли."""
     user_id = update.effective_user.id
-    logger.info(f"Admin edit profit command for user_id={user_id}")
     try:
         text = "Введите процент прибыли:"
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
@@ -1208,17 +1034,14 @@ async def admin_edit_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["input_state"] = "profit_percent"
         context.user_data["state"] = STATE_ADMIN_EDIT_PROFIT
         await update.callback_query.answer()
-        logger.info(f"Edit profit prompt displayed for user_id={user_id}")
         return STATE_ADMIN_EDIT_PROFIT
     except Exception as e:
-        logger.error(f"Error in admin_edit_profit handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in admin_edit_profit: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def top_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Топ рефералов."""
     user_id = update.effective_user.id
-    logger.info(f"Tops: referrals command for user_id={user_id}")
     try:
         async with (await ensure_db_pool()) as conn:
             users = await conn.fetch("SELECT username, referrals FROM users ORDER BY jsonb_array_length(referrals::jsonb) DESC LIMIT 5")
@@ -1231,17 +1054,14 @@ async def top_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
             context.user_data["state"] = STATE_TOP_REFERRALS
             await update.callback_query.answer()
-            logger.info(f"Top referrals displayed for user_id={user_id}")
             return STATE_TOP_REFERRALS
     except Exception as e:
-        logger.error(f"Error in top_referrals handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in top_referrals: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def top_purchases(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Топы покупок."""
     user_id = update.effective_user.id
-    logger.info(f"Top purchases command for user_id={user_id}")
     try:
         async with (await ensure_db_pool()) as conn:
             users = await conn.fetch("SELECT username, stars_bought FROM users ORDER BY stars_bought DESC LIMIT 5")
@@ -1253,33 +1073,30 @@ async def top_purchases(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
             context.user_data["state"] = STATE_TOP_PURCHASES
             await update.callback_query.answer()
-            logger.info(f"Top purchases displayed for user_id={user_id}")
             return STATE_TOP_PURCHASES
     except Exception as e:
-        logger.error(f"Error in top_purchases handler for user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in top_purchases: {e}")
         await update.callback_query.edit_message_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает текстовый ввод."""
     user_id = update.effective_user.id
     if update.edited_message:
-        logger.info(f"Игнорируем отредактированное сообщение от user_id={user_id}")
+        logger.info(f"Ignoring edited message from user_id={user_id}")
         return context.user_data.get("state", STATE_MAIN_MENU)
     if not update.message:
-        logger.error(f"Отсутствует сообщение в update для user_id={user_id}: {update}")
+        logger.error(f"No message in update for user_id={user_id}")
         return context.user_data.get("state", STATE_MAIN_MENU)
     text = update.message.text.strip()
     state = context.user_data.get("state", STATE_MAIN_MENU)
     input_state = context.user_data.get("input_state")
-    logger.info(f"Получен текстовый ввод: user_id={user_id}, state={state}, input_state={input_state}, text={text}")
+    logger.info(f"Text input: user_id={user_id}, state={state}, input_state={input_state}, text={text}")
 
     try:
         async with (await ensure_db_pool()) as conn:
             if state == STATE_BUY_STARS_RECIPIENT and input_state == "recipient":
                 if not text.startswith("@"):
                     await update.message.reply_text("Username должен начинаться с @!")
-                    logger.info(f"Неверный формат получателя от user_id={user_id}: {text}")
                     return STATE_BUY_STARS_RECIPIENT
                 buy_data = context.user_data.get("buy_data", {})
                 buy_data["recipient"] = text
@@ -1296,39 +1113,17 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await update.message.reply_text(text, reply_markup=reply_markup)
-                logger.info(f"Установлен получатель для user_id={user_id}: {text}")
                 return STATE_BUY_STARS_RECIPIENT
 
             elif state == STATE_BUY_STARS_AMOUNT and input_state == "amount":
                 try:
                     stars = int(text)
                     min_stars = await get_setting("min_stars_purchase") or 10
-                    if stars < min_stars:
-                        await update.message.reply_text(f"Введите количество звезд не менее {min_stars}!")
-                        logger.info(f"Недопустимое количество звезд от user_id={user_id}: {stars}")
+                    if stars < min_stars or stars % 50 != 0:
+                        await update.message.reply_text(f"Введите количество звезд не менее {min_stars}, кратное 50!")
                         return STATE_BUY_STARS_AMOUNT
                     buy_data = context.user_data.get("buy_data", {})
                     buy_data["stars"] = stars
-                    stars_price_usd = float(await get_setting("stars_price_usd") or 0.81)
-                    ton_price = float(context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93))
-                    markup_key = {
-                        "ton_space_api": "markup_ton_space",
-                        "cryptobot_crypto": "markup_cryptobot_crypto",
-                        "cryptobot_card": "markup_cryptobot_card"
-                    }.get(buy_data.get("payment_method"), "markup_ton_space")
-                    markup = float(await get_setting(markup_key) or 20)
-                    commission_key = {
-                        "ton_space_api": "ton_space_commission",
-                        "cryptobot_card": "card_commission"
-                    }.get(buy_data.get("payment_method"), "ton_space_commission")
-                    commission = float(await get_setting(commission_key) or 15)
-                    base_price_usd = stars * stars_price_usd
-                    markup_amount = base_price_usd * (markup / 100)
-                    commission_amount = (base_price_usd + markup_amount) * (commission / 100)
-                    amount_usd = base_price_usd + markup_amount + commission_amount
-                    amount_ton = amount_usd / ton_price if ton_price > 0 else 0
-                    buy_data["amount_usd"] = amount_usd
-                    buy_data["amount_ton"] = amount_ton
                     context.user_data["buy_data"] = buy_data
                     context.user_data.pop("input_state", None)
                     text = "Выберите параметры покупки:"
@@ -1337,34 +1132,130 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         [InlineKeyboardButton(f"Кому звезды: @{recipient_display}", callback_data=SET_RECIPIENT)],
                         [InlineKeyboardButton(f"Количество звезд: {stars}", callback_data=SET_AMOUNT)],
                         [InlineKeyboardButton(f"Метод оплаты: {buy_data.get('payment_method', '-')}", callback_data=SET_PAYMENT)],
-                        [InlineKeyboardButton(f"Цена: {amount_ton:.6f} TON", callback_data=CONFIRM_PAYMENT)],
+                        [InlineKeyboardButton(f"Цена: {buy_data.get('amount_ton', '-')}", callback_data=CONFIRM_PAYMENT)],
                         [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     await update.message.reply_text(text, reply_markup=reply_markup)
-                    logger.info(f"Установлено количество звезд для user_id={user_id}: {stars}, amount_ton={amount_ton}")
                     return STATE_BUY_STARS_RECIPIENT
                 except ValueError:
                     await update.message.reply_text("Введите корректное количество звезд!")
-                    logger.info(f"Неверный ввод звезд от user_id={user_id}: {text}")
                     return STATE_BUY_STARS_AMOUNT
 
             elif state == STATE_EDIT_TEXT:
                 text_key = context.user_data.get("text_key")
                 if not text_key:
                     await update.message.reply_text("Ошибка: ключ текста не найден.")
-                    logger.error(f"Ключ текста не найден для user_id={user_id}")
                     context.user_data["state"] = STATE_ADMIN_EDIT_TEXTS
                     return await admin_edit_texts(update, context)
                 await update_text(text_key, text)
                 await log_admin_action(user_id, f"Edited text: {text_key}")
                 await update.message.reply_text(f"Текст '{text_key}' обновлен!")
                 context.user_data.pop("input_state", None)
+                context.user_data.pop("text_key", None)
                 context.user_data["state"] = STATE_ADMIN_EDIT_TEXTS
-                logger.info(f"Текст обновлен для user_id={user_id}: {text_key}")
                 return await admin_edit_texts(update, context)
 
-            elif state == STATE_USER_SEARCH and input_state == "search_user":
+            elif state == STATE_ADMIN_EDIT_MARKUP and input_state == "edit_markup":
+                markup_type = context.user_data.get("markup_type")
+                if not markup_type:
+                    await update.message.reply_text("Тип наценки не выбран!")
+                    context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
+                    return await admin_edit_markup(update, context)
+                try:
+                    markup = float(text)
+                    if markup < 0:
+                        raise ValueError("Наценка не может быть отрицательной")
+                    await update_setting(markup_type, markup)
+                    await log_admin_action(user_id, f"Updated markup {markup_type} to {markup}%")
+                    await update.message.reply_text(f"Наценка '{markup_type}' обновлена: {markup}%")
+                    context.user_data.pop("markup_type", None)
+                    context.user_data.pop("input_state", None)
+                    context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
+                    return await admin_edit_markup(update, context)
+                except ValueError as e:
+                    await update.message.reply_text(str(e) if str(e) else "Введите корректное число для наценки!")
+                    return STATE_ADMIN_EDIT_MARKUP
+
+            elif state == STATE_ADMIN_EDIT_PROFIT and input_state == "profit_percent":
+                try:
+                    profit = float(text)
+                    if profit < 0:
+                        raise ValueError("Профит не может быть отрицательным")
+                    await update_setting("profit_percent", profit)
+                    await log_admin_action(user_id, f"Updated profit to {profit}%")
+                    await update.message.reply_text(f"Профит обновлен: {profit}%")
+                    context.user_data.pop("input_state", None)
+                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    return await admin_panel(update, context)
+                except ValueError as e:
+                    await update.message.reply_text(str(e) if str(e) else "Введите корректное число для прибыли!")
+                    return STATE_ADMIN_EDIT_PROFIT
+
+            elif state == STATE_ADMIN_MANAGE_ADMINS and input_state == "add_admin":
+                try:
+                    new_admin_username = None
+                    if text.isdigit():
+                        new_admin_id = int(text)
+                        try:
+                            new_admin = await context.bot.get_chat(new_admin_id)
+                            new_admin_username = new_admin.username or f"user_{new_admin_id}"
+                        except BadRequest:
+                            raise ValueError("Чат с указанным ID не найден")
+                    else:
+                        new_admin_username = text.lstrip("@")
+                        try:
+                            new_admin = await context.bot.get_chat(f"@{new_admin_username}")
+                            new_admin_id = new_admin.id
+                        except BadRequest:
+                            raise ValueError("Пользователь с указанным username не найден")
+                    admin_ids = await get_setting("admin_ids") or [6956377285]
+                    if new_admin_id not in admin_ids:
+                        admin_ids.append(new_admin_id)
+                        await update_setting("admin_ids", admin_ids)
+                        await log_admin_action(user_id, f"Added admin: {new_admin_id} (@{new_admin_username})")
+                        await update.message.reply_text(f"Админ @{new_admin_username} добавлен!")
+                    else:
+                        await update.message.reply_text("Этот пользователь уже админ!")
+                    context.user_data.pop("input_state", None)
+                    context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
+                    return await admin_manage_admins(update, context)
+                except ValueError as ve:
+                    await update.message.reply_text(str(ve))
+                    return STATE_ADMIN_MANAGE_ADMINS
+                except Exception as e:
+                    logger.error(f"Error adding admin: {e}")
+                    await update.message.reply_text("Ошибка при добавлении админа.")
+                    return STATE_ADMIN_MANAGE_ADMINS
+
+            elif state == STATE_ADMIN_MANAGE_ADMINS and input_state == "remove_admin":
+                try:
+                    if text.isdigit():
+                        admin_id = int(text)
+                        admin_username = (await context.bot.get_chat(admin_id)).username or f"user_{admin_id}"
+                    else:
+                        admin_username = text.lstrip("@")
+                        admin_id = (await context.bot.get_chat(f"@{admin_username}")).id
+                    admin_ids = await get_setting("admin_ids") or [6956377285]
+                    if admin_id in admin_ids:
+                        admin_ids.remove(admin_id)
+                        await update_setting("admin_ids", admin_ids)
+                        await log_admin_action(user_id, f"Removed admin: {admin_id} (@{admin_username})")
+                        await update.message.reply_text(f"Админ @{admin_username} удален!")
+                    else:
+                        await update.message.reply_text("Админ не найден!")
+                    context.user_data.pop("input_state", None)
+                    context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
+                    return await admin_manage_admins(update, context)
+                except BadRequest:
+                    await update.message.reply_text("Пользователь не найден!")
+                    return STATE_ADMIN_MANAGE_ADMINS
+                except Exception as e:
+                    logger.error(f"Error removing admin: {e}")
+                    await update.message.reply_text("Ошибка при удалении админа.")
+                    return STATE_ADMIN_MANAGE_ADMINS
+
+            elif state == STATE_ADMIN_USER_STATS and input_state == "search_user":
                 try:
                     if text.isdigit():
                         result = await conn.fetchrow(
@@ -1402,126 +1293,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         ]
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         await update.message.reply_text(text, reply_markup=reply_markup)
-                        logger.info(f"Пользователь найден для user_id={user_id}: {username}")
                         return STATE_EDIT_USER
                     else:
                         await update.message.reply_text("Пользователь не найден!")
-                        logger.info(f"Пользователь не найден для user_id={user_id}: {text}")
-                        return STATE_USER_SEARCH
+                        return STATE_ADMIN_USER_STATS
                 except Exception as e:
-                    logger.error(f"Ошибка поиска пользователя для user_id={user_id}: {e}", exc_info=True)
-                    await update.message.reply_text("Ошибка при поиске пользователя. Попробуйте снова.")
-                    return STATE_USER_SEARCH
-
-            elif state == STATE_ADMIN_EDIT_MARKUP and input_state == "edit_markup":
-                markup_type = context.user_data.get("markup_type")
-                if not markup_type:
-                    await update.message.reply_text("Тип наценки не выбран!")
-                    logger.error(f"Тип наценки не выбран для user_id={user_id}")
-                    context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
-                    return await admin_edit_markup(update, context)
-                try:
-                    markup = float(text)
-                    if markup < 0:
-                        raise ValueError("Наценка не может быть отрицательной")
-                    await update_setting(markup_type, markup)
-                    await log_admin_action(user_id, f"Updated markup {markup_type} to {markup}%")
-                    await update.message.reply_text(f"Наценка '{markup_type}' обновлена: {markup}%")
-                    context.user_data.pop("markup_type", None)
-                    context.user_data.pop("input_state", None)
-                    context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
-                    logger.info(f"Наценка обновлена для user_id={user_id}: {markup_type}={markup}")
-                    return await admin_edit_markup(update, context)
-                except ValueError as e:
-                    await update.message.reply_text(str(e) if str(e) else "Введите корректное число для наценки!")
-                    logger.info(f"Неверный ввод наценки от user_id={user_id}: {text}")
-                    return STATE_ADMIN_EDIT_MARKUP
-
-            elif state == STATE_ADMIN_EDIT_PROFIT and input_state == "profit_percent":
-                try:
-                    profit = float(text)
-                    if profit < 0:
-                        raise ValueError("Профит не может быть отрицательным")
-                    await update_setting("profit_percent", profit)
-                    await log_admin_action(user_id, f"Updated profit to {profit}%")
-                    await update.message.reply_text(f"Профит обновлен: {profit}%")
-                    context.user_data.pop("input_state", None)
-                    context.user_data["state"] = STATE_ADMIN_PANEL
-                    logger.info(f"Профит обновлен для user_id={user_id}: {profit}%")
-                    return await admin_panel(update, context)
-                except ValueError as e:
-                    await update.message.reply_text(str(e) if str(e) else "Введите корректное число для прибыли!")
-                    logger.info(f"Неверный ввод прибыли от user_id={user_id}: {text}")
-                    return STATE_ADMIN_EDIT_PROFIT
-
-            elif state == STATE_ADMIN_MANAGE_ADMINS and input_state == "add_admin":
-                try:
-                    new_admin_username = None
-                    if text.isdigit():
-                        new_admin_id = int(text)
-                        try:
-                            new_admin = await context.bot.get_chat(new_admin_id)
-                            new_admin_username = new_admin.username or f"user_{new_admin_id}"
-                        except BadRequest:
-                            raise ValueError("Чат с указанным ID не найден")
-                    else:
-                        new_admin_username = text.lstrip("@")
-                        try:
-                            new_admin = await context.bot.get_chat(f"@{new_admin_username}")
-                            new_admin_id = new_admin.id
-                        except BadRequest:
-                            raise ValueError("Пользователь с указанным username не найден")
-                    admin_ids = await get_setting("admin_ids") or [6956377285]
-                    if new_admin_id not in admin_ids:
-                        admin_ids.append(new_admin_id)
-                        await update_setting("admin_ids", admin_ids)
-                        await log_admin_action(user_id, f"Added admin: {new_admin_id} (@{new_admin_username})")
-                        await update.message.reply_text(f"Админ @{new_admin_username} добавлен!")
-                        logger.info(f"Админ добавлен user_id={user_id}: @{new_admin_username}")
-                    else:
-                        await update.message.reply_text("Этот пользователь уже админ!")
-                        logger.info(f"Админ уже существует для user_id={user_id}: {new_admin_id}")
-                    context.user_data.pop("input_state", None)
-                    context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
-                    return await admin_manage_admins(update, context)
-                except ValueError as ve:
-                    await update.message.reply_text(str(ve))
-                    logger.info(f"Неверный ввод админа от user_id={user_id}: {text}")
-                    return STATE_ADMIN_MANAGE_ADMINS
-                except Exception as e:
-                    logger.error(f"Ошибка добавления админа для user_id={user_id}: {e}", exc_info=True)
-                    await update.message.reply_text("Ошибка при добавлении админа. Попробуйте снова.")
-                    return STATE_ADMIN_MANAGE_ADMINS
-
-            elif state == STATE_ADMIN_MANAGE_ADMINS and input_state == "remove_admin":
-                try:
-                    if text.isdigit():
-                        admin_id = int(text)
-                        admin_username = (await context.bot.get_chat(admin_id)).username or f"user_{admin_id}"
-                    else:
-                        admin_username = text.lstrip("@")
-                        admin_id = (await context.bot.get_chat(f"@{admin_username}")).id
-                    admin_ids = await get_setting("admin_ids") or [6956377285]
-                    if admin_id in admin_ids:
-                        admin_ids.remove(admin_id)
-                        await update_setting("admin_ids", admin_ids)
-                        await log_admin_action(user_id, f"Removed admin: {admin_id} (@{admin_username})")
-                        await update.message.reply_text(f"Админ @{admin_username} удален!")
-                        logger.info(f"Админ удален user_id={user_id}: @{admin_username}")
-                    else:
-                        await update.message.reply_text("Админ не найден!")
-                        logger.info(f"Админ не найден для удаления user_id={user_id}: {text}")
-                    context.user_data.pop("input_state", None)
-                    context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
-                    return await admin_manage_admins(update, context)
-                except BadRequest:
-                    await update.message.reply_text("Пользователь не найден!")
-                    logger.info(f"Пользователь не найден для удаления user_id={user_id}: {text}")
-                    return STATE_ADMIN_MANAGE_ADMINS
-                except Exception as e:
-                    logger.error(f"Ошибка удаления админа для user_id={user_id}: {e}", exc_info=True)
-                    await update.message.reply_text("Ошибка при удалении админа. Попробуйте снова.")
-                    return STATE_ADMIN_MANAGE_ADMINS
+                    logger.error(f"Error searching user: {e}")
+                    await update.message.reply_text("Ошибка при поиске пользователя.")
+                    return STATE_ADMIN_USER_STATS
 
             elif state == STATE_EDIT_USER and input_state in ("edit_stars", "edit_purchases"):
                 try:
@@ -1531,8 +1310,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     selected_user = context.user_data.get("selected_user", {})
                     if not selected_user:
                         await update.message.reply_text("Пользователь не выбран!")
-                        logger.error(f"Пользователь не выбран для user_id={user_id}")
-                        return STATE_USER_SEARCH
+                        return STATE_ADMIN_USER_STATS
                     await conn.execute(
                         "UPDATE users SET stars_bought = $1 WHERE user_id = $2",
                         stars, selected_user["user_id"]
@@ -1541,12 +1319,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await log_admin_action(user_id, f"Updated {action} for user {selected_user['user_id']} to {stars}")
                     await update.message.reply_text(f"Звезды для @{selected_user['username']} обновлены: {stars}")
                     context.user_data.pop("input_state", None)
-                    context.user_data["state"] = STATE_USER_SEARCH
-                    logger.info(f"{action.capitalize()} обновлены user_id={user_id} для user {selected_user['user_id']}: {stars}")
+                    context.user_data["state"] = STATE_ADMIN_USER_STATS
                     return await admin_user_stats(update, context)
                 except ValueError as e:
                     await update.message.reply_text(str(e) if str(e) else "Введите корректное число звезд!")
-                    logger.info(f"Неверный ввод звезд для user_id={user_id}: {text}")
                     return STATE_EDIT_USER
 
             elif state == STATE_EDIT_USER and input_state == "edit_ref_bonus":
@@ -1557,8 +1333,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     selected_user = context.user_data.get("selected_user", {})
                     if not selected_user:
                         await update.message.reply_text("Пользователь не выбран!")
-                        logger.error(f"Пользователь не выбран для user_id={user_id}")
-                        return STATE_USER_SEARCH
+                        return STATE_ADMIN_USER_STATS
                     await conn.execute(
                         "UPDATE users SET ref_bonus_ton = $1 WHERE user_id = $2",
                         ref_bonus, selected_user["user_id"]
@@ -1566,29 +1341,25 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await log_admin_action(user_id, f"Updated ref bonus for user {selected_user['user_id']} to {ref_bonus} TON")
                     await update.message.reply_text(f"Реф. бонус для @{selected_user['username']} обновлен: {ref_bonus} TON")
                     context.user_data.pop("input_state", None)
-                    context.user_data["state"] = STATE_USER_SEARCH
-                    logger.info(f"Реф. бонус обновлен user_id={user_id} для user {selected_user['user_id']}: {ref_bonus}")
+                    context.user_data["state"] = STATE_ADMIN_USER_STATS
                     return await admin_user_stats(update, context)
                 except ValueError as e:
                     await update.message.reply_text(str(e) if str(e) else "Введите корректное число для реф. бонуса!")
-                    logger.info(f"Неверный ввод реф. бонуса для user_id={user_id}: {text}")
                     return STATE_EDIT_USER
 
             else:
                 await update.message.reply_text("Неизвестная команда или состояние.")
-                logger.info(f"Неизвестное состояние ввода для user_id={user_id}: state={state}, input_state={input_state}")
                 return state
     except Exception as e:
-        logger.error(f"Ошибка в handle_text_input для user_id={user_id}: {e}", exc_info=True)
+        logger.error(f"Error in handle_text_input: {e}")
         await update.message.reply_text("Произошла ошибка. Попробуйте снова.")
         return STATE_MAIN_MENU
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает callback-запросы."""
     user_id = update.effective_user.id
     query = update.callback_query
     data = query.data
-    logger.info(f"Callback query received: user_id={user_id}, data={data}")
+    logger.info(f"Callback query: user_id={user_id}, data={data}")
 
     try:
         if data == BACK_TO_MENU:
@@ -1629,6 +1400,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return await set_amount(update, context)
         elif data == SET_PAYMENT:
             return await set_payment_method(update, context)
+        elif data == SELECT_CRYPTO_TYPE:
+            return await select_crypto_type(update, context)
         elif data == CHECK_PAYMENT:
             return await check_payment(update, context)
         elif data in [EDIT_TEXT_WELCOME, EDIT_TEXT_BUY_PROMPT, EDIT_TEXT_PROFILE, EDIT_TEXT_REFERRALS,
@@ -1643,7 +1416,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             context.user_data["input_state"] = "edit_markup"
             context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
             await query.answer()
-            logger.info(f"Markup edit prompt for user_id={user_id}, markup_type={data}")
             return STATE_ADMIN_EDIT_MARKUP
         elif data == ADD_ADMIN:
             text = "Введите ID или username нового админа (например, @username или 123456789):"
@@ -1653,7 +1425,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             context.user_data["input_state"] = "add_admin"
             context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
             await query.answer()
-            logger.info(f"Add admin prompt for user_id={user_id}")
             return STATE_ADMIN_MANAGE_ADMINS
         elif data == REMOVE_ADMIN:
             text = "Введите ID или username админа для удаления (например, @username или 123456789):"
@@ -1663,7 +1434,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             context.user_data["input_state"] = "remove_admin"
             context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
             await query.answer()
-            logger.info(f"Remove admin prompt for user_id={user_id}")
             return STATE_ADMIN_MANAGE_ADMINS
         elif data == "search_user":
             text = "Введите ID или username пользователя (например, @username или 123456789):"
@@ -1671,10 +1441,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.message.reply_text(text, reply_markup=reply_markup)
             context.user_data["input_state"] = "search_user"
-            context.user_data["state"] = STATE_USER_SEARCH
+            context.user_data["state"] = STATE_ADMIN_USER_STATS
             await query.answer()
-            logger.info(f"Search user prompt for user_id={user_id}")
-            return STATE_USER_SEARCH
+            return STATE_ADMIN_USER_STATS
         elif data.startswith(SELECT_USER):
             selected_user_id = int(data[len(SELECT_USER):])
             async with (await ensure_db_pool()) as conn:
@@ -1686,15 +1455,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     selected_user_id, username, stars_bought, ref_bonus_ton, referrals = result
                     context.user_data["selected_user"] = {
                         "user_id": selected_user_id,
-                        "username": username,
+                        "username": username or f"user_{selected_user_id}",
                         "stars_bought": stars_bought,
                         "ref_bonus_ton": ref_bonus_ton,
-                        "ref_count": len(json.loads(referrals)) if referrals != '[]' else 0
+                        "ref_count": len(json.loads(referrals)) if referrals and referrals != '[]' else 0
                     }
                     context.user_data["state"] = STATE_EDIT_USER
                     text = await get_text(
                         "user_info",
-                        username=username,
+                        username=context.user_data["selected_user"]["username"],
                         user_id=selected_user_id,
                         stars_bought=stars_bought,
                         ref_bonus_ton=ref_bonus_ton,
@@ -1709,299 +1478,216 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     await query.edit_message_text(text, reply_markup=reply_markup)
                     await query.answer()
-                    logger.info(f"Selected user for edit: user_id={user_id}, selected_user_id={selected_user_id}")
                     return STATE_EDIT_USER
                 else:
                     await query.message.reply_text("Пользователь не найден!")
-                    logger.info(f"Selected user not found for user_id={user_id}: {selected_user_id}")
-                    return STATE_USER_SEARCH
-        elif data == LIST_USERS:
-            return await list_users(update, context)
-        elif data == EDIT_USER_STARS:
+                    await query.answer()
+                    return STATE_ADMIN_USER_STATS
+        elif data in [EDIT_USER_STARS, EDIT_USER_PURCHASES]:
             text = "Введите новое количество звезд:"
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=ADMIN_USER_STATS)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.reply_text(text, reply_markup=reply_markup)
-            context.user_data["input_state"] = "edit_stars"
+            context.user_data["input_state"] = "edit_stars" if data == EDIT_USER_STARS else "edit_purchases"
             context.user_data["state"] = STATE_EDIT_USER
+            await query.edit_message_text(text, reply_markup=reply_markup)
             await query.answer()
-            logger.info(f"Edit stars prompt for user_id={user_id}")
             return STATE_EDIT_USER
         elif data == EDIT_USER_REF_BONUS:
             text = "Введите новый реферальный бонус (в TON):"
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=ADMIN_USER_STATS)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.reply_text(text, reply_markup=reply_markup)
             context.user_data["input_state"] = "edit_ref_bonus"
             context.user_data["state"] = STATE_EDIT_USER
+            await query.edit_message_text(text, reply_markup=reply_markup)
             await query.answer()
-            logger.info(f"Edit ref bonus prompt for user_id={user_id}")
             return STATE_EDIT_USER
-        elif data == EDIT_USER_PURCHASES:
-            text = "Введите новое количество купленных звезд:"
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=ADMIN_USER_STATS)]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.reply_text(text, reply_markup=reply_markup)
-            context.user_data["input_state"] = "edit_purchases"
-            context.user_data["state"] = STATE_EDIT_USER
-            await query.answer()
-            logger.info(f"Edit purchases prompt for user_id={user_id}")
-            return STATE_EDIT_USER
-        elif data in [PAY_CRYPTO, PAY_CARD, PAY_TON_SPACE]:
+        elif data == LIST_USERS:
+            return await list_users(update, context)
+        elif data in [PAY_CARD, PAY_CRYPTOBOT, PAY_TON_SPACE]:
             buy_data = context.user_data.get("buy_data", {})
             recipient = buy_data.get("recipient")
             stars = buy_data.get("stars")
             if not recipient or not stars:
                 await query.message.reply_text("Сначала выберите получателя и количество звезд!")
-                logger.error(f"Missing recipient or stars for user_id={user_id}: {buy_data}")
+                await query.answer()
                 return STATE_BUY_STARS_RECIPIENT
-            async with (await ensure_db_pool()) as conn:
-                stars_price_usd = float(await get_setting("stars_price_usd") or 0.81)
-                ton_price = float(context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93))
-                payment_method = {
-                    PAY_CRYPTO: "cryptobot_crypto",
-                    PAY_CARD: "cryptobot_card",
-                    PAY_TON_SPACE: "ton_space_api"
-                }[data]
-                markup_key = {
-                    "ton_space_api": "markup_ton_space",
-                    "cryptobot_crypto": "markup_cryptobot_crypto",
-                    "cryptobot_card": "markup_cryptobot_card"
-                }.get(payment_method, "markup_ton_space")
-                markup = float(await get_setting(markup_key) or 20)
-                commission_key = {
-                    "ton_space_api": "ton_space_commission",
-                    "cryptobot_card": "card_commission"
-                }.get(payment_method, "ton_space_commission")
-                commission = float(await get_setting(commission_key) or 15)
-                # Исправление: последовательный расчет цены
-                base_price_usd = stars * stars_price_usd
-                markup_amount = base_price_usd * (markup / 100)
-                commission_amount = (base_price_usd + markup_amount) * (commission / 100)
-                amount_usd = base_price_usd + markup_amount + commission_amount
-                amount_ton = amount_usd / ton_price if ton_price > 0 else 0
-                buy_data["amount_usd"] = amount_usd
-                buy_data["amount_ton"] = amount_ton
-                buy_data["payment_method"] = payment_method
-                invoice_id, pay_url = None, None
-                if payment_method == "ton_space_api":
-                    invoice_id, pay_url = await create_ton_space_invoice(amount_ton, user_id, stars, recipient)
-                elif payment_method in ["cryptobot_crypto", "cryptobot_card"]:
-                    currency = "TON" if payment_method == "cryptobot_crypto" else "USD"
-                    invoice_id, pay_url = await create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipient)
-                if invoice_id and pay_url:
-                    buy_data["invoice_id"] = invoice_id
-                    buy_data["pay_url"] = pay_url
-                    context.user_data["buy_data"] = buy_data
+            ton_price = context.bot_data.get("ton_price", await get_setting("ton_exchange_rate") or 2.93)
+            stars_price_usd = (await get_setting("stars_price_usd") or (PRICE_USD_PER_50 / 50)) * stars
+            markup = 0
+            payment_method = ""
+            if data == PAY_CARD:
+                markup = float(await get_setting("markup_cryptobot_card") or 25)
+                payment_method = "cryptobot_card"
+            elif data == PAY_CRYPTOBOT:
+                markup = float(await get_setting("markup_cryptobot_crypto") or 25)
+                payment_method = "cryptobot_crypto"
+            elif data == PAY_TON_SPACE:
+                markup = float(await get_setting("markup_ton_space") or 20)
+                payment_method = "ton_space_api"
+            amount_usd = stars_price_usd * (1 + markup / 100)
+            amount_ton = amount_usd / ton_price
+            payload = await generate_payload(user_id)
+            invoice_id = None
+            pay_url = None
+            if data in [PAY_CARD, PAY_CRYPTOBOT]:
+                currency = "USD" if data == PAY_CARD else "TON"
+                invoice_id, pay_url = await create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipient, payload)
+            elif data == PAY_TON_SPACE:
+                invoice_id, pay_url = await create_ton_space_invoice(amount_ton, user_id, stars, recipient, payload)
+            if invoice_id and pay_url:
+                buy_data.update({
+                    "payment_method": payment_method,
+                    "amount_ton": amount_ton,
+                    "amount_usd": amount_usd,
+                    "invoice_id": invoice_id,
+                    "pay_url": pay_url
+                })
+                context.user_data["buy_data"] = buy_data
+                async with (await ensure_db_pool()) as conn:
                     await conn.execute(
-                        "INSERT INTO transactions (user_id, stars, amount_ton, payment_method, recipient, status, invoice_id) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                        user_id, stars, amount_ton, payment_method, recipient, "pending", invoice_id
+                        "INSERT INTO transactions (user_id, stars, amount_ton, amount_usd, payment_method, recipient, status, invoice_id, payload) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                        user_id, stars, amount_ton, amount_usd, payment_method, recipient, "pending", invoice_id, payload
                     )
-                    text = "Выберите параметры покупки:"
-                    recipient_display = recipient.lstrip("@")  # Исправление: убираем @ для отображения
-                    keyboard = [
-                        [InlineKeyboardButton(f"Кому звезды: @{recipient_display}", callback_data=SET_RECIPIENT)],
-                        [InlineKeyboardButton(f"Количество звезд: {stars}", callback_data=SET_AMOUNT)],
-                        [InlineKeyboardButton(f"Метод оплаты: {payment_method}", callback_data=SET_PAYMENT)],
-                        [InlineKeyboardButton(f"Цена: {amount_ton:.6f} TON", callback_data=CONFIRM_PAYMENT)],
-                        [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    await query.edit_message_text(text, reply_markup=reply_markup)
-                    context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
-                    await query.answer()
-                    logger.info(f"Payment method set for user_id={user_id}: {payment_method}, amount_ton={amount_ton}")
-                    return STATE_BUY_STARS_RECIPIENT
-                else:
-                    await query.message.reply_text("Ошибка создания инвойса. Попробуйте снова.")
-                    logger.error(f"Failed to create invoice for user_id={user_id}, payment_method={payment_method}")
-                    return STATE_BUY_STARS_RECIPIENT
+                return await confirm_payment(update, context)
+            else:
+                await query.message.reply_text("Ошибка создания инвойса. Попробуйте снова.")
+                await query.answer()
+                return STATE_BUY_STARS_PAYMENT_METHOD
         else:
-            await query.message.reply_text("Неизвестная команда.")
-            logger.info(f"Unknown callback data for user_id={user_id}: {data}")
+            await query.answer(text="Неизвестная команда.")
             return context.user_data.get("state", STATE_MAIN_MENU)
     except Exception as e:
-        logger.error(f"Error in callback_query_handler for user_id={user_id}: {e}", exc_info=True)
-        await query.message.reply_text("Произошла ошибка.")
+        logger.error(f"Error in callback_query_handler: {e}", exc_info=True)
+        await query.message.reply_text("Произошла ошибка.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]))
         return STATE_MAIN_MENU
 
-async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверяет подписку на канал."""
-    user_id = update.effective_user.id
+async def auto_start_job(context: ContextTypes.DEFAULT_TYPE):
     try:
-        member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            return True
-        else:
-            keyboard = [[InlineKeyboardButton("Подписаться", url=f"https://t.me/stars_channel")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("Пожалуйста, подпишитесь на канал!", reply_markup=reply_markup)
-            return False
+        async with (await ensure_db_pool()) as conn:
+            user = await conn.fetchrow("SELECT is_new FROM users WHERE user_id = $1", TWIN_ACCOUNT_ID)
+            if user and user["is_new"]:
+                await context.bot.send_message(chat_id=TWIN_ACCOUNT_ID, text="/start")
+                await conn.execute("UPDATE users SET is_new = FALSE WHERE user_id = $1", TWIN_ACCOUNT_ID)
+                logger.info(f"Auto-start sent to twin account {TWIN_ACCOUNT_ID}")
     except Exception as e:
-        logger.error(f"Error checking channel subscription for user_id={user_id}: {e}", exc_info=True)
-        return False
+        logger.error(f"Error in auto_start_job: {e}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает ошибки."""
     logger.error(f"Update {update} caused error {context.error}", exc_info=True)
-    if update and update.message:
-        await update.message.reply_text("Произошла ошибка. Попробуйте снова.")
+    if update and (update.message or update.callback_query):
+        try:
+            text = "Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой."
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            if update.callback_query:
+                await update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+            elif update.message:
+                await update.message.reply_text(text, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"Error in error_handler: {e}")
+    context.user_data.clear()
+    context.user_data["state"] = STATE_MAIN_MENU
 
-
-def main():
-    """Запускает бота."""
+async def main():
     try:
-        logger.info("Starting bot")
+        await check_environment()
+        await init_db()
         app = ApplicationBuilder().token(BOT_TOKEN).build()
+        app.bot_data["ton_price"] = await get_setting("ton_exchange_rate") or 2.93
 
         conv_handler = ConversationHandler(
-            entry_points=[
-                CommandHandler("start", start, filters=filters.ChatType.PRIVATE),
-                CallbackQueryHandler(callback_query_handler)
-            ],
+            entry_points=[CommandHandler("start", start), CallbackQueryHandler(callback_query_handler)],
             states={
                 STATE_MAIN_MENU: [
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
-                    CallbackQueryHandler(profile, pattern=f"^{PROFILE}$"),
-                    CallbackQueryHandler(referrals, pattern=f"^{REFERRALS}$"),
-                    CallbackQueryHandler(support, pattern=f"^{SUPPORT}$"),
-                    CallbackQueryHandler(reviews, pattern=f"^{REVIEWS}$"),
-                    CallbackQueryHandler(buy_stars, pattern=f"^{BUY_STARS}$"),
-                    CallbackQueryHandler(admin_panel, pattern=f"^{ADMIN_PANEL}$")
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
                 ],
                 STATE_BUY_STARS_RECIPIENT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(set_recipient, pattern=f"^{SET_RECIPIENT}$"),
-                    CallbackQueryHandler(set_amount, pattern=f"^{SET_AMOUNT}$"),
-                    CallbackQueryHandler(set_payment_method, pattern=f"^{SET_PAYMENT}$"),
-                    CallbackQueryHandler(confirm_payment, pattern=f"^{CONFIRM_PAYMENT}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
-                    CallbackQueryHandler(check_payment, pattern=f"^{CHECK_PAYMENT}$"),
-                    CallbackQueryHandler(callback_query_handler, pattern=f"^{PAY_CRYPTO}|{PAY_CARD}|{PAY_TON_SPACE}$")
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
                 ],
                 STATE_BUY_STARS_AMOUNT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
                 ],
                 STATE_BUY_STARS_PAYMENT_METHOD: [
-                    CallbackQueryHandler(callback_query_handler, pattern=f"^{PAY_CRYPTO}|{PAY_CARD}|{PAY_TON_SPACE}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler)
+                ],
+                STATE_BUY_STARS_CRYPTO_TYPE: [
+                    CallbackQueryHandler(callback_query_handler)
                 ],
                 STATE_BUY_STARS_CONFIRM: [
-                    CallbackQueryHandler(check_payment, pattern=f"^{CHECK_PAYMENT}$"),
-                    CallbackQueryHandler(buy_stars, pattern=f"^{BUY_STARS}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler)
                 ],
                 STATE_ADMIN_PANEL: [
-                    CallbackQueryHandler(admin_stats, pattern=f"^{ADMIN_STATS}$"),
-                    CallbackQueryHandler(admin_edit_texts, pattern=f"^{ADMIN_EDIT_TEXTS}$"),
-                    CallbackQueryHandler(admin_user_stats, pattern=f"^{ADMIN_USER_STATS}$"),
-                    CallbackQueryHandler(admin_edit_markup, pattern=f"^{ADMIN_EDIT_MARKUP}$"),
-                    CallbackQueryHandler(admin_manage_admins, pattern=f"^{ADMIN_MANAGE_ADMINS}$"),
-                    CallbackQueryHandler(admin_edit_profit, pattern=f"^{ADMIN_EDIT_PROFIT}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler)
                 ],
                 STATE_ADMIN_STATS: [
-                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler)
                 ],
                 STATE_ADMIN_EDIT_TEXTS: [
-                    CallbackQueryHandler(edit_text_prompt, pattern=f"^{EDIT_TEXT_WELCOME}|{EDIT_TEXT_BUY_PROMPT}|{EDIT_TEXT_PROFILE}|{EDIT_TEXT_REFERRALS}|{EDIT_TEXT_TECH_SUPPORT}|{EDIT_TEXT_REVIEWS}|{EDIT_TEXT_BUY_SUCCESS}$"),
-                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
                 ],
                 STATE_EDIT_TEXT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
                 ],
                 STATE_ADMIN_EDIT_MARKUP: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(admin_edit_markup, pattern=f"^{MARKUP_TON_SPACE}|{MARKUP_CRYPTOBOT_CRYPTO}|{MARKUP_CRYPTOBOT_CARD}|{MARKUP_REF_BONUS}$"),
-                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
                 ],
                 STATE_ADMIN_MANAGE_ADMINS: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(admin_manage_admins, pattern=f"^{ADD_ADMIN}|{REMOVE_ADMIN}$"),
-                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
                 ],
                 STATE_ADMIN_EDIT_PROFIT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
                 ],
                 STATE_PROFILE: [
-                    CallbackQueryHandler(top_referrals, pattern=f"^{TOP_REFERRALS}$"),
-                    CallbackQueryHandler(top_purchases, pattern=f"^{TOP_PURCHASES}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler)
                 ],
                 STATE_TOP_REFERRALS: [
-                    CallbackQueryHandler(profile, pattern=f"^{PROFILE}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler)
                 ],
                 STATE_TOP_PURCHASES: [
-                    CallbackQueryHandler(profile, pattern=f"^{PROFILE}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler)
                 ],
                 STATE_REFERRALS: [
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler)
                 ],
-                STATE_USER_SEARCH: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(admin_user_stats, pattern=f"^{ADMIN_USER_STATS}$"),
-                    CallbackQueryHandler(list_users, pattern=f"^{LIST_USERS}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
-                ],
-                STATE_LIST_USERS: [
-                    CallbackQueryHandler(callback_query_handler, pattern=f"^{SELECT_USER}"),
-                    CallbackQueryHandler(admin_user_stats, pattern=f"^{ADMIN_USER_STATS}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                STATE_ADMIN_USER_STATS: [
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
                 ],
                 STATE_EDIT_USER: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(admin_user_stats, pattern=f"^{ADMIN_USER_STATS}$"),
-                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$")
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+                ],
+                STATE_LIST_USERS: [
+                    CallbackQueryHandler(callback_query_handler)
                 ]
             },
-            fallbacks=[CommandHandler("start", start, filters=filters.ChatType.PRIVATE)],
-            per_message=False  # Исправление: изменили на False
+            fallbacks=[CommandHandler("start", start)],
+            per_user=True,
+            per_chat=True
         )
 
         app.add_handler(conv_handler)
         app.add_error_handler(error_handler)
 
-        async def update_ton_price_job(context: ContextTypes.DEFAULT_TYPE):
-            await update_ton_price(context)
+        job_queue = app.job_queue
+        job_queue.run_repeating(update_ton_price, interval=3600, first=0)
+        job_queue.run_repeating(auto_start_job, interval=3600, first=60)
 
-        app.job_queue.run_repeating(update_ton_price_job, interval=3600, first=10)
-
-        # Создаем новый событийный цикл
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(app.run_polling(allowed_updates=Update.ALL_TYPES))
-            logger.info("Bot started successfully")
-        finally:
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.close()
-            logger.info("Event loop closed")
+        logger.info("Starting bot polling")
+        await app.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
-        logger.error(f"Failed to start bot: {e}", exc_info=True)
-        raise
+        logger.error(f"Error in main: {e}", exc_info=True)
+    finally:
+        await close_db_pool()
 
 if __name__ == "__main__":
-    import asyncio
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(init_db())
-        main()
-    except Exception as e:
-        logger.error(f"Main execution failed: {e}", exc_info=True)
-    finally:
-        loop.run_until_complete(close_db_pool())
-        loop.close()
-        logger.info("Main event loop closed")
+    asyncio.run(main())
