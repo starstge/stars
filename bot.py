@@ -1976,7 +1976,97 @@ async def start_bot():
                     CallbackQueryHandler(buy_stars, pattern=f"^{BUY_STARS}$"),
                     CallbackQueryHandler(admin_panel, pattern=f"^{ADMIN_PANEL}$"),
                 ],
-                # ... (other states remain unchanged) ...
+                STATE_BUY_STARS_RECIPIENT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(set_recipient, pattern=f"^{SET_RECIPIENT}$"),
+                    CallbackQueryHandler(set_amount, pattern=f"^{SET_AMOUNT}$"),
+                    CallbackQueryHandler(set_payment_method, pattern=f"^{SET_PAYMENT}$"),
+                    CallbackQueryHandler(confirm_payment, pattern=f"^{CONFIRM_PAYMENT}$"),
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
+                STATE_BUY_STARS_AMOUNT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(set_recipient, pattern=f"^{SET_RECIPIENT}$"),
+                    CallbackQueryHandler(set_amount, pattern=f"^{SET_AMOUNT}$"),
+                    CallbackQueryHandler(set_payment_method, pattern=f"^{SET_PAYMENT}$"),
+                    CallbackQueryHandler(confirm_payment, pattern=f"^{CONFIRM_PAYMENT}$"),
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
+                STATE_BUY_STARS_PAYMENT_METHOD: [
+                    CallbackQueryHandler(select_crypto_type, pattern=f"^{SELECT_CRYPTO_TYPE}$"),
+                    CallbackQueryHandler(confirm_payment, pattern=f"^{PAY_CARD}$"),
+                    CallbackQueryHandler(set_recipient, pattern=f"^{SET_RECIPIENT}$"),
+                    CallbackQueryHandler(set_amount, pattern=f"^{SET_AMOUNT}$"),
+                    CallbackQueryHandler(set_payment_method, pattern=f"^{SET_PAYMENT}$"),
+                    CallbackQueryHandler(confirm_payment, pattern=f"^{CONFIRM_PAYMENT}$"),
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
+                STATE_BUY_STARS_CRYPTO_TYPE: [
+                    CallbackQueryHandler(confirm_payment, pattern=f"^{PAY_TON_SPACE}$"),
+                    CallbackQueryHandler(confirm_payment, pattern=f"^{PAY_CRYPTOBOT}$"),
+                    CallbackQueryHandler(set_payment_method, pattern=f"^{SET_PAYMENT}$"),
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
+                STATE_BUY_STARS_CONFIRM: [
+                    CallbackQueryHandler(check_payment, pattern=f"^{CHECK_PAYMENT}$"),
+                    CallbackQueryHandler(buy_stars, pattern=f"^{BUY_STARS}$"),
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
+                STATE_ADMIN_PANEL: [
+                    CallbackQueryHandler(admin_stats, pattern=f"^{ADMIN_STATS}$"),
+                    CallbackQueryHandler(admin_edit_texts, pattern=f"^{ADMIN_EDIT_TEXTS}$"),
+                    CallbackQueryHandler(admin_user_stats, pattern=f"^{ADMIN_USER_STATS}$"),
+                    CallbackQueryHandler(admin_edit_markup, pattern=f"^{ADMIN_EDIT_MARKUP}$"),
+                    CallbackQueryHandler(admin_manage_admins, pattern=f"^{ADMIN_MANAGE_ADMINS}$"),
+                    CallbackQueryHandler(admin_edit_profit, pattern=f"^{ADMIN_EDIT_PROFIT}$"),
+                    CallbackQueryHandler(export_data, pattern=f"^{EXPORT_DATA}$"),
+                    CallbackQueryHandler(view_logs, pattern=f"^{VIEW_LOGS}$"),
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
+                STATE_ADMIN_EDIT_TEXTS: [
+                    CallbackQueryHandler(edit_text_prompt, pattern=f"^{EDIT_TEXT_WELCOME}$"),
+                    CallbackQueryHandler(edit_text_prompt, pattern=f"^{EDIT_TEXT_BUY_PROMPT}$"),
+                    CallbackQueryHandler(edit_text_prompt, pattern=f"^{EDIT_TEXT_PROFILE}$"),
+                    CallbackQueryHandler(edit_text_prompt, pattern=f"^{EDIT_TEXT_REFERRALS}$"),
+                    CallbackQueryHandler(edit_text_prompt, pattern=f"^{EDIT_TEXT_TECH_SUPPORT}$"),
+                    CallbackQueryHandler(edit_text_prompt, pattern=f"^{EDIT_TEXT_REVIEWS}$"),
+                    CallbackQueryHandler(edit_text_prompt, pattern=f"^{EDIT_TEXT_BUY_SUCCESS}$"),
+                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
+                ],
+                STATE_EDIT_TEXT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
+                ],
+                STATE_ADMIN_USER_STATS: [
+                    CallbackQueryHandler(list_users, pattern=f"^{LIST_USERS}$"),
+                    CallbackQueryHandler(admin_user_stats, pattern=f"^{BACK_TO_ADMIN}$"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                ],
+                STATE_LIST_USERS: [
+                    CallbackQueryHandler(callback_query_handler, pattern=f"^{SELECT_USER}"),
+                    CallbackQueryHandler(admin_user_stats, pattern=f"^{ADMIN_USER_STATS}$"),
+                ],
+                STATE_EDIT_USER: [
+                    CallbackQueryHandler(handle_text_input, pattern=f"^{EDIT_USER_STARS}$"),
+                    CallbackQueryHandler(handle_text_input, pattern=f"^{EDIT_USER_REF_BONUS}$"),
+                    CallbackQueryHandler(handle_text_input, pattern=f"^{EDIT_USER_PURCHASES}$"),
+                    CallbackQueryHandler(admin_user_stats, pattern=f"^{ADMIN_USER_STATS}$"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                ],
+                STATE_ADMIN_EDIT_MARKUP: [
+                    CallbackQueryHandler(handle_text_input, pattern=f"^{MARKUP_TON_SPACE}$"),
+                    CallbackQueryHandler(handle_text_input, pattern=f"^{MARKUP_CRYPTOBOT_CRYPTO}$"),
+                    CallbackQueryHandler(handle_text_input, pattern=f"^{MARKUP_CRYPTOBOT_CARD}$"),
+                    CallbackQueryHandler(handle_text_input, pattern=f"^{MARKUP_REF_BONUS}$"),
+                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                ],
+                STATE_ADMIN_MANAGE_ADMINS: [
+                    CallbackQueryHandler(handle_text_input, pattern=f"^{ADD_ADMIN}$"),
+                    CallbackQueryHandler(handle_text_input, pattern=f"^{REMOVE_ADMIN}$"),
+                    CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                ],
                 STATE_ADMIN_EDIT_PROFIT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
                     CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
@@ -1987,12 +2077,28 @@ async def start_bot():
                 STATE_VIEW_LOGS: [
                     CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
                 ],
+                STATE_PROFILE: [
+                    CallbackQueryHandler(top_referrals, pattern=f"^{TOP_REFERRALS}$"),
+                    CallbackQueryHandler(top_purchases, pattern=f"^{TOP_PURCHASES}$"),
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
+                STATE_TOP_REFERRALS: [
+                    CallbackQueryHandler(profile, pattern=f"^{PROFILE}$"),
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
+                STATE_TOP_PURCHASES: [
+                    CallbackQueryHandler(profile, pattern=f"^{PROFILE}$"),
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
+                STATE_REFERRALS: [
+                    CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
+                ],
             },
             fallbacks=[
                 CommandHandler("start", start),
                 CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
             ],
-            per_message=False  # Changed to False to avoid PTBUserWarning
+            per_message=False  # Avoid PTBUserWarning
         )
         app.add_handler(conv_handler)
         app.add_error_handler(error_handler)
@@ -2009,7 +2115,7 @@ async def start_bot():
         # Запуск вебхука
         logger.info("Initializing aiohttp web application")
         web_app = web.Application()
-        web_app.router.add_post("/callback/callback/webhook", webhook_handler)  # Match Telegram webhook path
+        web_app.router.add_post("/callback/webhook", webhook_handler)  # Correct webhook path
         web_app.router.add_post("/callback", callback_webhook_handler)
         
         # Явно замораживаем сигналы
@@ -2030,8 +2136,12 @@ async def start_bot():
         # Инициализация и запуск Telegram бота
         logger.info("Initializing Telegram bot")
         await app.initialize()
-        await app.bot.set_webhook(f"{WEBHOOK_URL}/callback/callback/webhook")
-        logger.info(f"Вебхук установлен: {WEBHOOK_URL}/callback/callback/webhook")
+        # Удаляем старый вебхук
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Старый вебхук удален")
+        # Устанавливаем новый вебхук
+        await app.bot.set_webhook(f"{WEBHOOK_URL}/callback/webhook")
+        logger.info(f"Вебхук установлен: {WEBHOOK_URL}/callback/webhook")
         
         await app.start()
         logger.info("Бот успешно запущен")
