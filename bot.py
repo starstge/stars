@@ -134,14 +134,14 @@ transaction_cache = TTLCache(maxsize=1000, ttl=3600)  # Кэш транзакц�
 
 async def keep_alive(context: ContextTypes.DEFAULT_TYPE):
     """Send /start command to keep the bot active."""
-    chat_id = 6956377285 
+    chat_id = os.getenv("KEEP_ALIVE_CHAT_ID", "6956377285")  # Use environment variable or default to test account ID
     try:
         await context.bot.send_message(chat_id=chat_id, text="/start")
         logger.info(f"Sent /start to chat_id={chat_id} to keep bot active")
     except Exception as e:
         logger.error(f"Failed to send keep-alive /start to chat_id={chat_id}: {e}")
         ERRORS.labels(type="telegram_api").inc()
-
+        
 async def check_environment():
     """Проверка переменных окружения."""
     required_vars = ["BOT_TOKEN", "POSTGRES_URL", "SPLIT_API_TOKEN", "PROVIDER_TOKEN", "OWNER_WALLET", "WEBHOOK_URL"]
