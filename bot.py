@@ -234,7 +234,7 @@ async def init_db():
             )
         ''')
 
-        # Insert initial settings
+        # Insert initial settings with JSON-encoded values
         await conn.execute('''
             INSERT INTO settings (key, value) VALUES
                 ('admin_ids', $1),
@@ -249,7 +249,17 @@ async def init_db():
                 ('card_commission', $10),
                 ('profit_percent', $11)
             ON CONFLICT (key) DO NOTHING
-        ''', json.dumps([TWIN_ACCOUNT_ID]), PRICE_USD_PER_50 / 50, 2.93, 20, 25, 25, 5, 10, 15, 10, 10)
+        ''', json.dumps([TWIN_ACCOUNT_ID]), 
+             json.dumps(PRICE_USD_PER_50 / 50), 
+             json.dumps(2.93), 
+             json.dumps(20), 
+             json.dumps(25), 
+             json.dumps(25), 
+             json.dumps(5), 
+             json.dumps(10), 
+             json.dumps(15), 
+             json.dumps(10), 
+             json.dumps(10))
 
         # Insert initial texts
         await conn.execute('''
