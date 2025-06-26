@@ -1972,7 +1972,7 @@ async def start_bot():
                     CallbackQueryHandler(buy_stars, pattern=f"^{BUY_STARS}$"),
                     CallbackQueryHandler(admin_panel, pattern=f"^{ADMIN_PANEL}$"),
                 ],
-                # ... (other states remain unchanged, omitted for brevity) ...
+                # ... (other states remain unchanged) ...
                 STATE_ADMIN_EDIT_PROFIT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
                     CallbackQueryHandler(admin_panel, pattern=f"^{BACK_TO_ADMIN}$"),
@@ -1988,7 +1988,7 @@ async def start_bot():
                 CommandHandler("start", start),
                 CallbackQueryHandler(start, pattern=f"^{BACK_TO_MENU}$"),
             ],
-            per_message=True  # Fix PTBUserWarning
+            per_message=False  # Changed to False to avoid PTBUserWarning
         )
         app.add_handler(conv_handler)
         app.add_error_handler(error_handler)
@@ -2005,7 +2005,7 @@ async def start_bot():
         # Запуск вебхука
         logger.info("Initializing aiohttp web application")
         web_app = web.Application()
-        web_app.router.add_post("/callback/webhook", webhook_handler)  # Match Telegram webhook path
+        web_app.router.add_post("/callback/callback/webhook", webhook_handler)  # Match Telegram webhook path
         web_app.router.add_post("/callback", callback_webhook_handler)
         
         # Явно замораживаем сигналы
@@ -2026,8 +2026,8 @@ async def start_bot():
         # Инициализация и запуск Telegram бота
         logger.info("Initializing Telegram bot")
         await app.initialize()
-        await app.bot.set_webhook(f"{WEBHOOK_URL}/callback/webhook")
-        logger.info(f"Вебхук установлен: {WEBHOOK_URL}/callback/webhook")
+        await app.bot.set_webhook(f"{WEBHOOK_URL}/callback/callback/webhook")
+        logger.info(f"Вебхук установлен: {WEBHOOK_URL}/callback/callback/webhook")
         
         await app.start()
         logger.info("Бот успешно запущен")
