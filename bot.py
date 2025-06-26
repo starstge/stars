@@ -355,27 +355,31 @@ async def log_analytics(user_id, action, details=None):
 
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE):
     """Обновление курса TON."""
-    REQUESTS.labels(endpoint="update_ton_price").inc()
-    with RESPONSE_TIME.labels(endpoint="update_ton_price").time():
-        url = "https://toncenter.com/api/v3/exchange/rate?currency=usd"
-        headers = {"Authorization": f"Bearer {TON_API_KEY}"}
-        async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
-            try:
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        ton_price = float(data.get("rate", 2.93))
-                        await update_setting("ton_exchange_rate", ton_price)
-                        context.bot_data["ton_price"] = ton_price
-                        logger.info(f"Курс TON обновлен: {ton_price} USD")
-                    else:
-                        logger.error(f"Ошибка TON API: {response.status}")
-                        context.bot_data["ton_price"] = await get_setting("ton_exchange_rate") or 2.93
-                        ERRORS.labels(type="ton_api").inc()
-            except Exception as e:
-                logger.error(f"Ошибка обновления курса TON: {e}")
-                context.bot_data["ton_price"] = await get_setting("ton_exchange_rate") or 2.93
-                ERRORS.labels(type="ton_api").inc()
+    try:
+        logger.info("Fetching TON price")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://api.ton.space/v1/price",
+                headers={"Authorization": f"Bearer {TON_API_KEY}"}
+            ) as response:
+                if response.status != 200:
+                    logger.error(f"Ошибка TON API: {response.status}")
+                    ERRORS.labels(type="ton_api").inc()
+                    # Use fallback price
+                    context.bot_data["ton_price"] = await get_setting("ton_exchange_rate") or 2.93
+                    logger.info(f"Using fallback TON price: {context.bot_data['ton_price']}")
+                    return
+                data = await response.json()
+                ton_price = float(data.get("price", 2.93))
+                context.bot_data["ton_price"] = ton_price
+                logger.info(f"TON price updated: {ton_price}")
+                await log_analytics(0, "ton_price_updated", {"price": ton_price})
+    except Exception as e:
+        logger.error(f"Ошибка в update_ton_price: {e}", exc_info=True)
+        ERRORS.labels(type="ton_api").inc()
+        # Use fallback price
+        context.bot_data["ton_price"] = await get_setting("ton_exchange_rate") or 2.93
+        logger.info(f"Using fallback TON price: {context.bot_data['ton_price']}")
 
 async def get_account_state(address: str) -> dict:
     """Получение состояния аккаунта TON."""
