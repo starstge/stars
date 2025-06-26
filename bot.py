@@ -2127,10 +2127,16 @@ async def start_bot():
 async def shutdown():
     """Остановка бота."""
     logger.info("Остановка бота")
-    if app:
-        await app.shutdown()
-        logger.info("Application shutdown complete")
-    await close_db_pool()
+    global app
+    try:
+        if app is not None and app.running:
+            await app.shutdown()
+            logger.info("Application shutdown complete")
+        await close_db_pool()
+        logger.info("Database pool closed")
+    except Exception as e:
+        logger.error(f"Ошибка при остановке бота: {e}")
+        ERRORS.labels(type="shutdown").inc()
 
 def main():
     """Основная функция для запуска бота."""
