@@ -141,7 +141,57 @@ async def keep_alive(application: Application):
     except Exception as e:
         logger.error(f"Failed to send keep-alive /start to chat_id={chat_id}: {e}")
         ERRORS.labels(type="telegram_api").inc()
-        
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start."""
+    REQUESTS.labels(endpoint="start").inc()
+    with RESPONSE_TIME.labels(endpoint="start").time():
+        user_id = update.effective_user.id
+        username = update.effective_user.username
+        async with (await ensure_db_pool()) as conn:
+            # Инициализация пользователя
+            await conn.execute(
+                """
+                INSERT INTO users (user_id, username, stars_bought, ref_bonus_ton, referrals, is_new)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (user_id) DO UPDATE SET username = $2
+                """,
+                user_id, username, 0, 0.0, json.dumps([]), True
+            )
+            # Получение статистики
+            total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+            user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
+            # Формирование приветственного сообщения
+            text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
+            keyboard = [
+                [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE)],
+                [InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
+                [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)],
+                [InlineKeyboardButton("🛠 Техподдержка", callback_data=SUPPORT)],
+                [InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS)],
+                [InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            current_message = context.user_data.get("last_start_message", {})
+            new_message = {"text": text, "reply_markup": reply_markup.to_dict()}
+            try:
+                if update.callback_query:
+                    if current_message != new_message:
+                        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+                        context.user_data["last_start_message"] = new_message
+                    await update.callback_query.answer()
+                else:
+                    await update.message.reply_text(text, reply_markup=reply_markup)
+                    context.user_data["last_start_message"] = new_message
+            except BadRequest as e:
+                if "Message is not modified" not in str(e):
+                    logger.error(f"Ошибка отправки сообщения: {e}")
+                    ERRORS.labels(type="telegram_api").inc()
+            await log_analytics(user_id, "start")
+            context.user_data["state"] = STATE_MAIN_MENU
+            return STATE_MAIN_MENU
+
+
 async def check_environment():
     """Проверка переменных окружения."""
     required_vars = ["BOT_TOKEN", "POSTGRES_URL", "SPLIT_API_TOKEN", "PROVIDER_TOKEN", "OWNER_WALLET", "WEBHOOK_URL"]
