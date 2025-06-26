@@ -164,11 +164,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Формирование приветственного сообщения
             text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
             keyboard = [
-                [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE)],
-                [InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
+                [InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS), InlineKeyboardButton("🛠 Поддержка", callback_data=SUPPORT)],
+                [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE), InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
                 [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)],
-                [InlineKeyboardButton("🛠 Техподдержка", callback_data=SUPPORT)],
-                [InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS)],
                 [InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -190,7 +188,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await log_analytics(user_id, "start")
             context.user_data["state"] = STATE_MAIN_MENU
             return STATE_MAIN_MENU
-
 
 async def check_environment():
     """Проверка переменных окружения."""
