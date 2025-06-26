@@ -132,11 +132,11 @@ _db_pool_lock = asyncio.Lock()
 app = None
 transaction_cache = TTLCache(maxsize=1000, ttl=3600)  # Кэш транзакций на 1 час
 
-async def keep_alive(context: ContextTypes.DEFAULT_TYPE):
+async def keep_alive(application: Application):
     """Send /start command to keep the bot active."""
     chat_id = os.getenv("KEEP_ALIVE_CHAT_ID", "6956377285")  # Use environment variable or default to test account ID
     try:
-        await context.bot.send_message(chat_id=chat_id, text="/start")
+        await application.bot.send_message(chat_id=chat_id, text="/start")
         logger.info(f"Sent /start to chat_id={chat_id} to keep bot active")
     except Exception as e:
         logger.error(f"Failed to send keep-alive /start to chat_id={chat_id}: {e}")
@@ -675,78 +675,124 @@ async def issue_stars(recipient_username, stars, user_id):
                 continue
         return False
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start."""
-    REQUESTS.labels(endpoint="start").inc()
-    with RESPONSE_TIME.labels(endpoint="start").time():
-        user_id = update.effective_user.id
-        username = update.effective_user.username or f"user_{user_id}"
-        ref_id = context.args[0].split("_")[1] if context.args and context.args[0].startswith("ref_") else None
-        logger.info(f"Команда /start: user_id={user_id}, username={username}, ref_id={ref_id}")
+async def start_bot():
+    """Запуск бота с вебхуком и планировщиком."""
+    global app
+    try:
+        await check_environment()
+        await init_db()
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-        async with (await ensure_db_pool()) as conn:
-            user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
-            stars_sold = await conn.fetchval("SELECT SUM(stars) FROM transactions WHERE status = 'completed'") or 0
-            stars_bought = user["stars_bought"] if user else 0
-            if not user:
-                await conn.execute(
-                    "INSERT INTO users (user_id, username, created_at, is_new) VALUES ($1, $2, $3, $4)",
-                    user_id, username, datetime.now(pytz.UTC), True
-                )
-                if ref_id and int(ref_id) != user_id:
-                    referrer = await conn.fetchrow("SELECT referrals, is_new FROM users WHERE user_id = $1", int(ref_id))
-                    if referrer and referrer["is_new"]:
-                        referrals = json.loads(referrer["referrals"])
-                        if user_id not in referrals:
-                            referrals.append(user_id)
-                            await conn.execute(
-                                "UPDATE users SET referrals = $1 WHERE user_id = $2",
-                                json.dumps(referrals), int(ref_id)
-                            )
-                            ref_bonus = float(await get_setting("markup_ref_bonus") or 5) / 100
-                            await conn.execute(
-                                "UPDATE users SET ref_bonus_ton = ref_bonus_ton + $1 WHERE user_id = $2",
-                                ref_bonus, int(ref_id)
-                            )
-                            try:
-                                await context.bot.send_message(
-                                    chat_id=NEWS_CHANNEL,
-                                    text=f"Новый пользователь @{username} через реферала ID {ref_id}"
-                                )
-                            except Exception as e:
-                                logger.error(f"Ошибка отправки сообщения в канал: {e}")
-                                ERRORS.labels(type="telegram_api").inc()
-            else:
-                await conn.execute(
-                    "UPDATE users SET username = $1 WHERE user_id = $2",
-                    username, user_id
-                )
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            keep_alive,
+            trigger="interval",
+            minutes=1,
+            args=[app],  # Pass the Application instance directly
+            timezone=pytz.UTC
+        )
+        scheduler.add_job(
+            update_ton_price,
+            trigger="interval",
+            minutes=5,
+            args=[app.context_types.context],
+            timezone=pytz.UTC
+        )
+        scheduler.start()
+        logger.info("Планировщик запущен")
 
-        text = await get_text("welcome", stars_sold=stars_sold, stars_bought=stars_bought)
-        keyboard = [
-            [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE),
-             InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
-            [InlineKeyboardButton("🛠 Поддержка", callback_data=SUPPORT),
-             InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS)],
-            [InlineKeyboardButton("⭐ Купить звёзды", callback_data=BUY_STARS)]
-        ]
-        admin_ids = await get_setting("admin_ids") or [TWIN_ACCOUNT_ID, YOUR_TEST_ACCOUNT_ID]
-        if user_id in admin_ids:
-            keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        conv_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("start", start),
+                CallbackQueryHandler(callback_query_handler)
+            ],
+            states={
+                STATE_MAIN_MENU: [
+                    CallbackQueryHandler(callback_query_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, start)
+                ],
+                STATE_PROFILE: [CallbackQueryHandler(callback_query_handler)],
+                STATE_REFERRALS: [CallbackQueryHandler(callback_query_handler)],
+                STATE_BUY_STARS_RECIPIENT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(callback_query_handler)
+                ],
+                STATE_BUY_STARS_AMOUNT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(callback_query_handler)
+                ],
+                STATE_BUY_STARS_PAYMENT_METHOD: [CallbackQueryHandler(callback_query_handler)],
+                STATE_BUY_STARS_CRYPTO_TYPE: [CallbackQueryHandler(callback_query_handler)],
+                STATE_BUY_STARS_CONFIRM: [CallbackQueryHandler(callback_query_handler)],
+                STATE_ADMIN_PANEL: [CallbackQueryHandler(callback_query_handler)],
+                STATE_ADMIN_EDIT_TEXTS: [CallbackQueryHandler(callback_query_handler)],
+                STATE_EDIT_TEXT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(callback_query_handler)
+                ],
+                STATE_ADMIN_USER_STATS: [CallbackQueryHandler(callback_query_handler)],
+                STATE_LIST_USERS: [CallbackQueryHandler(callback_query_handler)],
+                STATE_EDIT_USER: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(callback_query_handler)
+                ],
+                STATE_ADMIN_EDIT_MARKUP: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(callback_query_handler)
+                ],
+                STATE_ADMIN_MANAGE_ADMINS: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(callback_query_handler)
+                ],
+                STATE_ADMIN_EDIT_PROFIT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                    CallbackQueryHandler(callback_query_handler)
+                ],
+                STATE_EXPORT_DATA: [CallbackQueryHandler(callback_query_handler)],
+                STATE_VIEW_LOGS: [CallbackQueryHandler(callback_query_handler)],
+                STATE_TOP_REFERRALS: [CallbackQueryHandler(callback_query_handler)],
+                STATE_TOP_PURCHASES: [CallbackQueryHandler(callback_query_handler)]
+            },
+            fallbacks=[CommandHandler("start", start)]
+        )
+
+        app.add_handler(conv_handler)
+        app.add_error_handler(error_handler)
+
+        start_http_server(9090)
+        logger.info("Сервер Prometheus запущен на порту 9090")
+
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await app.bot.set_webhook(webhook_url)
+        logger.info(f"Вебхук установлен: {webhook_url}")
+
+        web_app = web.Application()
+        web_app.router.add_post("/webhook", handle_webhook)
+        runner = web.AppRunner(web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", PORT)
+        await site.start()
+        logger.info(f"Веб-сервер запущен на порту {PORT}")
+
+        await app.initialize()
+        await app.start()
+        logger.info("Бот успешно запущен")
+
         try:
-            if update.callback_query:
-                await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
-            else:
-                await update.message.reply_text(text, reply_markup=reply_markup)
-        except BadRequest as e:
-            if "Message is not modified" not in str(e):
-                logger.error(f"Ошибка отправки сообщения: {e}")
-                ERRORS.labels(type="telegram_api").inc()
-        context.user_data.clear()
-        context.user_data["state"] = STATE_MAIN_MENU
-        await log_analytics(user_id, "start_command", {"ref_id": ref_id})
-        return STATE_MAIN_MENU
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            logger.info("Получен сигнал остановки")
+            await app.stop()
+            await app.shutdown()
+            await close_db_pool()
+            scheduler.shutdown()
+            await runner.cleanup()
+            logger.info("Бот остановлен")
+    except Exception as e:
+        logger.error(f"Ошибка запуска бота: {e}", exc_info=True)
+        ERRORS.labels(type="startup").inc()
+        raise
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик профиля пользователя."""
