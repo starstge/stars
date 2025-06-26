@@ -134,7 +134,7 @@ transaction_cache = TTLCache(maxsize=1000, ttl=3600)  # Кэш транзакц�
 
 async def keep_alive(context: ContextTypes.DEFAULT_TYPE):
     """Send /start command to keep the bot active."""
-    chat_id = YOUR_CHAT_ID  # Replace with your test account or group chat ID
+    chat_id = 6956377285 
     try:
         await context.bot.send_message(chat_id=chat_id, text="/start")
         logger.info(f"Sent /start to chat_id={chat_id} to keep bot active")
@@ -157,19 +157,33 @@ async def check_environment():
 async def get_db_pool():
     """Получение пула соединений с базой данных."""
     global _db_pool
-    if _db_pool is None or _db_pool.closed:
-        logger.info("Создание нового пула базы данных")
-        if not POSTGRES_URL:
-            logger.error("POSTGRES_URL or DATABASE_URL not set in environment variables")
-            raise ValueError("POSTGRES_URL or DATABASE_URL not set")
+    async with _db_pool_lock:
+        if _db_pool is None:
+            logger.info("Создание нового пула базы данных")
+            if not POSTGRES_URL:
+                logger.error("POSTGRES_URL or DATABASE_URL not set in environment variables")
+                raise ValueError("POSTGRES_URL or DATABASE_URL not set")
+            try:
+                _db_pool = await asyncpg.create_pool(POSTGRES_URL, min_size=1, max_size=10)
+                logger.info("Пул базы данных успешно инициализирован")
+            except Exception as e:
+                logger.error(f"Ошибка создания пула базы данных: {e}", exc_info=True)
+                raise
+        # Проверка жизнеспособности пула
         try:
-            _db_pool = await asyncpg.create_pool(POSTGRES_URL, min_size=1, max_size=10)
-            logger.info("Пул базы данных успешно инициализирован")
+            async with _db_pool.acquire() as conn:
+                await conn.execute("SELECT 1")
+            logger.debug("Пул базы данных активен")
         except Exception as e:
-            logger.error(f"Ошибка создания пула базы данных: {e}", exc_info=True)
-            raise
-    return _db_pool
-
+            logger.warning(f"Пул базы данных недоступен: {e}. Пересоздание пула.")
+            try:
+                _db_pool = await asyncpg.create_pool(POSTGRES_URL, min_size=1, max_size=10)
+                logger.info("Пул базы данных пересоздан")
+            except Exception as e:
+                logger.error(f"Ошибка пересоздания пула базы данных: {e}", exc_info=True)
+                raise
+        return _db_pool
+        
 async def close_db_pool():
     """Закрытие пула соединений с базой данных."""
     global _db_pool
