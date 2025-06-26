@@ -176,6 +176,7 @@ async def close_db_pool():
 async def init_db():
     logger.info("Initializing database")
     async with (await ensure_db_pool()) as conn:
+        # Create users table
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -186,15 +187,27 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_new BOOLEAN DEFAULT TRUE,
                 is_admin BOOLEAN DEFAULT FALSE
-            );
+            )
+        ''')
+
+        # Create settings table
+        await conn.execute('''
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value JSONB
-            );
+            )
+        ''')
+
+        # Create texts table
+        await conn.execute('''
             CREATE TABLE IF NOT EXISTS texts (
                 key TEXT PRIMARY KEY,
                 value TEXT
-            );
+            )
+        ''')
+
+        # Create transactions table
+        await conn.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT,
@@ -207,14 +220,22 @@ async def init_db():
                 invoice_id TEXT,
                 payload TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+            )
+        ''')
+
+        # Create admin_logs table
+        await conn.execute('''
             CREATE TABLE IF NOT EXISTS admin_logs (
                 id SERIAL PRIMARY KEY,
                 admin_id BIGINT,
                 action TEXT,
                 details JSONB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+            )
+        ''')
+
+        # Insert initial settings
+        await conn.execute('''
             INSERT INTO settings (key, value) VALUES
                 ('admin_ids', $1),
                 ('stars_price_usd', $2),
@@ -227,7 +248,11 @@ async def init_db():
                 ('ton_space_commission', $9),
                 ('card_commission', $10),
                 ('profit_percent', $11)
-            ON CONFLICT (key) DO NOTHING;
+            ON CONFLICT (key) DO NOTHING
+        ''', json.dumps([TWIN_ACCOUNT_ID]), PRICE_USD_PER_50 / 50, 2.93, 20, 25, 25, 5, 10, 15, 10, 10)
+
+        # Insert initial texts
+        await conn.execute('''
             INSERT INTO texts (key, value) VALUES
                 ('welcome', 'Добро пожаловать в @CheapStarsShop! Купите Telegram Stars за TON.\nЗвезд продано: {stars_sold}\nВы купили: {stars_bought} звезд'),
                 ('buy_prompt', 'Оплатите {amount_ton:.6f} TON\nСсылка: {address}\nДля: @{recipient}\nЗвезды: {stars}\nМетод: {method}'),
@@ -237,8 +262,8 @@ async def init_db():
                 ('reviews', '📝 Новости и отзывы: {news_channel}'),
                 ('buy_success', 'Оплата прошла! @{recipient} получил {stars} звезд.'),
                 ('user_info', 'Пользователь: @{username}\nID: {user_id}\nЗвезд куплено: {stars_bought}\nРеф. бонус: {ref_bonus_ton} TON\nРефералов: {ref_count}')
-            ON CONFLICT (key) DO NOTHING;
-        ''', json.dumps([TWIN_ACCOUNT_ID]), PRICE_USD_PER_50 / 50, 2.93, 20, 25, 25, 5, 10, 15, 10, 10)
+            ON CONFLICT (key) DO NOTHING
+        ''')
 
 async def get_setting(key):
     async with (await ensure_db_pool()) as conn:
