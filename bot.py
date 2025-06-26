@@ -29,6 +29,7 @@ from cachetools import TTLCache
 import hmac
 import hashlib
 import base64
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Настройка логирования с ротацией
 logging.basicConfig(
@@ -130,6 +131,16 @@ _db_pool_lock = asyncio.Lock()
 app = None
 transaction_cache = TTLCache(maxsize=1000, ttl=3600)  # Кэш транзакций на 1 час
 
+async def keep_alive(context: ContextTypes.DEFAULT_TYPE):
+    """Send /start command to keep the bot active."""
+    chat_id = YOUR_CHAT_ID  # Replace with your test account or group chat ID
+    try:
+        # Simulate sending /start to the specified chat
+        await context.bot.send_message(chat_id=chat_id, text="/start")
+        logger.info(f"Sent /start to chat_id={chat_id} to keep bot active")
+    except Exception as e:
+        logger.error(f"Failed to send keep-alive /start to chat_id={chat_id}: {e}")
+        
 async def check_environment():
     """Проверка переменных окружения."""
     required_vars = ["BOT_TOKEN", "POSTGRES_URL", "SPLIT_API_TOKEN", "PROVIDER_TOKEN", "OWNER_WALLET", "WEBHOOK_URL"]
@@ -2125,7 +2136,17 @@ async def start_bot():
         # Устанавливаем новый вебхук
         await app.bot.set_webhook(f"{WEBHOOK_URL}/callback/webhook")
         logger.info(f"Вебхук установлен: {WEBHOOK_URL}/callback/webhook")
-        
+        # Add scheduler for keep-alive
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            keep_alive,
+            trigger="interval",
+            seconds=60,  # Every 1 minute
+            kwargs={"context": application.context_types},
+            id="keep_alive",
+            replace_existing=True
+        )
+        scheduler.start()
         await app.start()
         logger.info("Бот успешно запущен")
         while True:
