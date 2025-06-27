@@ -211,7 +211,7 @@ async def get_db_pool():
                 logger.error("POSTGRES_URL or DATABASE_URL not set in environment variables")
                 raise ValueError("POSTGRES_URL or DATABASE_URL not set")
             try:
-                _db_pool = await asyncpg.create_pool(POSTGRES_URL, min_size=1, max_size=10)
+                _db_pool = await asyncpg.create_pool(POSTGRES_URL, min_size=1, max_size=10, timeout=30)
                 logger.info("Пул базы данных успешно инициализирован")
             except Exception as e:
                 logger.error(f"Ошибка создания пула базы данных: {e}", exc_info=True)
@@ -224,7 +224,9 @@ async def get_db_pool():
         except Exception as e:
             logger.warning(f"Пул базы данных недоступен: {e}. Пересоздание пула.")
             try:
-                _db_pool = await asyncpg.create_pool(POSTGRES_URL, min_size=1, max_size=10)
+                if _db_pool is not None:
+                    await _db_pool.close()
+                _db_pool = await asyncpg.create_pool(POSTGRES_URL, min_size=1, max_size=10, timeout=30)
                 logger.info("Пул базы данных пересоздан")
             except Exception as e:
                 logger.error(f"Ошибка пересоздания пула базы данных: {e}", exc_info=True)
@@ -1703,59 +1705,83 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     REQUESTS.labels(endpoint="callback_query").inc()
     with RESPONSE_TIME.labels(endpoint="callback_query").time():
         if data == BACK_TO_MENU:
+            context.user_data["state"] = STATE_MAIN_MENU
             return await start(update, context)
         elif data == BACK_TO_ADMIN:
+            context.user_data["state"] = STATE_ADMIN_PANEL
             return await admin_panel(update, context)
         elif data == PROFILE:
+            context.user_data["state"] = STATE_PROFILE
             return await profile(update, context)
         elif data == REFERRALS:
+            context.user_data["state"] = STATE_REFERRALS
             return await referrals(update, context)
         elif data == SUPPORT:
+            context.user_data["state"] = STATE_SUPPORT
             return await support(update, context)
         elif data == REVIEWS:
+            context.user_data["state"] = STATE_REVIEWS
             return await reviews(update, context)
         elif data == BUY_STARS:
+            context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
             return await buy_stars(update, context)
         elif data == ADMIN_PANEL:
             admin_ids = await get_setting("admin_ids") or [TWIN_ACCOUNT_ID, YOUR_TEST_ACCOUNT_ID]
             if user_id in admin_ids:
+                context.user_data["state"] = STATE_ADMIN_PANEL
                 return await admin_panel(update, context)
             await query.answer(text="Доступ запрещен.")
-            return STATE_MAIN_MENU
+            return context.user_data.get("state", STATE_MAIN_MENU)
         elif data == ADMIN_STATS:
+            context.user_data["state"] = STATE_ADMIN_STATS
             return await admin_stats(update, context)
         elif data == ADMIN_EDIT_TEXTS:
+            context.user_data["state"] = STATE_ADMIN_EDIT_TEXTS
             return await admin_edit_texts(update, context)
         elif data == ADMIN_USER_STATS:
+            context.user_data["state"] = STATE_ADMIN_USER_STATS
             return await admin_user_stats(update, context)
         elif data == ADMIN_EDIT_MARKUP:
+            context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
             return await admin_edit_markup(update, context)
         elif data == ADMIN_MANAGE_ADMINS:
+            context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
             return await admin_manage_admins(update, context)
         elif data == ADMIN_EDIT_PROFIT:
+            context.user_data["state"] = STATE_ADMIN_EDIT_PROFIT
             return await admin_edit_profit(update, context)
         elif data == EXPORT_DATA:
+            context.user_data["state"] = STATE_EXPORT_DATA
             return await export_data(update, context)
         elif data == VIEW_LOGS:
+            context.user_data["state"] = STATE_VIEW_LOGS
             return await view_logs(update, context)
         elif data == SET_RECIPIENT:
+            context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
             return await set_recipient(update, context)
         elif data == SET_AMOUNT:
+            context.user_data["state"] = STATE_BUY_STARS_AMOUNT
             return await set_amount(update, context)
         elif data == SET_PAYMENT:
+            context.user_data["state"] = STATE_BUY_STARS_PAYMENT_METHOD
             return await set_payment_method(update, context)
         elif data == SELECT_CRYPTO_TYPE:
+            context.user_data["state"] = STATE_BUY_STARS_CRYPTO_TYPE
             return await select_crypto_type(update, context)
         elif data == CONFIRM_PAYMENT:
+            context.user_data["state"] = STATE_BUY_STARS_CONFIRM
             return await confirm_payment(update, context)
         elif data == CHECK_PAYMENT:
+            context.user_data["state"] = STATE_BUY_STARS_CONFIRM
             return await check_payment(update, context)
         elif data in [EDIT_TEXT_WELCOME, EDIT_TEXT_BUY_PROMPT, EDIT_TEXT_PROFILE, EDIT_TEXT_REFERRALS,
                       EDIT_TEXT_TECH_SUPPORT, EDIT_TEXT_REVIEWS, EDIT_TEXT_BUY_SUCCESS]:
             context.user_data["input_state"] = data
+            context.user_data["state"] = STATE_EDIT_TEXT
             return await edit_text_prompt(update, context)
         elif data in [MARKUP_TON_SPACE, MARKUP_CRYPTOBOT_CRYPTO, MARKUP_CRYPTOBOT_CARD, MARKUP_REF_BONUS]:
             context.user_data["input_state"] = data
+            context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
             text = f"Введите процент наценки для '{data}':"
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1770,6 +1796,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return STATE_ADMIN_EDIT_MARKUP
         elif data == ADD_ADMIN:
             context.user_data["input_state"] = "add_admin"
+            context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
             text = "Введите ID нового администратора:"
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1784,6 +1811,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return STATE_ADMIN_MANAGE_ADMINS
         elif data == REMOVE_ADMIN:
             context.user_data["input_state"] = "remove_admin"
+            context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
             text = "Введите ID администратора для удаления:"
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1831,6 +1859,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return STATE_ADMIN_USER_STATS
         elif data == EDIT_USER_STARS:
             context.user_data["input_state"] = "edit_user_stars"
+            context.user_data["state"] = STATE_EDIT_USER
             text = "Введите новое количество звезд:"
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=LIST_USERS)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1845,6 +1874,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return STATE_EDIT_USER
         elif data == EDIT_USER_REF_BONUS:
             context.user_data["input_state"] = "edit_user_ref_bonus"
+            context.user_data["state"] = STATE_EDIT_USER
             text = "Введите новый реферальный бонус (TON):"
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=LIST_USERS)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1863,6 +1893,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             recipient = buy_data.get("recipient")
             if not stars or not recipient:
                 await query.message.reply_text("Сначала выберите получателя и количество звезд!")
+                context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
                 return STATE_BUY_STARS_RECIPIENT
             ton_price = context.bot_data.get("ton_price", 2.85)
             stars_price_usd = await get_setting("stars_price_usd") or (PRICE_USD_PER_50 / 50)
@@ -1873,6 +1904,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             invoice_id, pay_url = await create_ton_space_invoice(amount_ton, user_id, stars, recipient, payload)
             if not pay_url:
                 await query.message.reply_text("Ошибка создания инвойса. Попробуйте другой метод.")
+                context.user_data["state"] = STATE_BUY_STARS_PAYMENT_METHOD
                 return STATE_BUY_STARS_PAYMENT_METHOD
             buy_data.update({
                 "payment_method": "ton_space_api" if TON_SPACE_API_TOKEN else "ton_space_direct",
@@ -1883,6 +1915,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             })
             context.user_data["buy_data"] = buy_data
             await log_analytics(user_id, "select_ton_space", {"stars": stars, "amount_ton": amount_ton})
+            context.user_data["state"] = STATE_BUY_STARS_CONFIRM
             return await confirm_payment(update, context)
         elif data == PAY_CRYPTOBOT:
             buy_data = context.user_data.get("buy_data", {})
@@ -1890,6 +1923,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             recipient = buy_data.get("recipient")
             if not stars or not recipient:
                 await query.message.reply_text("Сначала выберите получателя и количество звезд!")
+                context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
                 return STATE_BUY_STARS_RECIPIENT
             ton_price = context.bot_data.get("ton_price", 2.85)
             stars_price_usd = await get_setting("stars_price_usd") or (PRICE_USD_PER_50 / 50)
@@ -1900,6 +1934,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             invoice_id, pay_url = await create_cryptobot_invoice(amount_ton, "TON", user_id, stars, recipient, payload)
             if not pay_url:
                 await query.message.reply_text("Ошибка создания инвойса. Попробуйте другой метод.")
+                context.user_data["state"] = STATE_BUY_STARS_PAYMENT_METHOD
                 return STATE_BUY_STARS_PAYMENT_METHOD
             buy_data.update({
                 "payment_method": "cryptobot_ton",
@@ -1910,6 +1945,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             })
             context.user_data["buy_data"] = buy_data
             await log_analytics(user_id, "select_cryptobot_ton", {"stars": stars, "amount_ton": amount_ton})
+            context.user_data["state"] = STATE_BUY_STARS_CONFIRM
             return await confirm_payment(update, context)
         elif data == PAY_CARD:
             buy_data = context.user_data.get("buy_data", {})
@@ -1917,6 +1953,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             recipient = buy_data.get("recipient")
             if not stars or not recipient:
                 await query.message.reply_text("Сначала выберите получателя и количество звезд!")
+                context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
                 return STATE_BUY_STARS_RECIPIENT
             stars_price_usd = await get_setting("stars_price_usd") or (PRICE_USD_PER_50 / 50)
             markup = await get_setting("markup_cryptobot_card") or 25
@@ -1925,6 +1962,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             invoice_id, pay_url = await create_cryptobot_invoice(amount_usd, "USD", user_id, stars, recipient, payload)
             if not pay_url:
                 await query.message.reply_text("Ошибка создания инвойса. Попробуйте другой метод.")
+                context.user_data["state"] = STATE_BUY_STARS_PAYMENT_METHOD
                 return STATE_BUY_STARS_PAYMENT_METHOD
             buy_data.update({
                 "payment_method": "cryptobot_usd",
@@ -1936,6 +1974,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             })
             context.user_data["buy_data"] = buy_data
             await log_analytics(user_id, "select_cryptobot_usd", {"stars": stars, "amount_usd": amount_usd})
+            context.user_data["state"] = STATE_BUY_STARS_CONFIRM
             return await confirm_payment(update, context)
         elif data == TOP_REFERRALS:
             async with (await ensure_db_pool()) as conn:
@@ -1954,7 +1993,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         ERRORS.labels(type="telegram_api").inc()
                 await query.answer()
                 await log_analytics(user_id, "view_top_referrals")
-                return STATE_PROFILE
+                context.user_data["state"] = STATE_TOP_REFERRALS
+                return STATE_TOP_REFERRALS
         elif data == TOP_PURCHASES:
             async with (await ensure_db_pool()) as conn:
                 users = await conn.fetch("SELECT user_id, username, stars_bought FROM users ORDER BY stars_bought DESC LIMIT 10")
@@ -1971,7 +2011,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         ERRORS.labels(type="telegram_api").inc()
                 await query.answer()
                 await log_analytics(user_id, "view_top_purchases")
-                return STATE_PROFILE
+                context.user_data["state"] = STATE_TOP_PURCHASES
+                return STATE_TOP_PURCHASES
         else:
             await query.answer(text="Неизвестная команда.")
             return context.user_data.get("state", STATE_MAIN_MENU)
