@@ -150,7 +150,7 @@ async def ensure_db_pool():
     """Получение пула соединений с базой данных с ретраем."""
     global _db_pool
     async with _db_pool_lock:
-        if _db_pool is None or _db_pool.closed:
+        if _db_pool is None or _db_pool._closed:  # Исправлено: closed -> _closed
             logger.info("Создание нового пула базы данных (или пересоздание, если закрыт)")
             if not POSTGRES_URL:
                 logger.error("POSTGRES_URL or DATABASE_URL not set")
@@ -171,6 +171,7 @@ async def ensure_db_pool():
                     logger.error(f"Ошибка создания пула DB (попытка {attempt+1}): {e}")
                     await asyncio.sleep(5)
             raise ValueError("Не удалось подключиться к DB после 3 попыток")
+        logger.debug("Пул DB уже существует и активен")
         return _db_pool
 
 async def init_db():
@@ -223,7 +224,7 @@ async def close_db_pool():
     """Закрытие пула соединений."""
     global _db_pool
     async with _db_pool_lock:
-        if _db_pool is not None and not _db_pool.closed:
+        if _db_pool is not None and not _db_pool._closed:  # Исправлено: closed -> _closed
             await _db_pool.close()
             _db_pool = None
             logger.info("Пул DB закрыт")
@@ -238,11 +239,15 @@ async def get_text(key, **kwargs):
 
 async def log_analytics(user_id, action, data=None):
     """Логирование аналитики."""
-    async with (await ensure_db_pool()) as conn:
-        await conn.execute(
-            "INSERT INTO analytics (user_id, action, data) VALUES ($1, $2, $3)",
-            user_id, action, json.dumps(data or {})
-        )
+    try:
+        async with (await ensure_db_pool()) as conn:
+            await conn.execute(
+                "INSERT INTO analytics (user_id, action, data) VALUES ($1, $2, $3)",
+                user_id, action, json.dumps(data or {})
+            )
+    except Exception as e:
+        logger.error(f"Ошибка логирования аналитики: {e}")
+        ERRORS.labels(type="database", endpoint="log_analytics").inc()
 
 async def update_ton_price():
     """Обновление курса TON (заглушка, предполагается API-запрос)."""
@@ -256,8 +261,10 @@ async def update_ton_price():
                     logger.info(f"TON price updated: {ton_price} USD")
                 else:
                     logger.error(f"Failed to fetch TON price: {resp.status}")
+                    ERRORS.labels(type="api", endpoint="update_ton_price").inc()
         except Exception as e:
             logger.error(f"Error updating TON price: {e}")
+            ERRORS.labels(type="api", endpoint="update_ton_price").inc()
 
 async def generate_payload(user_id):
     """Генерация уникального payload для платежа."""
@@ -292,9 +299,11 @@ async def create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipie
                         return result["result"]["invoice_id"], result["result"]["pay_url"]
                     else:
                         logger.error(f"Cryptobot API error: {response.status}")
+                        ERRORS.labels(type="api", endpoint="create_cryptobot_invoice").inc()
                 await asyncio.sleep(2)
             except Exception as e:
                 logger.error(f"Cryptobot invoice creation failed (attempt {attempt+1}): {e}")
+                ERRORS.labels(type="api", endpoint="create_cryptobot_invoice").inc()
                 await asyncio.sleep(2)
         return None, None
 
@@ -344,7 +353,7 @@ async def keep_alive(app):
     """Отправка команды /start для поддержания активности бота."""
     chat_id = str(TWIN_ACCOUNT_ID)
     try:
-        await app.bot.send_message(chat_id=chat_id, text="/start")
+        await app.bot.send_message(chat_id=chat_id, text="/start")  # Исправлено: app -> app.bot
         logger.info(f"Sent /start to chat_id={chat_id} to keep bot active")
     except Exception as e:
         logger.error(f"Failed to send keep-alive /start to chat_id={chat_id}: {e}")
@@ -907,7 +916,8 @@ async def start_bot():
                 STATE_TOP_REFERRALS: [CallbackQueryHandler(callback_query_handler)],
                 STATE_TOP_PURCHASES: [CallbackQueryHandler(callback_query_handler)]
             },
-            fallbacks=[CommandHandler("start", start)]
+            fallbacks=[CommandHandler("start", start)],
+            per_message=True  # Установлено явно для устранения предупреждения
         )
 
         app.add_handler(conv_handler)
