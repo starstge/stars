@@ -196,13 +196,13 @@ async def init_db():
                     user_id BIGINT,
                     action TEXT,
                     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    data JSONB
+                    data JSONB,
+                    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # Миграция: добавляем колонку timestamp, если она отсутствует
+            # Миграция: переименовываем details в data, если существует
             await conn.execute("""
-                ALTER TABLE analytics
-                ADD COLUMN IF NOT EXISTS timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                ALTER TABLE analytics RENAME COLUMN details TO data;
             """)
             # Вставка начальных текстов
             default_texts = {
@@ -363,28 +363,25 @@ async def keep_alive(app):
         ERRORS.labels(type="telegram_api", endpoint="keep_alive").inc()
 
 async def backup_db():
-    """Бэкап базы данных и отправка админу."""
+    """Создание бэкапа базы данных в формате JSON."""
     try:
         async with (await ensure_db_pool()) as conn:
             users = await conn.fetch("SELECT * FROM users")
             texts = await conn.fetch("SELECT * FROM texts")
             analytics = await conn.fetch("SELECT * FROM analytics")
-            data = {
-                'users': [dict(row) for row in users],
-                'texts': [dict(row) for row in texts],
-                'analytics': [dict(row) for row in analytics]
+            backup_data = {
+                "users": [dict(row) for row in users],
+                "texts": [dict(row) for row in texts],
+                "analytics": [dict(row) for row in analytics]
             }
-            json_data = json.dumps(data, default=str, indent=4).encode('utf-8')
-            filename = f"db_backup_{datetime.now(pytz.UTC).strftime('%Y-%m-%d')}.json"
-            await app.bot.send_document(
-                chat_id=ADMIN_BACKUP_ID,
-                document=io.BytesIO(json_data),
-                filename=filename
-            )
-            logger.info(f"Бэкап отправлен админу {ADMIN_BACKUP_ID}")
+            backup_file = f"db_backup_{datetime.now(pytz.UTC).strftime('%Y-%m-%d_%H-%M-%S')}.json"
+            with open(backup_file, 'w', encoding='utf-8') as f:
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"Бэкап создан: {backup_file}")
+            return backup_file
     except Exception as e:
-        logger.error(f"Ошибка бэкапа DB: {e}")
-        ERRORS.labels(type="backup", endpoint="backup_db").inc()
+        logger.error(f"Ошибка создания бэкапа: {e}", exc_info=True)
+        raise
         
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start."""
@@ -479,7 +476,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             async with (await ensure_db_pool()) as conn:
                 user = await conn.fetchrow("SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id)
                 ref_count = len(json.loads(user["referrals"])) if user["referrals"] else 0
-                ref_link = f"https://t.me/CheapStarsShopBot?start=ref_{user_id}"
+                ref_link = f"https://t.me/CheapStarsShop_bot?start=ref_{user_id}"  # Исправлено на _bot
                 text = await get_text("referrals", ref_count=ref_count, ref_bonus_ton=user["ref_bonus_ton"], ref_link=ref_link)
                 keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -501,11 +498,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     return context.user_data.get("state", STATE_MAIN_MENU)
                 keyboard = [
                     [InlineKeyboardButton("📊 Статистика", callback_data=STATE_ADMIN_STATS)],
-                    [InlineKeyboardButton("✍️ Редактировать тексты", callback_data=STATE_ADMIN_EDIT_TEXTS)],
                     [InlineKeyboardButton("💸 Наценка", callback_data=STATE_ADMIN_EDIT_MARKUP)],
-                    [InlineKeyboardButton("👥 Управление админами", callback_data=STATE_ADMIN_MANAGE_ADMINS)],
                     [InlineKeyboardButton("📈 Топ рефералов", callback_data=STATE_TOP_REFERRALS)],
                     [InlineKeyboardButton("🛒 Топ покупок", callback_data=STATE_TOP_PURCHASES)],
+                    [InlineKeyboardButton("📂 Копировать базу данных", callback_data=COPY_DB)],
                     [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
                 ]
                 await query.edit_message_text("Админ-панель", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -513,49 +509,43 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await log_analytics(user_id, "open_admin_panel")
                 context.user_data["state"] = STATE_ADMIN_PANEL
                 return STATE_ADMIN_PANEL
-        elif data == STATE_ADMIN_EDIT_TEXTS:
-            keyboard = [
-                [InlineKeyboardButton("Приветствие", callback_data=EDIT_TEXT_WELCOME)],
-                [InlineKeyboardButton("Покупка", callback_data=EDIT_TEXT_BUY_PROMPT)],
-                [InlineKeyboardButton("Профиль", callback_data=EDIT_TEXT_PROFILE)],
-                [InlineKeyboardButton("Рефералы", callback_data=EDIT_TEXT_REFERRALS)],
-                [InlineKeyboardButton("Поддержка", callback_data=EDIT_TEXT_TECH_SUPPORT)],
-                [InlineKeyboardButton("Новости", callback_data=EDIT_TEXT_NEWS)],
-                [InlineKeyboardButton("Успешная покупка", callback_data=EDIT_TEXT_BUY_SUCCESS)],
-                [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
-            ]
-            await query.edit_message_text("Выберите текст для редактирования:", reply_markup=InlineKeyboardMarkup(keyboard))
-            await query.answer()
-            context.user_data["state"] = STATE_ADMIN_EDIT_TEXTS
-            return STATE_ADMIN_EDIT_TEXTS
-        elif data.startswith("edit_text_"):
-            key = data.replace("edit_text_", "")
-            context.user_data["edit_text_key"] = key
-            await query.message.reply_text(f"Введите новый текст для {key}:")
-            await query.answer()
-            context.user_data["state"] = STATE_EDIT_TEXT
-            return STATE_EDIT_TEXT
+        elif data == COPY_DB:
+            if user_id != 6956377285:
+                await query.answer(text="Доступ только для главного админа.")
+                return context.user_data.get("state", STATE_MAIN_MENU)
+            try:
+                backup_file = await backup_db()
+                with open(backup_file, 'rb') as f:
+                    await query.message.reply_document(document=f, filename=backup_file)
+                await query.answer(text="Бэкап базы данных отправлен.")
+                await log_analytics(user_id, "copy_db")
+            except Exception as e:
+                logger.error(f"Ошибка при создании/отправке бэкапа: {e}", exc_info=True)
+                await query.answer(text="Ошибка при создании бэкапа. Попробуйте позже.")
+            context.user_data["state"] = STATE_ADMIN_PANEL
+            return STATE_ADMIN_PANEL
+        elif data == STATE_ADMIN_STATS:
+            async with (await ensure_db_pool()) as conn:
+                total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+                total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+                total_referrals = await conn.fetchval("SELECT SUM(jsonb_array_length(referrals)) FROM users") or 0
+                text = (
+                    f"📊 Статистика:\n"
+                    f"Всего пользователей: {total_users}\n"
+                    f"Всего куплено звезд: {total_stars}\n"
+                    f"Всего рефералов: {total_referrals}"
+                )
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=ADMIN_PANEL)]]
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+                await query.answer()
+                await log_analytics(user_id, "view_stats")
+                context.user_data["state"] = STATE_ADMIN_STATS
+                return STATE_ADMIN_STATS
         elif data == STATE_ADMIN_EDIT_MARKUP:
             await query.message.reply_text("Введите новый процент наценки (например, 10 для 10%):")
             await query.answer()
             context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
             return STATE_ADMIN_EDIT_MARKUP
-        elif data == STATE_ADMIN_MANAGE_ADMINS:
-            keyboard = [
-                [InlineKeyboardButton("Добавить админа", callback_data=ADD_ADMIN)],
-                [InlineKeyboardButton("Удалить админа", callback_data=REMOVE_ADMIN)],
-                [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
-            ]
-            await query.edit_message_text("Управление админами:", reply_markup=InlineKeyboardMarkup(keyboard))
-            await query.answer()
-            context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
-            return STATE_ADMIN_MANAGE_ADMINS
-        elif data in [ADD_ADMIN, REMOVE_ADMIN]:
-            context.user_data["admin_action"] = data
-            await query.message.reply_text("Введите ID пользователя для добавления/удаления из админов:")
-            await query.answer()
-            context.user_data["state"] = STATE_ADMIN_MANAGE_ADMINS
-            return STATE_ADMIN_MANAGE_ADMINS
         elif data == STATE_TOP_REFERRALS:
             async with (await ensure_db_pool()) as conn:
                 users = await conn.fetch("SELECT user_id, username, referrals FROM users ORDER BY jsonb_array_length(referrals) DESC LIMIT 10")
@@ -563,7 +553,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 for i, user in enumerate(users, 1):
                     ref_count = len(json.loads(user["referrals"])) if user["referrals"] != '[]' else 0
                     text += f"{i}. @{user['username'] or 'Unknown'} (ID: {user['user_id']}): {ref_count} рефералов\n"
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=ADMIN_PANEL)]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 try:
                     await query.edit_message_text(text, reply_markup=reply_markup)
@@ -581,7 +571,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 text = "🏆 Топ-10 покупок:\n"
                 for i, user in enumerate(users, 1):
                     text += f"{i}. @{user['username'] or 'Unknown'} (ID: {user['user_id']}): {user['stars_bought']} звезд\n"
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=ADMIN_PANEL)]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 try:
                     await query.edit_message_text(text, reply_markup=reply_markup)
@@ -711,12 +701,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await log_analytics(user_id, "set_amount")
             context.user_data["state"] = STATE_BUY_STARS_PAYMENT_METHOD
             return STATE_BUY_STARS_PAYMENT_METHOD
+        elif data in ["7", "8", "10", "11", "14"]:  # Игнорируем устаревшие callback_data
+            logger.warning(f"Устаревший callback_data: {data}")
+            await query.answer(text="Эта команда устарела. Пожалуйста, используйте меню.")
+            return context.user_data.get("state", STATE_MAIN_MENU)
         else:
             logger.warning(f"Неизвестный callback_data: {data}")
-            await query.answer(text="Неизвестная команда. Возвращаюсь в меню.")
-            context.user_data["state"] = STATE_MAIN_MENU
-            await start(update, context)
-            return STATE_MAIN_MENU
+            await query.answer(text="Команда не распознана. Пожалуйста, используйте меню.")
+            return context.user_data.get("state", STATE_MAIN_MENU)
             
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений для состояний."""
