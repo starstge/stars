@@ -62,8 +62,8 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 SPLIT_API_URL = "https://api.split.tg/buy/stars"
 CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
 TON_SPACE_API_URL = "https://api.ton.space/v1"
-SUPPORT_CHANNEL = os.getenv("SUPPORT_CHANNEL", "https://t.me/CheapStarsShop_support")  # Исправлено на полный URL
-NEWS_CHANNEL = os.getenv("NEWS_CHANNEL", "https://t.me/cheapstarshop_news")  # Исправлено на полный URL
+SUPPORT_CHANNEL = "https://t.me/CheapStarsShop_support"  # Исправлено на полный URL
+NEWS_CHANNEL = "https://t.me/cheapstarshop_news"  # Исправлено на полный URL
 TWIN_ACCOUNT_ID = int(os.getenv("TWIN_ACCOUNT_ID", 6956377285))
 YOUR_TEST_ACCOUNT_ID = 6956377285
 PRICE_USD_PER_50 = 0.81  # Цена за 50 звезд в USD
@@ -503,7 +503,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ERRORS.labels(type="start", endpoint="start").inc()
             await update.message.reply_text("Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой.")
             return STATE_MAIN_MENU
-            
+
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback-запросов."""
     query = update.callback_query
