@@ -880,14 +880,8 @@ async def start_bot():
         scheduler.start()
         logger.info("Планировщик запущен")
 
-        async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            if update.message and update.message.text == "/start":
-                return await start(update, context)
-            return None
-
         conv_handler = ConversationHandler(
             entry_points=[
-                CallbackQueryHandler(command_start, pattern="^/start$"),
                 CallbackQueryHandler(callback_query_handler)
             ],
             states={
@@ -938,10 +932,12 @@ async def start_bot():
                 STATE_TOP_REFERRALS: [CallbackQueryHandler(callback_query_handler)],
                 STATE_TOP_PURCHASES: [CallbackQueryHandler(callback_query_handler)]
             },
-            fallbacks=[CallbackQueryHandler(command_start, pattern="^/start$")],
-            per_message=True
+            fallbacks=[
+                CommandHandler("start", start)
+            ]
         )
 
+        app.add_handler(CommandHandler("start", start))
         app.add_handler(conv_handler)
         app.add_error_handler(error_handler)
 
@@ -978,7 +974,7 @@ async def start_bot():
     except Exception as e:
         logger.error(f"Ошибка запуска бота: {e}", exc_info=True)
         ERRORS.labels(type="startup", endpoint="start_bot").inc()
-        raise  # Перенос строки перед async def
+        raise
         
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок."""
