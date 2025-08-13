@@ -62,8 +62,8 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 SPLIT_API_URL = "https://api.split.tg/buy/stars"
 CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
 TON_SPACE_API_URL = "https://api.ton.space/v1"
-SUPPORT_CHANNEL = "https://t.me/CheapStarsShop_support"  # Исправлено на полный URL
-NEWS_CHANNEL = "https://t.me/cheapstarshop_news"  # Исправлено на полный URL
+SUPPORT_CHANNEL = "https://t.me/CheapStarsShop_support"
+NEWS_CHANNEL = "https://t.me/cheapstarshop_news"
 TWIN_ACCOUNT_ID = int(os.getenv("TWIN_ACCOUNT_ID", 6956377285))
 YOUR_TEST_ACCOUNT_ID = 6956377285
 PRICE_USD_PER_50 = 0.81  # Цена за 50 звезд в USD
@@ -248,7 +248,6 @@ async def update_ton_price():
             data = response.json()
             ton_price = data["rates"]["TON"]["prices"]["USD"]
             diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
-            # Удаляем символ % и преобразуем в float
             try:
                 diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
             except (ValueError, TypeError):
@@ -477,18 +476,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if user_id == 6956377285:
                     keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                current_message = context.user_data.get("last_start_message", {})
-                new_message = {"text": text, "reply_markup": reply_markup.to_dict()}
+                # Очистка старых данных в user_data
+                context.user_data.clear()
+                context.user_data["last_start_message"] = {"text": text, "reply_markup": reply_markup.to_dict()}
                 try:
                     if update.callback_query:
                         query = update.callback_query
-                        if current_message != new_message:
-                            await query.edit_message_text(text, reply_markup=reply_markup)
+                        await query.edit_message_text(text, reply_markup=reply_markup)
                         await query.answer()
                     else:
                         logger.debug(f"Отправка главного меню для user_id={user_id}")
                         await update.message.reply_text(text, reply_markup=reply_markup)
-                    context.user_data["last_start_message"] = new_message
                 except BadRequest as e:
                     if "Message is not modified" not in str(e):
                         logger.error(f"Ошибка отправки сообщения: {e}")
@@ -511,6 +509,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
     REQUESTS.labels(endpoint="callback_query").inc()
     with RESPONSE_TIME.labels(endpoint="callback_query").time():
+        # Обработка устаревших callback_data
+        if data in ["7", "8", "10", "11", "12"]:
+            logger.warning(f"Обнаружен устаревший callback_data: {data}, перенаправление на /start для user_id={user_id}")
+            await query.answer(text="Эта команда устарела. Возвращаемся в главное меню.")
+            await start(update, context)
+            return STATE_MAIN_MENU
         if data == BACK_TO_MENU:
             context.user_data.clear()
             context.user_data["state"] = STATE_MAIN_MENU
@@ -812,14 +816,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await log_analytics(user_id, "set_amount")
             context.user_data["state"] = STATE_BUY_STARS_PAYMENT_METHOD
             return STATE_BUY_STARS_PAYMENT_METHOD
-        elif data in ["7", "8", "10", "11", "14"]:
-            logger.warning(f"Устаревший callback_data: {data}")
-            await query.answer(text="Эта команда устарела. Пожалуйста, используйте меню.")
-            return context.user_data.get("state", STATE_MAIN_MENU)
         else:
-            logger.warning(f"Неизвестный callback_data: {data}")
-            await query.answer(text="Команда не распознана. Пожалуйста, используйте меню.")
-            return context.user_data.get("state", STATE_MAIN_MENU)
+            logger.warning(f"Неизвестный callback_data: {data} для user_id={user_id}")
+            await query.answer(text="Команда не распознана. Возвращаемся в главное меню.")
+            await start(update, context)
+            return STATE_MAIN_MENU
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений для состояний."""
