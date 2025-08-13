@@ -62,8 +62,8 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 SPLIT_API_URL = "https://api.split.tg/buy/stars"
 CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
 TON_SPACE_API_URL = "https://api.ton.space/v1"
-SUPPORT_CHANNEL = os.getenv("SUPPORT_CHANNEL", "@CheapStarsShop_support")
-NEWS_CHANNEL = os.getenv("NEWS_CHANNEL", "@cheapstarshop_news")
+SUPPORT_CHANNEL = os.getenv("SUPPORT_CHANNEL", "https://t.me/CheapStarsShop_support")  # Исправлено на полный URL
+NEWS_CHANNEL = os.getenv("NEWS_CHANNEL", "https://t.me/cheapstarshop_news")  # Исправлено на полный URL
 TWIN_ACCOUNT_ID = int(os.getenv("TWIN_ACCOUNT_ID", 6956377285))
 YOUR_TEST_ACCOUNT_ID = 6956377285
 PRICE_USD_PER_50 = 0.81  # Цена за 50 звезд в USD
@@ -181,7 +181,6 @@ async def init_db():
                     created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # Проверяем, существует ли колонка details, и переименовываем только если data не существует
             columns = await conn.fetch(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = 'analytics'"
             )
@@ -190,7 +189,6 @@ async def init_db():
                 await conn.execute("""
                     ALTER TABLE analytics RENAME COLUMN details TO data;
                 """)
-            # Вставка начальных текстов
             default_texts = {
                 "welcome": "Добро пожаловать! Всего продано: {stars_sold} звезд. Вы купили: {stars_bought} звезд.",
                 "profile": "Ваш профиль:\nID: {user_id}\nКуплено звезд: {stars_bought}\nРеферальный бонус: {ref_bonus_ton:.2f} TON\nРефералов: {ref_count}",
@@ -243,27 +241,41 @@ async def update_ton_price():
     try:
         headers = {"Authorization": f"Bearer {TON_API_KEY}"}
         url = "https://tonapi.io/v2/rates?tokens=ton&currencies=usd"
+        logger.info(f"Запрос к TonAPI: {url}")
         response = requests.get(url, headers=headers)
+        logger.debug(f"Ответ API: {response.status_code}, {response.text}")
         if response.status_code == 200:
             data = response.json()
             ton_price = data["rates"]["TON"]["prices"]["USD"]
-            diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", 0.0)
+            diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
+            # Удаляем символ % и преобразуем в float
+            try:
+                diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
+            except (ValueError, TypeError):
+                logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0")
+                diff_24h = 0.0
             app.bot_data["ton_price_info"] = {
                 "price": ton_price,
-                "diff_24h": float(diff_24h) if isinstance(diff_24h, str) else diff_24h
+                "diff_24h": diff_24h
             }
             logger.info(f"Цена TON обновлена: ${ton_price}, изменение за 24ч: {diff_24h}%")
         elif response.status_code == 429:
             logger.warning("TonAPI: Превышен лимит запросов (429). Ожидание 60 секунд перед повторной попыткой.")
-            await asyncio.sleep(60)  # Ожидание 60 секунд при ошибке 429
+            await asyncio.sleep(60)
             response = requests.get(url, headers=headers)
+            logger.debug(f"Ответ API после повторной попытки: {response.status_code}, {response.text}")
             if response.status_code == 200:
                 data = response.json()
                 ton_price = data["rates"]["TON"]["prices"]["USD"]
-                diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", 0.0)
+                diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
+                try:
+                    diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
+                except (ValueError, TypeError):
+                    logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0")
+                    diff_24h = 0.0
                 app.bot_data["ton_price_info"] = {
                     "price": ton_price,
-                    "diff_24h": float(diff_24h) if isinstance(diff_24h, str) else diff_24h
+                    "diff_24h": diff_24h
                 }
                 logger.info(f"Цена TON обновлена после повторной попытки: ${ton_price}, изменение за 24ч: {diff_24h}%")
             else:
@@ -282,11 +294,16 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with RESPONSE_TIME.labels(endpoint="tonprice").time():
         user_id = update.effective_user.id
         try:
-            if "ton_price_info" not in app.bot_data or app.bot_data["ton_price_info"]["price"] == 0.0:
-                await update_ton_price()  # Обновляем цену, если она не инициализирована
+            if "ton_price_info" not in app.bot_data or app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
+                logger.info("ton_price_info отсутствует или невалидно, обновляем цену TON")
+                await update_ton_price()
+            if "ton_price_info" not in app.bot_data or app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
+                logger.error("Цена TON не инициализирована после попытки обновления")
+                await update.message.reply_text("Ошибка получения цены TON. Попробуйте позже.")
+                return
             price = app.bot_data["ton_price_info"]["price"]
             diff_24h = app.bot_data["ton_price_info"]["diff_24h"]
-            change_text = f"📈 +{diff_24h}%" if diff_24h >= 0 else f"📉 {diff_24h}%"
+            change_text = f"📈 +{diff_24h:.2f}%" if diff_24h >= 0 else f"📉 {diff_24h:.2f}%"
             text = f"💰 Цена TON: ${price:.2f}\nИзменение за 24ч: {change_text}"
             await update.message.reply_text(text)
             await log_analytics(user_id, "ton_price")
@@ -378,7 +395,7 @@ async def heartbeat_check(app):
             chat_id=ADMIN_BACKUP_ID,
             text=f"⚠️ Бот: Проблема с подключением: {str(e)}"
         )
-        
+
 async def keep_alive(app):
     """Отправка команды /start для поддержания активности бота."""
     chat_id = str(TWIN_ACCOUNT_ID)
@@ -476,6 +493,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if "Message is not modified" not in str(e):
                         logger.error(f"Ошибка отправки сообщения: {e}")
                         ERRORS.labels(type="telegram_api", endpoint="start").inc()
+                        await update.message.reply_text("Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой.")
                 await log_analytics(user_id, "start")
                 context.user_data["state"] = STATE_MAIN_MENU
                 logger.info(f"/start успешно обработан для user_id={user_id}")
@@ -542,7 +560,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 keyboard = [
                     [InlineKeyboardButton("📊 Статистика", callback_data=STATE_ADMIN_STATS)],
                     [InlineKeyboardButton("📢 Рассылка", callback_data=STATE_ADMIN_BROADCAST)],
-                    [InlineKeyboardButton("💸 Наценка", callback_data=STATE_ADMIN_EDIT_MARKUP)],
                     [InlineKeyboardButton("📈 Топ рефералов", callback_data=STATE_TOP_REFERRALS)],
                     [InlineKeyboardButton("🛒 Топ покупок", callback_data=STATE_TOP_PURCHASES)],
                     [InlineKeyboardButton("📂 Копировать базу данных", callback_data=STATE_EXPORT_DATA)],
@@ -639,11 +656,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await log_analytics(user_id, "view_top_purchases")
                 context.user_data["state"] = STATE_TOP_PURCHASES
                 return STATE_TOP_PURCHASES
-        elif data == STATE_ADMIN_EDIT_MARKUP:
-            await query.message.reply_text("Введите новый процент наценки (например, 10 для 10%):")
-            await query.answer()
-            context.user_data["state"] = STATE_ADMIN_EDIT_MARKUP
-            return STATE_ADMIN_EDIT_MARKUP
         elif data == EDIT_PROFILE_STARS:
             context.user_data["edit_profile_field"] = "stars_bought"
             await query.message.reply_text("Введите новое количество звезд:")
@@ -856,20 +868,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except ValueError:
                 await update.message.reply_text("Введите число для количества звезд.")
                 return state
-        elif state == STATE_ADMIN_EDIT_MARKUP:
-            try:
-                markup = float(text)
-                os.environ["MARKUP_PERCENTAGE"] = str(markup)
-                await update.message.reply_text(
-                    f"Наценка обновлена: {markup}%",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=ADMIN_PANEL)]])
-                )
-                await log_analytics(user_id, "edit_markup", {"markup": markup})
-                context.user_data["state"] = STATE_ADMIN_PANEL
-                return STATE_ADMIN_PANEL
-            except ValueError:
-                await update.message.reply_text("Введите число для наценки.")
-                return state
         elif state == STATE_ADMIN_BROADCAST:
             context.user_data["broadcast_text"] = text
             await update.message.reply_text(
@@ -1003,11 +1001,14 @@ async def start_bot():
         await test_db_connection()
         app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+        # Инициализируем цену TON при старте
+        await update_ton_price()
+
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
             update_ton_price,
             trigger="interval",
-            minutes=15,  # Изменено с 5 на 15 минут
+            minutes=15,
             timezone=pytz.UTC
         )
         scheduler.add_job(
