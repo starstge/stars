@@ -387,8 +387,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start."""
     REQUESTS.labels(endpoint="start").inc()
     with RESPONSE_TIME.labels(endpoint="start").time():
-        logger.info(f"Обработка /start для user_id={update.effective_user.id}")
         user_id = update.effective_user.id
+        logger.info(f"Вызов /start для user_id={user_id}, message={update.message.text if update.message else 'No message'}")
         username = update.effective_user.username or f"User_{user_id}"
         try:
             async with (await ensure_db_pool()) as conn:
@@ -431,11 +431,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["state"] = STATE_MAIN_MENU
                 logger.info(f"/start успешно обработан для user_id={user_id}")
                 return STATE_MAIN_MENU
-        except Exception as e:  # Исправлено: добавлено двоеточие
+        except Exception as e:
             logger.error(f"Ошибка в start для user_id={user_id}: {e}", exc_info=True)
             ERRORS.labels(type="start", endpoint="start").inc()
             await update.message.reply_text("Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой.")
             return STATE_MAIN_MENU
+    
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений для состояний."""
     user_id = update.effective_user.id
