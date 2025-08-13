@@ -200,10 +200,15 @@ async def init_db():
                     created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # Миграция: переименовываем details в data, если существует
-            await conn.execute("""
-                ALTER TABLE analytics RENAME COLUMN details TO data;
-            """)
+            # Проверяем, существует ли колонка details, и переименовываем только если data не существует
+            columns = await conn.fetch(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'analytics'"
+            )
+            column_names = [col['column_name'] for col in columns]
+            if 'details' in column_names and 'data' not in column_names:
+                await conn.execute("""
+                    ALTER TABLE analytics RENAME COLUMN details TO data;
+                """)
             # Вставка начальных текстов
             default_texts = {
                 "welcome": "Добро пожаловать! Всего продано: {stars_sold} звезд. Вы купили: {stars_bought} звезд.",
@@ -223,7 +228,6 @@ async def init_db():
     except Exception as e:
         logger.error(f"Ошибка инициализации базы данных: {e}", exc_info=True)
         raise
-
 async def close_db_pool():
     """Закрытие пула соединений."""
     global _db_pool
