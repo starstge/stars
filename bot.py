@@ -29,6 +29,7 @@ from cachetools import TTLCache
 import hmac
 import hashlib
 import requests
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Настройка логирования с ротацией
 logging.basicConfig(
