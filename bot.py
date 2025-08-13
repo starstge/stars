@@ -383,142 +383,59 @@ async def backup_db():
         logger.error(f"Ошибка бэкапа DB: {e}")
         ERRORS.labels(type="backup", endpoint="backup_db").inc()
 
-async def start_bot():
-    """Запуск бота с вебхуком и планировщиком."""
-    global app
-    try:
-        await check_environment()
-        await init_db()
-        await test_db_connection()
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-        scheduler = AsyncIOScheduler()
-        scheduler.add_job(
-            update_ton_price,
-            trigger="interval",
-            minutes=5,
-            timezone=pytz.UTC
-        )
-        scheduler.add_job(
-            keep_alive,
-            trigger="interval",
-            minutes=10,
-            args=[app],
-            timezone=pytz.UTC
-        )
-        scheduler.add_job(
-            heartbeat_check,
-            trigger="interval",
-            minutes=5,
-            args=[app],
-            timezone=pytz.UTC
-        )
-        scheduler.add_job(
-            backup_db,
-            trigger="cron",
-            hour=0,
-            minute=0,
-            timezone=pytz.UTC
-        )
-        scheduler.start()
-        logger.info("Планировщик запущен")
-
-        async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            if update.message and update.message.text == "/start":
-                return await start(update, context)
-            return None
-
-        conv_handler = ConversationHandler(
-            entry_points=[
-                CallbackQueryHandler(command_start, pattern="^/start$"),
-                CallbackQueryHandler(callback_query_handler)
-            ],
-            states={
-                STATE_MAIN_MENU: [
-                    CallbackQueryHandler(callback_query_handler),
-                ],
-                STATE_PROFILE: [CallbackQueryHandler(callback_query_handler)],
-                STATE_REFERRALS: [CallbackQueryHandler(callback_query_handler)],
-                STATE_NEWS: [CallbackQueryHandler(callback_query_handler)],
-                STATE_SUPPORT_AND_REVIEWS: [CallbackQueryHandler(callback_query_handler)],
-                STATE_BUY_STARS_RECIPIENT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(callback_query_handler)
-                ],
-                STATE_BUY_STARS_AMOUNT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(callback_query_handler)
-                ],
-                STATE_BUY_STARS_PAYMENT_METHOD: [CallbackQueryHandler(callback_query_handler)],
-                STATE_BUY_STARS_CRYPTO_TYPE: [CallbackQueryHandler(callback_query_handler)],
-                STATE_BUY_STARS_CONFIRM: [CallbackQueryHandler(callback_query_handler)],
-                STATE_ADMIN_PANEL: [CallbackQueryHandler(callback_query_handler)],
-                STATE_ADMIN_EDIT_TEXTS: [CallbackQueryHandler(callback_query_handler)],
-                STATE_EDIT_TEXT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(callback_query_handler)
-                ],
-                STATE_ADMIN_USER_STATS: [CallbackQueryHandler(callback_query_handler)],
-                STATE_LIST_USERS: [CallbackQueryHandler(callback_query_handler)],
-                STATE_EDIT_USER: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(callback_query_handler)
-                ],
-                STATE_ADMIN_EDIT_MARKUP: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(callback_query_handler)
-                ],
-                STATE_ADMIN_MANAGE_ADMINS: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(callback_query_handler)
-                ],
-                STATE_ADMIN_EDIT_PROFIT: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(callback_query_handler)
-                ],
-                STATE_EXPORT_DATA: [CallbackQueryHandler(callback_query_handler)],
-                STATE_VIEW_LOGS: [CallbackQueryHandler(callback_query_handler)],
-                STATE_TOP_REFERRALS: [CallbackQueryHandler(callback_query_handler)],
-                STATE_TOP_PURCHASES: [CallbackQueryHandler(callback_query_handler)]
-            },
-            fallbacks=[CallbackQueryHandler(command_start, pattern="^/start$")],
-            per_message=True
-        )
-
-        app.add_handler(conv_handler)
-        app.add_error_handler(error_handler)
-
-        start_http_server(9090)
-        logger.info("Сервер Prometheus запущен на порту 9090")
-
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        await app.bot.set_webhook(webhook_url)
-        logger.info(f"Вебхук установлен: {webhook_url}")
-
-        web_app = web.Application()
-        web_app.router.add_post("/webhook", handle_webhook)
-        runner = web.AppRunner(web_app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", PORT)
-        await site.start()
-        logger.info(f"Веб-сервер запущен на порту {PORT}")
-
-        await app.initialize()
-        await app.start()
-        logger.info("Бот успешно запущен")
-
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start."""
+    REQUESTS.labels(endpoint="start").inc()
+    with RESPONSE_TIME.labels(endpoint="start").time():
+        logger.info(f"Обработка /start для user_id={update.effective_user.id}")
+        user_id = update.effective_user.id
+        username = update.effective_user.username or f"User_{user_id}"
         try:
-            while True:
-                await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            logger.info("Получен сигнал остановки")
-            await app.stop()
-            await app.shutdown()
-            await close_db_pool()
-            scheduler.shutdown()
-            await runner.cleanup()
-            logger.info("Бот остановлен")
-    except
+            async with (await ensure_db_pool()) as conn:
+                logger.debug(f"Добавление/обновление пользователя {user_id}")
+                await conn.execute(
+                    """
+                    INSERT INTO users (user_id, username, stars_bought, ref_bonus_ton, referrals, is_new)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (user_id) DO UPDATE SET username = $2
+                    """,
+                    user_id, username, 0, 0.0, json.dumps([]), True
+                )
+                total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+                user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
+                text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
+                keyboard = [
+                    [InlineKeyboardButton("📰 Новости", callback_data=NEWS), InlineKeyboardButton("🛠 Поддержка и отзывы", callback_data=SUPPORT_AND_REVIEWS)],
+                    [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE), InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
+                    [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)],
+                    [InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                current_message = context.user_data.get("last_start_message", {})
+                new_message = {"text": text, "reply_markup": reply_markup.to_dict()}
+                try:
+                    if update.callback_query:
+                        query = update.callback_query
+                        if current_message != new_message:
+                            await query.edit_message_text(text, reply_markup=reply_markup)
+                        await query.answer()
+                    else:
+                        logger.debug(f"Отправка главного меню для user_id={user_id}")
+                        await update.message.reply_text(text, reply_markup=reply_markup)
+                    context.user_data["last_start_message"] = new_message
+                except BadRequest as e:
+                    if "Message is not modified" not in str(e):
+                        logger.error(f"Ошибка отправки сообщения: {e}")
+                        ERRORS.labels(type="telegram_api", endpoint="start").inc()
+                await log_analytics(user_id, "start")
+                context.user_data["state"] = STATE_MAIN_MENU
+                logger.info(f"/start успешно обработан для user_id={user_id}")
+                return STATE_MAIN_MENU
+        except Exception as e:  # Исправлено: добавлено двоеточие
+            logger.error(f"Ошибка в start для user_id={user_id}: {e}", exc_info=True)
+            ERRORS.labels(type="start", endpoint="start").inc()
+            await update.message.reply_text("Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой.")
+            return STATE_MAIN_MENU
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений для состояний."""
     user_id = update.effective_user.id
