@@ -468,8 +468,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
                 keyboard = [
                     [
-                        InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
-                        InlineKeyboardButton("🛠 Поддержка и отзывы", url=SUPPORT_CHANNEL)
+                        InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
+                        InlineKeyboardButton("🛠 Поддержка и отзывы", url="https://t.me/CheapStarsShop_support")
                     ],
                     [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE), InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
                     [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)]
@@ -503,7 +503,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ERRORS.labels(type="start", endpoint="start").inc()
             await update.message.reply_text("Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой.")
             return STATE_MAIN_MENU
-
+            
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback-запросов."""
     query = update.callback_query
