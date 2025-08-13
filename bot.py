@@ -77,16 +77,16 @@ ADMIN_BACKUP_ID = 6956377285  # ID для отправки бэкапов
 BACK_TO_MENU = "back_to_menu"
 BACK_TO_ADMIN = "back_to_admin"
 PROFILE = "profile"
-REVIEWS = "reviews"
-SUPPORT = "support"
+NEWS = "news"  # Изменено с REVIEWS
+SUPPORT_AND_REVIEWS = "support_and_reviews"  # Изменено с SUPPORT
 REFERRALS = "referrals"
 BUY_STARS = "buy_stars"
 ADMIN_PANEL = "admin_panel"
 STATE_MAIN_MENU = "main_menu"
 STATE_PROFILE = "profile"
 STATE_REFERRALS = "referrals"
-STATE_SUPPORT = "support"
-STATE_REVIEWS = "reviews"
+STATE_SUPPORT_AND_REVIEWS = "support_and_reviews"  # Изменено с STATE_SUPPORT
+STATE_NEWS = "news"  # Изменено с STATE_REVIEWS
 STATE_BUY_STARS_RECIPIENT = "buy_stars_recipient"
 STATE_BUY_STARS_AMOUNT = "buy_stars_amount"
 STATE_BUY_STARS_PAYMENT_METHOD = "buy_stars_payment_method"
@@ -111,7 +111,7 @@ EDIT_TEXT_BUY_PROMPT = "edit_text_buy_prompt"
 EDIT_TEXT_PROFILE = "edit_text_profile"
 EDIT_TEXT_REFERRALS = "edit_text_referrals"
 EDIT_TEXT_TECH_SUPPORT = "edit_text_tech_support"
-EDIT_TEXT_REVIEWS = "edit_text_reviews"
+EDIT_TEXT_NEWS = "edit_text_news"  # Изменено с edit_text_reviews
 EDIT_TEXT_BUY_SUCCESS = "edit_text_buy_success"
 MARKUP_TON_SPACE = "markup_ton_space"
 MARKUP_CRYPTOBOT_CRYPTO = "markup_cryptobot_crypto"
@@ -210,7 +210,7 @@ async def init_db():
             "profile": "Ваш профиль:\nID: {user_id}\nЗвезды: {stars_bought}\nРеф. бонус: {ref_bonus_ton} TON\nРефералов: {ref_count}",
             "referrals": "Ваши рефералы: {ref_count}\nБонус: {ref_bonus_ton} TON",
             "tech_support": "Свяжитесь с поддержкой: {support_channel}",
-            "reviews": "Ознакомьтесь с отзывами в {news_channel}",
+            "news": "Ознакомьтесь с новостями в {news_channel}",  # Изменено с reviews
             "buy_success": "Покупка успешна! {stars} звезд отправлены на {recipient}"
         }
         for key, value in default_texts.items():
@@ -402,7 +402,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
             text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
             keyboard = [
-                [InlineKeyboardButton("📝 Отзывы", callback_data=REVIEWS), InlineKeyboardButton("🛠 Поддержка", callback_data=SUPPORT)],
+                [InlineKeyboardButton("📰 Новости", callback_data=NEWS), InlineKeyboardButton("🛠 Поддержка и отзывы", callback_data=SUPPORT_AND_REVIEWS)],
                 [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE), InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
                 [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)],
                 [InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)]
@@ -528,6 +528,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     REQUESTS.labels(endpoint="callback_query").inc()
     with RESPONSE_TIME.labels(endpoint="callback_query").time():
         if data == BACK_TO_MENU:
+            context.user_data.clear()  # Очищаем user_data для сброса состояния
             context.user_data["state"] = STATE_MAIN_MENU
             await start(update, context)
             return STATE_MAIN_MENU
@@ -548,26 +549,26 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await log_analytics(user_id, "view_profile")
                 context.user_data["state"] = STATE_PROFILE
                 return STATE_PROFILE
-        elif data == REVIEWS:
+        elif data == NEWS:
             keyboard = [
-                [InlineKeyboardButton("Присоединиться к каналу Отзывы", url="https://t.me/CheapStarsShop_support")],
+                [InlineKeyboardButton("Перейти к новостям", url="https://t.me/CheapStarsShop_support")],
                 [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
             ]
-            await query.edit_message_text("Переход в канал отзывов:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text("Переход в канал новостей:", reply_markup=InlineKeyboardMarkup(keyboard))
             await query.answer()
-            await log_analytics(user_id, "view_reviews")
-            context.user_data["state"] = STATE_REVIEWS
-            return STATE_REVIEWS
-        elif data == SUPPORT:
+            await log_analytics(user_id, "view_news")
+            context.user_data["state"] = STATE_NEWS
+            return STATE_NEWS
+        elif data == SUPPORT_AND_REVIEWS:
             keyboard = [
-                [InlineKeyboardButton("Присоединиться к каналу Поддержки", url="https://t.me/CheapStarsShop_support")],
+                [InlineKeyboardButton("Перейти к поддержке и отзывам", url="https://t.me/CheapStarsShop_support")],
                 [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
             ]
-            await query.edit_message_text("Переход в канал поддержки:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text("Переход в канал поддержки и отзывов:", reply_markup=InlineKeyboardMarkup(keyboard))
             await query.answer()
-            await log_analytics(user_id, "view_support")
-            context.user_data["state"] = STATE_SUPPORT
-            return STATE_SUPPORT
+            await log_analytics(user_id, "view_support_and_reviews")
+            context.user_data["state"] = STATE_SUPPORT_AND_REVIEWS
+            return STATE_SUPPORT_AND_REVIEWS
         elif data == REFERRALS:
             async with (await ensure_db_pool()) as conn:
                 user = await conn.fetchrow("SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id)
@@ -612,7 +613,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 [InlineKeyboardButton("Профиль", callback_data=EDIT_TEXT_PROFILE)],
                 [InlineKeyboardButton("Рефералы", callback_data=EDIT_TEXT_REFERRALS)],
                 [InlineKeyboardButton("Поддержка", callback_data=EDIT_TEXT_TECH_SUPPORT)],
-                [InlineKeyboardButton("Отзывы", callback_data=EDIT_TEXT_REVIEWS)],
+                [InlineKeyboardButton("Новости", callback_data=EDIT_TEXT_NEWS)],
                 [InlineKeyboardButton("Успешная покупка", callback_data=EDIT_TEXT_BUY_SUCCESS)],
                 [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
             ]
@@ -856,7 +857,6 @@ async def start_bot():
         scheduler.add_job(
             backup_db,
             trigger="cron",
-            day_of_month=1,
             hour=0,
             minute=0,
             timezone=pytz.UTC
@@ -864,6 +864,7 @@ async def start_bot():
         scheduler.start()
         logger.info("Планировщик запущен")
 
+        # Остальная часть функции остаётся без изменений
         conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("start", start),
@@ -917,7 +918,7 @@ async def start_bot():
                 STATE_TOP_PURCHASES: [CallbackQueryHandler(callback_query_handler)]
             },
             fallbacks=[CommandHandler("start", start)],
-            per_message=True  # Установлено явно для устранения предупреждения
+            per_message=True
         )
 
         app.add_handler(conv_handler)
