@@ -380,6 +380,63 @@ async def backup_db():
     except Exception as e:
         logger.error(f"Ошибка бэкапа DB: {e}")
         ERRORS.labels(type="backup", endpoint="backup_db").inc()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start."""
+    REQUESTS.labels(endpoint="start").inc()
+    with RESPONSE_TIME.labels(endpoint="start").time():
+        user_id = update.effective_user.id
+        logger.info(f"Вызов /start для user_id={user_id}, message={update.message.text if update.message else 'No message'}")
+        username = update.effective_user.username or f"User_{user_id}"
+        try:
+            async with (await ensure_db_pool()) as conn:
+                logger.debug(f"Добавление/обновление пользователя {user_id}")
+                await conn.execute(
+                    """
+                    INSERT INTO users (user_id, username, stars_bought, ref_bonus_ton, referrals, is_new, is_admin)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (user_id) DO UPDATE SET username = $2
+                    """,
+                    user_id, username, 0, 0.0, json.dumps([]), True, user_id == 6956377285
+                )
+                total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+                user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
+                text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
+                keyboard = [
+                    [
+                        InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
+                        InlineKeyboardButton("🛠 Поддержка и отзывы", url="https://t.me/CheapStarsShop_support")
+                    ],
+                    [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE), InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
+                    [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)]
+                ]
+                if user_id == 6956377285:  # Показываем админ-панель только для админа
+                    keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                current_message = context.user_data.get("last_start_message", {})
+                new_message = {"text": text, "reply_markup": reply_markup.to_dict()}
+                try:
+                    if update.callback_query:
+                        query = update.callback_query
+                        if current_message != new_message:
+                            await query.edit_message_text(text, reply_markup=reply_markup)
+                        await query.answer()
+                    else:
+                        logger.debug(f"Отправка главного меню для user_id={user_id}")
+                        await update.message.reply_text(text, reply_markup=reply_markup)
+                    context.user_data["last_start_message"] = new_message
+                except BadRequest as e:
+                    if "Message is not modified" not in str(e):
+                        logger.error(f"Ошибка отправки сообщения: {e}")
+                        ERRORS.labels(type="telegram_api", endpoint="start").inc()
+                await log_analytics(user_id, "start")
+                context.user_data["state"] = STATE_MAIN_MENU
+                logger.info(f"/start успешно обработан для user_id={user_id}")
+                return STATE_MAIN_MENU
+        except Exception as e:
+            logger.error(f"Ошибка в start для user_id={user_id}: {e}", exc_info=True)
+            ERRORS.labels(type="start", endpoint="start").inc()
+            await update.message.reply_text("Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой.")
+            return STATE_MAIN_MENU
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback-запросов."""
