@@ -253,6 +253,22 @@ async def update_ton_price():
                 "diff_24h": float(diff_24h) if isinstance(diff_24h, str) else diff_24h
             }
             logger.info(f"Цена TON обновлена: ${ton_price}, изменение за 24ч: {diff_24h}%")
+        elif response.status_code == 429:
+            logger.warning("TonAPI: Превышен лимит запросов (429). Ожидание 60 секунд перед повторной попыткой.")
+            await asyncio.sleep(60)  # Ожидание 60 секунд при ошибке 429
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                ton_price = data["rates"]["TON"]["prices"]["USD"]
+                diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", 0.0)
+                app.bot_data["ton_price_info"] = {
+                    "price": ton_price,
+                    "diff_24h": float(diff_24h) if isinstance(diff_24h, str) else diff_24h
+                }
+                logger.info(f"Цена TON обновлена после повторной попытки: ${ton_price}, изменение за 24ч: {diff_24h}%")
+            else:
+                logger.error(f"Ошибка получения цены TON после повторной попытки: {response.status_code} - {response.text}")
+                ERRORS.labels(type="api", endpoint="update_ton_price").inc()
         else:
             logger.error(f"Ошибка получения цены TON: {response.status_code} - {response.text}")
             ERRORS.labels(type="api", endpoint="update_ton_price").inc()
@@ -362,7 +378,7 @@ async def heartbeat_check(app):
             chat_id=ADMIN_BACKUP_ID,
             text=f"⚠️ Бот: Проблема с подключением: {str(e)}"
         )
-
+        
 async def keep_alive(app):
     """Отправка команды /start для поддержания активности бота."""
     chat_id = str(TWIN_ACCOUNT_ID)
@@ -991,7 +1007,7 @@ async def start_bot():
         scheduler.add_job(
             update_ton_price,
             trigger="interval",
-            minutes=15,
+            minutes=15,  # Изменено с 5 на 15 минут
             timezone=pytz.UTC
         )
         scheduler.add_job(
@@ -1054,10 +1070,6 @@ async def start_bot():
                 STATE_TOP_REFERRALS: [CallbackQueryHandler(callback_query_handler)],
                 STATE_TOP_PURCHASES: [CallbackQueryHandler(callback_query_handler)],
                 STATE_EXPORT_DATA: [CallbackQueryHandler(callback_query_handler)],
-                STATE_ADMIN_EDIT_MARKUP: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                    CallbackQueryHandler(callback_query_handler)
-                ]
             },
             fallbacks=[
                 CommandHandler("start", start),
