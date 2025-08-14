@@ -1398,19 +1398,34 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def webhook_handler(request):
     """Обработчик вебхука."""
+    global app
     try:
+        if app is None or not app._initialized:
+            logger.error("Application не инициализирован. Пропуск обработки вебхука.")
+            ERRORS.labels(type="webhook", endpoint="webhook_handler").inc()
+            return web.Response(status=503, text="Бот не инициализирован. Попробуйте позже.")
+        
         update = Update.de_json(await request.json(), app.bot)
+        if update is None:
+            logger.error("Не удалось разобрать обновление вебхука.")
+            ERRORS.labels(type="webhook", endpoint="webhook_handler").inc()
+            return web.Response(status=400, text="Некорректное обновление.")
+        
         await app.process_update(update)
         return web.Response(status=200)
     except Exception as e:
         logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
         ERRORS.labels(type="webhook", endpoint="webhook_handler").inc()
-        return web.Response(status=500)
+        return web.Response(status=500, text=f"Внутренняя ошибка сервера: {str(e)}")
 
 async def on_startup(app: Application):
     """Инициализация при запуске."""
     global _db_pool
     try:
+        # Явно вызываем initialize
+        await app.initialize()
+        logger.info("Application инициализирован")
+        
         await check_environment()
         await init_db()
         await test_db_connection()
@@ -1431,6 +1446,15 @@ async def on_startup(app: Application):
         logger.info("Бот запущен")
     except Exception as e:
         logger.error(f"Ошибка при запуске: {e}", exc_info=True)
+        ERRORS.labels(type="startup", endpoint="on_startup").inc()
+        # Отправляем уведомление админу
+        try:
+            await app.bot.send_message(
+                chat_id=ADMIN_BACKUP_ID,
+                text=f"⚠️ Ошибка при запуске бота: {str(e)}"
+            )
+        except Exception as notify_error:
+            logger.error(f"Не удалось отправить уведомление об ошибке: {notify_error}")
         raise
 
 async def on_shutdown(app: Application):
@@ -1541,6 +1565,15 @@ def main():
         web.run_app(web_app, host="0.0.0.0", port=PORT)
     except Exception as e:
         logger.error(f"Ошибка в main: {e}", exc_info=True)
+        ERRORS.labels(type="main", endpoint="main").inc()
+        try:
+            if app and app.bot:
+                app.bot.send_message(
+                    chat_id=ADMIN_BACKUP_ID,
+                    text=f"⚠️ Критическая ошибка при запуске бота: {str(e)}"
+                )
+        except Exception as notify_error:
+            logger.error(f"Не удалось отправить уведомление об ошибке: {notify_error}")
         raise
 
 if __name__ == "__main__":
