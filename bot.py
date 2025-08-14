@@ -34,7 +34,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # Настройка логирования с ротацией
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG,  # Изменено на DEBUG для более детального логирования
+    level=logging.DEBUG,
     handlers=[
         logging.StreamHandler(),
         RotatingFileHandler("bot.log", maxBytes=10_000_000, backupCount=5, encoding="utf-8")
@@ -65,12 +65,11 @@ TON_SPACE_API_URL = "https://api.ton.space/v1"
 SUPPORT_CHANNEL = "https://t.me/CheapStarsShop_support"
 NEWS_CHANNEL = "https://t.me/cheapstarshop_news"
 TWIN_ACCOUNT_ID = int(os.getenv("TWIN_ACCOUNT_ID", 6956377285))
-YOUR_TEST_ACCOUNT_ID = 6956377285
-PRICE_USD_PER_50 = 0.81  # Цена за 50 звезд в USD
+ADMIN_BACKUP_ID = 6956377285
+PRICE_USD_PER_50 = 0.81
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8080))
 MARKUP_PERCENTAGE = float(os.getenv("MARKUP_PERCENTAGE", 10))
-ADMIN_BACKUP_ID = 6956377285  # ID для отправки бэкапов
 
 # Константы callback_data и состояний
 BACK_TO_MENU = "back_to_menu"
@@ -101,18 +100,13 @@ EDIT_PROFILE_REF_BONUS = "edit_profile_ref_bonus"
 PAY_TON_SPACE = "pay_ton_space"
 PAY_CRYPTOBOT = "pay_cryptobot"
 PAY_CARD = "pay_card"
-SET_RECIPIENT = "set_recipient"
-SET_AMOUNT = "set_amount"
-SET_PAYMENT = "set_payment"
-SELECT_CRYPTO_TYPE = "select_crypto_type"
-CONFIRM_PAYMENT = "confirm_payment"
 CHECK_PAYMENT = "check_payment"
 BROADCAST_MESSAGE = "broadcast_message"
 CONFIRM_BROADCAST = "confirm_broadcast"
 CANCEL_BROADCAST = "cancel_broadcast"
 BACK_TO_EDIT_PROFILE = "back_to_edit_profile"
 
-# Список всех состояний для ConversationHandler
+# Список всех состояний
 STATES = {
     STATE_MAIN_MENU: 0,
     STATE_PROFILE: 1,
@@ -135,8 +129,8 @@ STATES = {
 # Глобальные переменные
 _db_pool = None
 _db_pool_lock = asyncio.Lock()
-app = None
-transaction_cache = TTLCache(maxsize=1000, ttl=3600)  # Кэш транзакций на 1 час
+telegram_app = None
+transaction_cache = TTLCache(maxsize=1000, ttl=3600)
 
 async def ensure_db_pool():
     """Получение пула соединений с базой данных."""
@@ -160,8 +154,6 @@ async def ensure_db_pool():
             except Exception as e:
                 logger.error(f"Ошибка создания пула DB: {e}")
                 raise
-        else:
-            logger.debug("Используется существующий пул базы данных")
         return _db_pool
 
 async def init_db():
@@ -262,25 +254,21 @@ async def update_ton_price():
         url = "https://tonapi.io/v2/rates?tokens=ton&currencies=usd"
         logger.debug(f"Запрос к TonAPI: {url}")
         response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            ton_price = data["rates"]["TON"]["prices"]["USD"]
-            diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
-            try:
-                # Replace Unicode minus sign (U+2212) with standard minus (-)
-                diff_24h = diff_24h.replace("−", "-")
-                diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
-            except (ValueError, TypeError) as e:
-                logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0, ошибка: {e}")
-                diff_24h = 0.0
-            telegram_app.bot_data["ton_price_info"] = {
-                "price": ton_price,
-                "diff_24h": diff_24h
-            }
-            logger.info(f"Цена TON обновлена: ${ton_price:.2f}, изменение за 24ч: {diff_24h:.2f}%")
-        else:
-            logger.error(f"Ошибка получения цены TON: {response.status_code} - {response.text}")
-            ERRORS.labels(type="api", endpoint="update_ton_price").inc()
+        response.raise_for_status()
+        data = response.json()
+        ton_price = data["rates"]["TON"]["prices"]["USD"]
+        diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
+        try:
+            diff_24h = diff_24h.replace("−", "-")
+            diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
+        except (ValueError, TypeError) as e:
+            logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0, ошибка: {e}")
+            diff_24h = 0.0
+        telegram_app.bot_data["ton_price_info"] = {
+            "price": ton_price,
+            "diff_24h": diff_24h
+        }
+        logger.info(f"Цена TON обновлена: ${ton_price:.2f}, изменение за 24ч: {diff_24h:.2f}%")
     except Exception as e:
         logger.error(f"Ошибка получения цены TON: {e}", exc_info=True)
         ERRORS.labels(type="api", endpoint="update_ton_price").inc()
@@ -291,13 +279,13 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with RESPONSE_TIME.labels(endpoint="tonprice").time():
         user_id = update.effective_user.id
         try:
-            if "ton_price_info" not in app.bot_data or app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
+            if "ton_price_info" not in telegram_app.bot_data or telegram_app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
                 await update_ton_price()
-            if "ton_price_info" not in app.bot_data or app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
+            if "ton_price_info" not in telegram_app.bot_data or telegram_app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
                 await update.message.reply_text("Ошибка получения цены TON. Попробуйте позже.")
                 return
-            price = app.bot_data["ton_price_info"]["price"]
-            diff_24h = app.bot_data["ton_price_info"]["diff_24h"]
+            price = telegram_app.bot_data["ton_price_info"]["price"]
+            diff_24h = telegram_app.bot_data["ton_price_info"]["diff_24h"]
             change_text = f"📈 +{diff_24h:.2f}%" if diff_24h >= 0 else f"📉 {diff_24h:.2f}%"
             text = f"💰 Цена TON: ${price:.2f}\nИзменение за 24ч: {change_text}"
             await update.message.reply_text(text)
@@ -352,7 +340,6 @@ async def create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipie
 async def check_environment():
     """Проверка переменных окружения."""
     required_vars = ["BOT_TOKEN", "POSTGRES_URL", "SPLIT_API_TOKEN", "PROVIDER_TOKEN", "OWNER_WALLET", "WEBHOOK_URL"]
-    optional_vars = ["TON_SPACE_API_TOKEN", "CRYPTOBOT_API_TOKEN", "TON_API_KEY"]
     missing_vars = []
     for var in required_vars:
         value = os.getenv(var)
@@ -363,12 +350,6 @@ async def check_environment():
             logger.debug(f"Переменная окружения {var} установлена")
     if missing_vars:
         raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
-    for var in optional_vars:
-        value = os.getenv(var)
-        if not value:
-            logger.warning(f"Опциональная переменная окружения {var} не установлена")
-        else:
-            logger.debug(f"Опциональная переменная окружения {var} установлена")
 
 async def test_db_connection():
     """Тестирование подключения к базе данных."""
@@ -380,10 +361,26 @@ async def test_db_connection():
         logger.error(f"Ошибка подключения к базе данных: {e}", exc_info=True)
         raise
 
+async def check_webhook():
+    """Проверка доступности вебхука."""
+    try:
+        webhook_info = await telegram_app.bot.get_webhook_info()
+        logger.info(f"Webhook info: {webhook_info}")
+        if webhook_info.url != f"{WEBHOOK_URL}/webhook":
+            logger.warning(f"Webhook URL mismatch: expected {WEBHOOK_URL}/webhook, got {webhook_info.url}")
+            await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+            logger.info(f"Webhook reset to {WEBHOOK_URL}/webhook")
+        if webhook_info.pending_update_count > 0:
+            logger.warning(f"Pending updates: {webhook_info.pending_update_count}")
+    except Exception as e:
+        logger.error(f"Ошибка проверки вебхука: {e}", exc_info=True)
+        ERRORS.labels(type="webhook", endpoint="check_webhook").inc()
+
 async def heartbeat_check(app):
     """Проверка работоспособности DB и API."""
     try:
         await test_db_connection()
+        await check_webhook()
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=30)) as session:
             headers = {"Authorization": f"Bearer {TON_API_KEY}"}
             async with session.get("https://tonapi.io/v2/status", headers=headers) as resp:
@@ -451,7 +448,7 @@ async def backup_db():
         raise
 
 async def broadcast_new_menu():
-    """Рассылка нового меню всем пользователям для устранения устаревших callback_data."""
+    """Рассылка нового меню всем пользователям."""
     try:
         async with (await ensure_db_pool()) as conn:
             users = await conn.fetch("SELECT user_id FROM users")
@@ -473,10 +470,10 @@ async def broadcast_new_menu():
                     if user_id == 6956377285:
                         keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    last_message = app.bot_data.get(f"last_message_{user_id}", {})
+                    last_message = telegram_app.bot_data.get(f"last_message_{user_id}", {})
                     if last_message.get("message_id") and last_message.get("chat_id"):
                         try:
-                            await app.bot.edit_message_text(
+                            await telegram_app.bot.edit_message_text(
                                 chat_id=last_message["chat_id"],
                                 message_id=last_message["message_id"],
                                 text=text,
@@ -485,12 +482,12 @@ async def broadcast_new_menu():
                             logger.info(f"Сообщение обновлено для user_id={user_id}, message_id={last_message['message_id']}")
                         except BadRequest as e:
                             if "Message to edit not found" in str(e) or "Message is not modified" in str(e):
-                                sent_message = await app.bot.send_message(
+                                sent_message = await telegram_app.bot.send_message(
                                     chat_id=user_id,
                                     text=text,
                                     reply_markup=reply_markup
                                 )
-                                app.bot_data[f"last_message_{user_id}"] = {
+                                telegram_app.bot_data[f"last_message_{user_id}"] = {
                                     "chat_id": sent_message.chat_id,
                                     "message_id": sent_message.message_id
                                 }
@@ -499,12 +496,12 @@ async def broadcast_new_menu():
                                 logger.error(f"Ошибка редактирования сообщения для user_id={user_id}: {e}")
                                 ERRORS.labels(type="telegram_api", endpoint="broadcast_new_menu").inc()
                     else:
-                        sent_message = await app.bot.send_message(
+                        sent_message = await telegram_app.bot.send_message(
                             chat_id=user_id,
                             text=text,
                             reply_markup=reply_markup
                         )
-                        app.bot_data[f"last_message_{user_id}"] = {
+                        telegram_app.bot_data[f"last_message_{user_id}"] = {
                             "chat_id": sent_message.chat_id,
                             "message_id": sent_message.message_id
                         }
@@ -527,7 +524,7 @@ async def broadcast_message_to_users(message: str):
         failed_count = 0
         for user in users:
             try:
-                await app.bot.send_message(chat_id=user["user_id"], text=message)
+                await telegram_app.bot.send_message(chat_id=user["user_id"], text=message)
                 success_count += 1
                 await asyncio.sleep(0.05)
             except TelegramError as e:
@@ -553,7 +550,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         if referrer_exists and ref_id != user_id:
                             user_refs = await conn.fetchval(
-                                "SELECT referrals FROM  users WHERE user_id = $1", ref_id
+                                "SELECT referrals FROM users WHERE user_id = $1", ref_id
                             )
                             user_refs = json.loads(user_refs) if user_refs else []
                             if user_id not in user_refs:
@@ -599,13 +596,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         query = update.callback_query
                         await query.edit_message_text(text, reply_markup=reply_markup)
                         await query.answer()
-                        app.bot_data[f"last_message_{user_id}"] = {
+                        telegram_app.bot_data[f"last_message_{user_id}"] = {
                             "chat_id": query.message.chat_id,
                             "message_id": query.message.message_id
                         }
                     else:
                         sent_message = await update.message.reply_text(text, reply_markup=reply_markup)
-                        app.bot_data[f"last_message_{user_id}"] = {
+                        telegram_app.bot_data[f"last_message_{user_id}"] = {
                             "chat_id": sent_message.chat_id,
                             "message_id": sent_message.message_id
                         }
@@ -614,7 +611,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.error(f"Ошибка отправки сообщения: {e}")
                         ERRORS.labels(type="telegram_api", endpoint="start").inc()
                         sent_message = await update.message.reply_text(text, reply_markup=reply_markup)
-                        app.bot_data[f"last_message_{user_id}"] = {
+                        telegram_app.bot_data[f"last_message_{user_id}"] = {
                             "chat_id": sent_message.chat_id,
                             "message_id": sent_message.message_id
                         }
@@ -656,40 +653,32 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await query.edit_message_text(text, reply_markup=reply_markup)
                     await query.answer()
-                    app.bot_data[f"last_admin_message_{user_id}"] = {
+                    telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
                         "chat_id": query.message.chat_id,
                         "message_id": query.message.message_id
                     }
-                    logger.info(f"Отображение админ-панели для user_id={user_id}, кнопки: {[f'{btn.text}:{btn.callback_data}' for row in keyboard for btn in row]}")
                 except BadRequest as e:
                     if "Message is not modified" not in str(e):
                         logger.error(f"Ошибка редактирования сообщения админ-панели для user_id={user_id}: {e}")
                         ERRORS.labels(type="telegram_api", endpoint="show_admin_panel").inc()
                         sent_message = await query.message.reply_text(text, reply_markup=reply_markup)
-                        app.bot_data[f"last_admin_message_{user_id}"] = {
+                        telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
                             "chat_id": sent_message.chat_id,
                             "message_id": sent_message.message_id
                         }
-                        logger.info(f"Новое сообщение админ-панели отправлено для user_id={user_id}, message_id={sent_message.message_id}")
             else:
                 sent_message = await update.message.reply_text(text, reply_markup=reply_markup)
-                app.bot_data[f"last_admin_message_{user_id}"] = {
+                telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
                     "chat_id": sent_message.chat_id,
                     "message_id": sent_message.message_id
                 }
-                logger.info(f"Новое сообщение админ-панели отправлено для user_id={user_id}, message_id={sent_message.message_id}")
-        except BadRequest as e:
-            logger.error(f"Ошибка отправки сообщения админ-панели для user_id={user_id}: {e}")
+            await log_analytics(user_id, "open_admin_panel")
+            context.user_data["state"] = STATE_ADMIN_PANEL
+            return STATES[STATE_ADMIN_PANEL]
+        except Exception as e:
+            logger.error(f"Ошибка отправки админ-панели для user_id={user_id}: {e}", exc_info=True)
             ERRORS.labels(type="telegram_api", endpoint="show_admin_panel").inc()
-            sent_message = await update.message.reply_text(text, reply_markup=reply_markup)
-            app.bot_data[f"last_admin_message_{user_id}"] = {
-                "chat_id": sent_message.chat_id,
-                "message_id": sent_message.message_id
-            }
-            logger.info(f"Новое сообщение админ-панели отправлено для user_id={user_id}, message_id={sent_message.message_id}")
-        await log_analytics(user_id, "open_admin_panel", {"message_id": app.bot_data.get(f"last_admin_message_{user_id}", {}).get("message_id")})
-        context.user_data["state"] = STATE_ADMIN_PANEL
-        return STATES[STATE_ADMIN_PANEL]
+            return STATES[STATE_MAIN_MENU]
 
 async def show_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список всех пользователей."""
@@ -715,25 +704,15 @@ async def show_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if update.callback_query:
                 query = update.callback_query
-                try:
-                    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
-                    await query.answer()
-                    app.bot_data[f"last_admin_message_{user_id}"] = {
-                        "chat_id": query.message.chat_id,
-                        "message_id": query.message.message_id
-                    }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка редактирования сообщения списка пользователей для user_id={user_id}: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="show_all_users").inc()
-                        sent_message = await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
-                        app.bot_data[f"last_admin_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
+                await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                await query.answer()
+                telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
+                    "chat_id": query.message.chat_id,
+                    "message_id": query.message.message_id
+                }
             else:
                 sent_message = await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
-                app.bot_data[f"last_admin_message_{user_id}"] = {
+                telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
                     "chat_id": sent_message.chat_id,
                     "message_id": sent_message.message_id
                 }
@@ -754,41 +733,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     with RESPONSE_TIME.labels(endpoint="callback_query").time():
         logger.info(f"Callback query received: user_id={user_id}, callback_data={data}, message_id={query.message.message_id}")
         if data.isdigit():
-            logger.warning(f"Устаревший числовой callback_data: {data} для user_id={user_id}, message_id={query.message.message_id}")
+            logger.warning(f"Устаревший числовой callback_data: {data} для user_id={user_id}")
             await query.answer(text="Команда устарела. Пожалуйста, используйте новое меню.")
-            async with (await ensure_db_pool()) as conn:
-                total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
-                user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
-                text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
-                text += "\n\n⚠️ Ваше меню устарело. Используйте новое меню ниже."
-                keyboard = [
-                    [
-                        InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
-                        InlineKeyboardButton("🛠 Поддержка и отзывы", url=SUPPORT_CHANNEL)
-                    ],
-                    [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE), InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
-                    [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)]
-                ]
-                if user_id == 6956377285:
-                    keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                try:
-                    await query.edit_message_text(text, reply_markup=reply_markup)
-                    app.bot_data[f"last_message_{user_id}"] = {
-                        "chat_id": query.message.chat_id,
-                        "message_id": query.message.message_id
-                    }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка редактирования сообщения для user_id={user_id}: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="callback_query").inc()
-                        sent_message = await query.message.reply_text(text, reply_markup=reply_markup)
-                        app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
-                context.user_data["state"] = STATE_MAIN_MENU
-                return STATES[STATE_MAIN_MENU]
+            await start(update, context)
+            return STATES[STATE_MAIN_MENU]
         if data == BACK_TO_MENU:
             context.user_data.clear()
             context.user_data["state"] = STATE_MAIN_MENU
@@ -814,23 +762,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     ],
                     [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
                 ]
-                try:
-                    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                    await query.answer()
-                    app.bot_data[f"last_message_{user_id}"] = {
-                        "chat_id": query.message.chat_id,
-                        "message_id": query.message.message_id
-                    }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка редактирования профиля для user_id={user_id}: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="profile").inc()
-                        sent_message = await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                        app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
-                await log_analytics(user_id, "view_profile", {"ref_count": ref_count, "referrals": user["referrals"]})
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+                await query.answer()
+                telegram_app.bot_data[f"last_message_{user_id}"] = {
+                    "chat_id": query.message.chat_id,
+                    "message_id": query.message.message_id
+                }
+                await log_analytics(user_id, "view_profile", {"ref_count": ref_count})
                 context.user_data["state"] = STATE_PROFILE
                 return STATES[STATE_PROFILE]
         elif data == REFERRALS:
@@ -840,23 +778,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 ref_link = f"https://t.me/CheapStarsShop_bot?start=ref_{user_id}"
                 text = await get_text("referrals", ref_count=ref_count, ref_bonus_ton=user["ref_bonus_ton"], ref_link=ref_link)
                 keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
-                try:
-                    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                    await query.answer()
-                    app.bot_data[f"last_message_{user_id}"] = {
-                        "chat_id": query.message.chat_id,
-                        "message_id": query.message.message_id
-                    }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка редактирования рефералов для user_id={user_id}: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="referrals").inc()
-                        sent_message = await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                        app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
-                await log_analytics(user_id, "view_referrals", {"ref_count": ref_count, "referrals": user["referrals"]})
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+                await query.answer()
+                telegram_app.bot_data[f"last_message_{user_id}"] = {
+                    "chat_id": query.message.chat_id,
+                    "message_id": query.message.message_id
+                }
+                await log_analytics(user_id, "view_referrals", {"ref_count": ref_count})
                 context.user_data["state"] = STATE_REFERRALS
                 return STATES[STATE_REFERRALS]
         elif data == BUY_STARS:
@@ -873,19 +801,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 return context.user_data.get("state", STATES[STATE_ADMIN_PANEL])
             try:
                 backup_file, backup_data = await backup_db()
-                try:
-                    with open(backup_file, 'rb') as f:
-                        await query.message.reply_document(document=f, filename=backup_file)
-                    await query.answer(text="Бэкап базы данных отправлен.")
-                except TelegramError as e:
-                    logger.error(f"Ошибка отправки файла бэкапа: {e}")
-                    ERRORS.labels(type="telegram_api", endpoint="export_data").inc()
-                    text = json.dumps(backup_data, ensure_ascii=False, indent=2)
-                    if len(text) > 4096:
-                        await query.message.reply_text("Бэкап слишком большой для отправки текстом. Свяжитесь с поддержкой.")
-                    else:
-                        await query.message.reply_text(f"Бэкап базы данных:\n```\n{text}\n```", parse_mode="Markdown")
-                        await query.answer(text="Бэкап отправлен как текст.")
+                with open(backup_file, 'rb') as f:
+                    await query.message.reply_document(document=f, filename=backup_file)
+                await query.answer(text="Бэкап базы данных отправлен.")
                 await log_analytics(user_id, "copy_db")
                 context.user_data["state"] = STATE_ADMIN_PANEL
                 return await show_admin_panel(update, context)
@@ -905,22 +823,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     f"Всего рефералов: {total_referrals}"
                 )
                 keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
-                try:
-                    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                    await query.answer()
-                    app.bot_data[f"last_admin_message_{user_id}"] = {
-                        "chat_id": query.message.chat_id,
-                        "message_id": query.message.message_id
-                    }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка редактирования статистики для user_id={user_id}: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="admin_stats").inc()
-                        sent_message = await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                        app.bot_data[f"last_admin_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+                await query.answer()
+                telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
+                    "chat_id": query.message.chat_id,
+                    "message_id": query.message.message_id
+                }
                 await log_analytics(user_id, "view_stats")
                 context.user_data["state"] = STATE_ADMIN_STATS
                 return STATES[STATE_ADMIN_STATS]
@@ -960,23 +868,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 for i, user in enumerate(users, 1):
                     ref_count = len(json.loads(user["referrals"])) if user["referrals"] != '[]' else 0
                     text += f"{i}. @{user['username'] or 'Unknown'}: {ref_count} рефералов\n"
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN if context.user_data.get("state") == STATE_ADMIN_PANEL else BACK_TO_MENU)]]
-                try:
-                    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                    await query.answer()
-                    app.bot_data[f"last_message_{user_id}"] = {
-                        "chat_id": query.message.chat_id,
-                        "message_id": query.message.message_id
-                    }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка редактирования топа рефералов для user_id={user_id}: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="top_referrals").inc()
-                        sent_message = await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                        app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+                await query.answer()
+                telegram_app.bot_data[f"last_message_{user_id}"] = {
+                    "chat_id": query.message.chat_id,
+                    "message_id": query.message.message_id
+                }
                 await log_analytics(user_id, "view_top_referrals")
                 context.user_data["state"] = STATE_TOP_REFERRALS
                 return STATES[STATE_TOP_REFERRALS]
@@ -988,23 +886,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     text += "Нет данных о покупках."
                 for i, user in enumerate(users, 1):
                     text += f"{i}. @{user['username'] or 'Unknown'}: {user['stars_bought']} звезд\n"
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN if context.user_data.get("state") == STATE_ADMIN_PANEL else BACK_TO_MENU)]]
-                try:
-                    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                    await query.answer()
-                    app.bot_data[f"last_message_{user_id}"] = {
-                        "chat_id": query.message.chat_id,
-                        "message_id": query.message.message_id
-                    }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка редактирования топа покупок для user_id={user_id}: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="top_purchases").inc()
-                        sent_message = await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-                        app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+                await query.answer()
+                telegram_app.bot_data[f"last_message_{user_id}"] = {
+                    "chat_id": query.message.chat_id,
+                    "message_id": query.message.message_id
+                }
                 await log_analytics(user_id, "view_top_purchases")
                 context.user_data["state"] = STATE_TOP_PURCHASES
                 return STATES[STATE_TOP_PURCHASES]
@@ -1154,60 +1042,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         await log_analytics(user_id, "payment_check_error")
                 await query.answer()
                 return STATES[STATE_BUY_STARS_CONFIRM]
-        elif data == "set_amount_50" or data == "set_amount_100":
-            stars = int(data.replace("set_amount_", ""))
-            context.user_data["buy_data"]["stars"] = stars
-            amount_usd = (stars / 50) * PRICE_USD_PER_50 * (1 + MARKUP_PERCENTAGE / 100)
-            context.user_data["buy_data"]["amount_usd"] = round(amount_usd, 2)
-            await query.message.reply_text(
-                f"Вы выбрали {stars} звезд. Стоимость: ${amount_usd:.2f}",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("TON Space", callback_data=PAY_TON_SPACE)],
-                    [InlineKeyboardButton("Cryptobot (Crypto)", callback_data=PAY_CRYPTOBOT)],
-                    [InlineKeyboardButton("Cryptobot (Card)", callback_data=PAY_CARD)],
-                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
-                ])
-            )
-            await query.answer()
-            await log_analytics(user_id, "set_amount")
-            context.user_data["state"] = STATE_BUY_STARS_PAYMENT_METHOD
-            return STATES[STATE_BUY_STARS_PAYMENT_METHOD]
         else:
-            logger.warning(f"Неизвестный callback_data: {data} для user_id={user_id}, message_id={query.message.message_id}")
+            logger.warning(f"Неизвестный callback_data: {data} для user_id={user_id}")
             await query.answer(text="Команда устарела. Пожалуйста, используйте новое меню.")
-            async with (await ensure_db_pool()) as conn:
-                total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
-                user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
-                text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
-                text += "\n\n⚠️ Ваше меню устарело. Используйте новое меню ниже."
-                keyboard = [
-                    [
-                        InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
-                        InlineKeyboardButton("🛠 Поддержка и отзывы", url=SUPPORT_CHANNEL)
-                    ],
-                    [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE), InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
-                    [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)]
-                ]
-                if user_id == 6956377285:
-                    keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                try:
-                    await query.edit_message_text(text, reply_markup=reply_markup)
-                    app.bot_data[f"last_message_{user_id}"] = {
-                        "chat_id": query.message.chat_id,
-                        "message_id": query.message.message_id
-                    }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка редактирования сообщения для user_id={user_id}: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="callback_query").inc()
-                        sent_message = await query.message.reply_text(text, reply_markup=reply_markup)
-                        app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
-                context.user_data["state"] = STATE_MAIN_MENU
-                return STATES[STATE_MAIN_MENU]
+            await start(update, context)
+            return STATES[STATE_MAIN_MENU]
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений для состояний."""
@@ -1405,31 +1244,39 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка при отправке сообщения об ошибке: {e}", exc_info=True)
 
 async def root_handler(request: web.Request):
-    """Обработчик корневого маршрута для проверки работоспособности (UptimeRobot)."""
+    """Обработчик корневого маршрута для проверки работоспособности."""
+    logger.debug(f"Root handler received: method={request.method}, path={request.path}")
     if request.method == "HEAD":
         logger.debug("Получен запрос HEAD от UptimeRobot")
         return web.Response(status=200)
+    elif request.method == "POST":
+        logger.warning(f"Получен неподдерживаемый POST запрос на корневой маршрут: {request.path}")
+        return web.Response(status=405, text="Method Not Allowed")
     return web.Response(status=200, text="Bot is running")
 
 async def webhook_handler(request: web.Request):
     """Обработчик вебхука."""
     REQUESTS.labels(endpoint="webhook").inc()
     with RESPONSE_TIME.labels(endpoint="webhook").time():
+        logger.debug(f"Webhook handler received: method={request.method}, path={request.path}")
         if telegram_app is None or not telegram_app._initialized:
             logger.error("Application не инициализирован")
             ERRORS.labels(type="app_not_initialized", endpoint="webhook").inc()
             return web.Response(status=503, text="Application not initialized")
         try:
-            update = Update.de_json(await request.json(), telegram_app.bot)
+            data = await request.json()
+            logger.debug(f"Webhook data received: {json.dumps(data, ensure_ascii=False)}")
+            update = Update.de_json(data, telegram_app.bot)
+            if update is None:
+                logger.error("Failed to parse update from webhook data")
+                return web.Response(status=400, text="Invalid update data")
             await telegram_app.process_update(update)
+            logger.info("Webhook update processed successfully")
             return web.Response(status=200)
         except Exception as e:
             logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
             ERRORS.labels(type="webhook_error", endpoint="webhook").inc()
-            return web.Response(status=500)
-        
-# Глобальная переменная для Telegram-бота
-telegram_app = None
+            return web.Response(status=500, text="Internal Server Error")
 
 async def on_startup(web_app: web.Application):
     """Инициализация приложения при старте."""
@@ -1438,37 +1285,17 @@ async def on_startup(web_app: web.Application):
     try:
         await check_environment()
         logger.info("Проверка переменных окружения пройдена")
-    except ValueError as e:
-        logger.error(f"Ошибка проверки переменных окружения: {e}", exc_info=True)
-        raise
-    try:
         await init_db()
         logger.info("База данных инициализирована")
-    except Exception as e:
-        logger.error(f"Ошибка инициализации базы данных: {e}", exc_info=True)
-        raise
-    try:
         await test_db_connection()
         logger.info("Подключение к базе данных проверено")
-    except Exception as e:
-        logger.error(f"Ошибка проверки подключения к базе данных: {e}", exc_info=True)
-        raise
-    try:
         await update_ton_price()
         logger.info("Цена TON обновлена")
-    except Exception as e:
-        logger.warning(f"Не удалось обновить цену TON: {e}", exc_info=True)
-        # Не прерываем инициализацию из-за некритичной ошибки
-    try:
         webhook_url = f"{WEBHOOK_URL}/webhook"
         logger.info(f"Установка вебхука: {webhook_url}")
         await telegram_app.bot.set_webhook(webhook_url)
         webhook_info = await telegram_app.bot.get_webhook_info()
-        logger.info(f"Вебхук установлен: {webhook_info.url}")
-    except Exception as e:
-        logger.error(f"Ошибка установки вебхука: {e}", exc_info=True)
-        raise
-    try:
+        logger.info(f"Вебхук установлен: {webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
         scheduler.add_job(update_ton_price, 'interval', minutes=5)
         scheduler.add_job(heartbeat_check, 'interval', minutes=10, args=[telegram_app])
@@ -1478,9 +1305,8 @@ async def on_startup(web_app: web.Application):
         telegram_app.bot_data["scheduler"] = scheduler
         logger.info("Планировщик задач запущен")
     except Exception as e:
-        logger.error(f"Ошибка настройки планировщика: {e}", exc_info=True)
+        logger.error(f"Ошибка в on_startup: {e}", exc_info=True)
         raise
-    logger.info("on_startup успешно завершен")
 
 async def on_shutdown(web_app: web.Application):
     """Очистка при завершении работы."""
@@ -1504,11 +1330,6 @@ def main():
     try:
         telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
         logger.info("ApplicationBuilder инициализирован")
-    except Exception as e:
-        logger.error(f"Ошибка создания приложения: {e}", exc_info=True)
-        raise
-
-    try:
         conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("start", start),
@@ -1555,27 +1376,19 @@ def main():
         telegram_app.add_handler(conv_handler)
         telegram_app.add_error_handler(error_handler)
         logger.info("Обработчики добавлены")
-    except Exception as e:
-        logger.error(f"Ошибка настройки обработчиков: {e}", exc_info=True)
-        raise
-
-    try:
         web_app = web.Application()
         web_app.router.add_get("/", root_handler)
+        web_app.router.add_head("/", root_handler)
         web_app.router.add_post("/webhook", webhook_handler)
         web_app.on_startup.append(on_startup)
         web_app.on_shutdown.append(on_shutdown)
         logger.info("Веб-приложение настроено")
-    except Exception as e:
-        logger.error(f"Ошибка настройки веб-приложения: {e}", exc_info=True)
-        raise
-
-    try:
         logger.info(f"Запуск веб-сервера на порту {PORT}")
         web.run_app(web_app, host="0.0.0.0", port=PORT)
     except Exception as e:
-        logger.error(f"Ошибка запуска веб-сервера: {e}", exc_info=True)
+        logger.critical(f"Критическая ошибка в main: {e}", exc_info=True)
         raise
+
 if __name__ == "__main__":
     try:
         main()
