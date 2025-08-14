@@ -123,7 +123,7 @@ app = None
 transaction_cache = TTLCache(maxsize=1000, ttl=3600)  # Кэш транзакций на 1 час
 
 async def ensure_db_pool():
-    """Получение пула соединений с базой данных с ретраем."""
+    """Получение пула соединений с базой данных."""
     global _db_pool
     async with _db_pool_lock:
         if _db_pool is None or _db_pool._closed:
@@ -144,8 +144,6 @@ async def ensure_db_pool():
             except Exception as e:
                 logger.error(f"Ошибка создания пула DB: {e}")
                 raise
-        else:
-            logger.debug("Пул DB уже существует и активен")
         return _db_pool
 
 async def init_db():
@@ -201,6 +199,11 @@ async def init_db():
                     "INSERT INTO texts (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING",
                     key, value
                 )
+            # Устанавливаем is_admin = true для user_id=6956377285
+            await conn.execute(
+                "INSERT INTO users (user_id, is_admin) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET is_admin = $2",
+                6956377285, True
+            )
         logger.info("База данных инициализирована")
     except Exception as e:
         logger.error(f"Ошибка инициализации базы данных: {e}", exc_info=True)
@@ -241,7 +244,6 @@ async def update_ton_price():
         url = "https://tonapi.io/v2/rates?tokens=ton&currencies=usd"
         logger.info(f"Запрос к TonAPI: {url}")
         response = requests.get(url, headers=headers)
-        logger.debug(f"Ответ API: {response.status_code}, {response.text}")
         if response.status_code == 200:
             data = response.json()
             ton_price = data["rates"]["TON"]["prices"]["USD"]
@@ -256,33 +258,11 @@ async def update_ton_price():
                 "diff_24h": diff_24h
             }
             logger.info(f"Цена TON обновлена: ${ton_price}, изменение за 24ч: {diff_24h}%")
-        elif response.status_code == 429:
-            logger.warning("TonAPI: Превышен лимит запросов (429). Ожидание 60 секунд перед повторной попыткой.")
-            await asyncio.sleep(60)
-            response = requests.get(url, headers=headers)
-            logger.debug(f"Ответ API после повторной попытки: {response.status_code}, {response.text}")
-            if response.status_code == 200:
-                data = response.json()
-                ton_price = data["rates"]["TON"]["prices"]["USD"]
-                diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
-                try:
-                    diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
-                except (ValueError, TypeError):
-                    logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0")
-                    diff_24h = 0.0
-                app.bot_data["ton_price_info"] = {
-                    "price": ton_price,
-                    "diff_24h": diff_24h
-                }
-                logger.info(f"Цена TON обновлена после повторной попытки: ${ton_price}, изменение за 24ч: {diff_24h}%")
-            else:
-                logger.error(f"Ошибка получения цены TON после повторной попытки: {response.status_code} - {response.text}")
-                ERRORS.labels(type="api", endpoint="update_ton_price").inc()
         else:
             logger.error(f"Ошибка получения цены TON: {response.status_code} - {response.text}")
             ERRORS.labels(type="api", endpoint="update_ton_price").inc()
     except Exception as e:
-        logger.error(f"Failed to fetch TON price: {e}")
+        logger.error(f"Ошибка получения цены TON: {e}")
         ERRORS.labels(type="api", endpoint="update_ton_price").inc()
 
 async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -292,10 +272,8 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         try:
             if "ton_price_info" not in app.bot_data or app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
-                logger.info("ton_price_info отсутствует или невалидно, обновляем цену TON")
                 await update_ton_price()
             if "ton_price_info" not in app.bot_data or app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
-                logger.error("Цена TON не инициализирована после попытки обновления")
                 await update.message.reply_text("Ошибка получения цены TON. Попробуйте позже.")
                 return
             price = app.bot_data["ton_price_info"]["price"]
@@ -424,6 +402,43 @@ async def backup_db():
         logger.error(f"Ошибка создания бэкапа: {e}", exc_info=True)
         raise
 
+async def broadcast_new_menu():
+    """Рассылка нового меню всем пользователям для устранения устаревших callback_data."""
+    try:
+        async with (await ensure_db_pool()) as conn:
+            users = await conn.fetch("SELECT user_id FROM users")
+            total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+            for user in users:
+                user_id = user["user_id"]
+                try:
+                    user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
+                    text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
+                            InlineKeyboardButton("🛠 Поддержка и отзывы", url=SUPPORT_CHANNEL)
+                        ],
+                        [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE), InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
+                        [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)]
+                    ]
+                    if user_id == 6956377285:
+                        keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await app.bot.send_message(
+                        chat_id=user_id,
+                        text="Обновлено меню бота! Используйте новое меню ниже:",
+                        reply_markup=reply_markup
+                    )
+                    await log_analytics(user_id, "broadcast_new_menu")
+                    await asyncio.sleep(0.05)
+                except TelegramError as e:
+                    logger.error(f"Ошибка отправки нового меню пользователю {user_id}: {e}")
+                    ERRORS.labels(type="telegram_api", endpoint="broadcast_new_menu").inc()
+        logger.info("Рассылка нового меню завершена")
+    except Exception as e:
+        logger.error(f"Ошибка при рассылке нового меню: {e}", exc_info=True)
+        ERRORS.labels(type="broadcast", endpoint="broadcast_new_menu").inc()
+
 async def broadcast_message_to_users(message: str):
     """Отправка сообщения всем пользователям."""
     async with (await ensure_db_pool()) as conn:
@@ -449,14 +464,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = update.effective_user.username or f"User_{user_id}"
         try:
             async with (await ensure_db_pool()) as conn:
-                logger.debug(f"Добавление/обновление пользователя {user_id}")
                 await conn.execute(
                     """
                     INSERT INTO users (user_id, username, stars_bought, ref_bonus_ton, referrals, is_new, is_admin)
                     VALUES ($1, $2, $3, $4, $5, $6, $7)
                     ON CONFLICT (user_id) DO UPDATE SET
                         username = $2,
-                        is_admin = $7
+                        is_admin = COALESCE(users.is_admin, $7)
                     """,
                     user_id, username, 0, 0.0, json.dumps([]), True, user_id == 6956377285
                 )
@@ -474,7 +488,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if user_id == 6956377285:
                     keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                # Очистка старых данных в user_data
                 context.user_data.clear()
                 context.user_data["last_start_message"] = {"text": text, "reply_markup": reply_markup.to_dict()}
                 try:
@@ -483,7 +496,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await query.edit_message_text(text, reply_markup=reply_markup)
                         await query.answer()
                     else:
-                        logger.debug(f"Отправка главного меню для user_id={user_id}")
                         await update.message.reply_text(text, reply_markup=reply_markup)
                 except BadRequest as e:
                     if "Message is not modified" not in str(e):
@@ -518,7 +530,13 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
         ]
         text = "🔧 Админ-панель"
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                logger.error(f"Ошибка редактирования сообщения админ-панели: {e}")
+                ERRORS.labels(type="telegram_api", endpoint="show_admin_panel").inc()
+                await update.callback_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         await update.callback_query.answer()
         await log_analytics(user_id, "open_admin_panel")
         context.user_data["state"] = STATE_ADMIN_PANEL
@@ -532,12 +550,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     REQUESTS.labels(endpoint="callback_query").inc()
     with RESPONSE_TIME.labels(endpoint="callback_query").time():
         logger.info(f"Callback query received: user_id={user_id}, callback_data={data}")
-        # Обработка устаревших callback_data
-        if data in ["7", "8", "10", "11", "12"]:
-            logger.warning(f"Обнаружен устаревший callback_data: {data}, перенаправление на /start для user_id={user_id}")
-            await query.answer(text="Эта команда устарела. Возвращаемся в главное меню.")
-            await start(update, context)
-            return STATE_MAIN_MENU
         if data == BACK_TO_MENU:
             context.user_data.clear()
             context.user_data["state"] = STATE_MAIN_MENU
@@ -610,7 +622,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     f"Всего рефералов: {total_referrals}"
                 )
                 keyboard = [
-                    [InlineKeyboardButton("✏️ Редактировать профиль", callback_data=STATE_ADMIN_EDIT_PROFILE)],
                     [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
                 ]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1031,6 +1042,9 @@ async def start_bot():
 
         # Инициализируем цену TON при старте
         await update_ton_price()
+
+        # Рассылка нового меню для устранения устаревших callback_data
+        await broadcast_new_menu()
 
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
