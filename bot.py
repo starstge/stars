@@ -1426,8 +1426,12 @@ async def webhook_handler(request: web.Request):
             ERRORS.labels(type="webhook_error", endpoint="webhook").inc()
             return web.Response(status=500)
 
-async def on_startup(app: Application):
+# Глобальная переменная для Telegram-бота
+telegram_app = None
+
+async def on_startup(web_app: web.Application):
     """Инициализация приложения при старте."""
+    global telegram_app
     logger.info("Запуск on_startup")
     try:
         await check_environment()
@@ -1456,8 +1460,8 @@ async def on_startup(app: Application):
     try:
         webhook_url = f"{WEBHOOK_URL}/webhook"
         logger.info(f"Установка вебхука: {webhook_url}")
-        await app.bot.set_webhook(webhook_url)
-        webhook_info = await app.bot.get_webhook_info()
+        await telegram_app.bot.set_webhook(webhook_url)
+        webhook_info = await telegram_app.bot.get_webhook_info()
         logger.info(f"Вебхук установлен: {webhook_info.url}")
     except Exception as e:
         logger.error(f"Ошибка установки вебхука: {e}", exc_info=True)
@@ -1465,37 +1469,37 @@ async def on_startup(app: Application):
     try:
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
         scheduler.add_job(update_ton_price, 'interval', minutes=5)
-        scheduler.add_job(heartbeat_check, 'interval', minutes=10, args=[app])
-        scheduler.add_job(keep_alive, 'interval', minutes=15, args=[app])
+        scheduler.add_job(heartbeat_check, 'interval', minutes=10, args=[telegram_app])
+        scheduler.add_job(keep_alive, 'interval', minutes=15, args=[telegram_app])
         scheduler.add_job(backup_db, 'interval', hours=24)
         scheduler.start()
-        app.bot_data["scheduler"] = scheduler
+        telegram_app.bot_data["scheduler"] = scheduler
         logger.info("Планировщик задач запущен")
     except Exception as e:
         logger.error(f"Ошибка настройки планировщика: {e}", exc_info=True)
         raise
     logger.info("on_startup успешно завершен")
 
-async def on_shutdown(app: Application):
+async def on_shutdown(web_app: web.Application):
     """Очистка при завершении работы."""
     logger.info("Запуск on_shutdown")
     try:
-        if "scheduler" in app.bot_data:
-            app.bot_data["scheduler"].shutdown()
+        if "scheduler" in telegram_app.bot_data:
+            telegram_app.bot_data["scheduler"].shutdown()
             logger.info("Планировщик задач остановлен")
         await close_db_pool()
         logger.info("Пул базы данных закрыт")
-        await app.bot.delete_webhook(drop_pending_updates=True)
+        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
         logger.info("Вебхук удален")
     except Exception as e:
         logger.error(f"Ошибка в on_shutdown: {e}", exc_info=True)
 
 def main():
     """Главная функция для запуска бота."""
-    global app
+    global telegram_app
     logger.info("Запуск main")
     try:
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
+        telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
         logger.info("ApplicationBuilder инициализирован")
     except Exception as e:
         logger.error(f"Ошибка создания приложения: {e}", exc_info=True)
@@ -1545,8 +1549,8 @@ def main():
             per_chat=True,
             per_user=True
         )
-        app.add_handler(conv_handler)
-        app.add_error_handler(error_handler)
+        telegram_app.add_handler(conv_handler)
+        telegram_app.add_error_handler(error_handler)
         logger.info("Обработчики добавлены")
     except Exception as e:
         logger.error(f"Ошибка настройки обработчиков: {e}", exc_info=True)
