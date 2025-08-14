@@ -403,7 +403,7 @@ async def backup_db():
         raise
 
 async def broadcast_new_menu():
-    """Рассылка нового меню всем пользователям для устранения устаревших callback_data."""
+    """Рассылка нового главного меню всем пользователям."""
     try:
         async with (await ensure_db_pool()) as conn:
             users = await conn.fetch("SELECT user_id FROM users")
@@ -426,7 +426,7 @@ async def broadcast_new_menu():
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     await app.bot.send_message(
                         chat_id=user_id,
-                        text="Обновлено меню бота! Используйте новое меню ниже:",
+                        text="Обновлено главное меню бота! Используйте новое меню ниже:",
                         reply_markup=reply_markup
                     )
                     await log_analytics(user_id, "broadcast_new_menu")
@@ -434,10 +434,43 @@ async def broadcast_new_menu():
                 except TelegramError as e:
                     logger.error(f"Ошибка отправки нового меню пользователю {user_id}: {e}")
                     ERRORS.labels(type="telegram_api", endpoint="broadcast_new_menu").inc()
-        logger.info("Рассылка нового меню завершена")
+        logger.info("Рассылка нового главного меню завершена")
     except Exception as e:
-        logger.error(f"Ошибка при рассылке нового меню: {e}", exc_info=True)
+        logger.error(f"Ошибка при рассылке нового главного меню: {e}", exc_info=True)
         ERRORS.labels(type="broadcast", endpoint="broadcast_new_menu").inc()
+
+async def broadcast_admin_panel():
+    """Рассылка обновлённой админ-панели всем администраторам."""
+    try:
+        async with (await ensure_db_pool()) as conn:
+            admins = await conn.fetch("SELECT user_id FROM users WHERE is_admin = true")
+            for admin in admins:
+                user_id = admin["user_id"]
+                try:
+                    keyboard = [
+                        [InlineKeyboardButton("📊 Статистика", callback_data=STATE_ADMIN_STATS)],
+                        [InlineKeyboardButton("📢 Рассылка", callback_data=STATE_ADMIN_BROADCAST)],
+                        [InlineKeyboardButton("📈 Топ рефералов", callback_data=STATE_TOP_REFERRALS)],
+                        [InlineKeyboardButton("🛒 Топ покупок", callback_data=STATE_TOP_PURCHASES)],
+                        [InlineKeyboardButton("📂 Копировать базу данных", callback_data=STATE_EXPORT_DATA)],
+                        [InlineKeyboardButton("✏️ Редактировать профиль", callback_data=STATE_ADMIN_EDIT_PROFILE)],
+                        [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                    ]
+                    text = "🔧 Обновлённая админ-панель"
+                    await app.bot.send_message(
+                        chat_id=user_id,
+                        text=text,
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                    await log_analytics(user_id, "broadcast_admin_panel")
+                    await asyncio.sleep(0.05)
+                except TelegramError as e:
+                    logger.error(f"Ошибка отправки админ-панели пользователю {user_id}: {e}")
+                    ERRORS.labels(type="telegram_api", endpoint="broadcast_admin_panel").inc()
+        logger.info("Рассылка обновлённой админ-панели завершена")
+    except Exception as e:
+        logger.error(f"Ошибка при рассылке админ-панели: {e}", exc_info=True)
+        ERRORS.labels(type="broadcast", endpoint="broadcast_admin_panel").inc()
 
 async def broadcast_message_to_users(message: str):
     """Отправка сообщения всем пользователям."""
@@ -530,6 +563,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
         ]
         text = "🔧 Админ-панель"
+        logger.info(f"Отображение админ-панели для user_id={user_id}, кнопки: {[btn.text + ':' + btn.callback_data for row in keyboard for btn in row]}")
         try:
             await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         except BadRequest as e:
@@ -830,7 +864,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         await log_analytics(user_id, "payment_check_error")
                 await query.answer()
                 return STATE_BUY_STARS_CONFIRM
-        elif data.startswith("set_amount_"):
+        elif data == SET_AMOUNT:
             stars = int(data.replace("set_amount_", ""))
             context.user_data["buy_data"]["stars"] = stars
             amount_usd = (stars / 50) * PRICE_USD_PER_50 * (1 + MARKUP_PERCENTAGE / 100)
@@ -1043,8 +1077,9 @@ async def start_bot():
         # Инициализируем цену TON при старте
         await update_ton_price()
 
-        # Рассылка нового меню для устранения устаревших callback_data
+        # Рассылка нового главного меню и админ-панели
         await broadcast_new_menu()
+        await broadcast_admin_panel()
 
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
