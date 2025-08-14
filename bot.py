@@ -1229,169 +1229,12 @@ async def init_telegram_app():
     """Инициализация приложения Telegram и выполнение стартовых задач."""
     global telegram_app
     logger.info("Инициализация приложения Telegram")
-    telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
-    logger.info("ApplicationBuilder инициализирован")
     
-    # Добавление обработчиков
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            CommandHandler("tonprice", ton_price_command),
-            CallbackQueryHandler(callback_query_handler)
-        ],
-        states={
-            STATES[STATE_MAIN_MENU]: [
-                CallbackQueryHandler(callback_query_handler),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
-            ],
-            STATES[STATE_PROFILE]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_REFERRALS]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_BUY_STARS_RECIPIENT]: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                CallbackQueryHandler(callback_query_handler)
-            ],
-            STATES[STATE_BUY_STARS_AMOUNT]: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                CallbackQueryHandler(callback_query_handler)
-            ],
-            STATES[STATE_BUY_STARS_PAYMENT_METHOD]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_BUY_STARS_CRYPTO_TYPE]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_BUY_STARS_CONFIRM]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_ADMIN_PANEL]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_ADMIN_STATS]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_ADMIN_BROADCAST]: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                CallbackQueryHandler(callback_query_handler)
-            ],
-            STATES[STATE_ADMIN_EDIT_PROFILE]: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
-                CallbackQueryHandler(callback_query_handler)
-            ],
-            STATES[STATE_TOP_REFERRALS]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_TOP_PURCHASES]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_EXPORT_DATA]: [CallbackQueryHandler(callback_query_handler)],
-            STATES[STATE_ALL_USERS]: [CallbackQueryHandler(callback_query_handler)]
-        },
-        fallbacks=[CommandHandler("start", start)],
-        per_chat=True,
-        per_user=True
-    )
-    telegram_app.add_handler(conv_handler)
-    telegram_app.add_error_handler(error_handler)
-    logger.info("Обработчики добавлены")
-
-    # Выполнение стартовых задач
-    await on_startup(None)  # Вызов on_startup вручную для завершения инициализации
-    logger.info("Стартовые задачи завершены")
-    return telegram_app
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок."""
-    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
-    ERRORS.labels(type="bot_error", endpoint="error_handler").inc()
-    if update:
-        user_id = update.effective_user.id if update.effective_user else None
-        try:
-            await log_analytics(user_id, "error", {"error": str(context.error)})
-            if update.message:
-                await update.message.reply_text(
-                    "Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛠 Поддержка", url=SUPPORT_CHANNEL)]])
-                )
-            elif update.callback_query:
-                await update.callback_query.answer(text="Произошла ошибка. Попробуйте снова.")
-        except Exception as e:
-            logger.error(f"Ошибка при отправке сообщения об ошибке: {e}", exc_info=True)
-
-async def root_handler(request: web.Request):
-    """Обработчик корневого маршрута для проверки работоспособности."""
-    logger.debug(f"Root handler received: method={request.method}, path={request.path}")
-    if request.method == "HEAD":
-        logger.debug("Получен запрос HEAD от UptimeRobot")
-        return web.Response(status=200)
-    elif request.method == "POST":
-        logger.warning(f"Получен неподдерживаемый POST запрос на корневой маршрут: {request.path}")
-        return web.Response(status=405, text="Method Not Allowed")
-    return web.Response(status=200, text="Bot is running")
-
-async def webhook_handler(request: web.Request):
-    """Обработчик вебхука."""
-    REQUESTS.labels(endpoint="webhook").inc()
-    with RESPONSE_TIME.labels(endpoint="webhook").time():
-        logger.debug(f"Webhook handler received: method={request.method}, path={request.path}")
-        if telegram_app is None or not telegram_app._initialized:
-            logger.error("Application не инициализирован")
-            ERRORS.labels(type="app_not_initialized", endpoint="webhook").inc()
-            return web.Response(status=503, text="Application not initialized")
-        try:
-            data = await request.json()
-            logger.debug(f"Webhook data received: {json.dumps(data, ensure_ascii=False)}")
-            update = Update.de_json(data, telegram_app.bot)
-            if update is None:
-                logger.error("Failed to parse update from webhook data")
-                return web.Response(status=400, text="Invalid update data")
-            await telegram_app.process_update(update)
-            logger.info("Webhook update processed successfully")
-            return web.Response(status=200)
-        except Exception as e:
-            logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
-            ERRORS.labels(type="webhook_error", endpoint="webhook").inc()
-            return web.Response(status=500, text="Internal Server Error")
-
-async def on_startup(_):
-    """Инициализация приложения при старте."""
-    logger.info("Запуск on_startup")
-    try:
-        await check_environment()
-        logger.info("Проверка переменных окружения пройдена")
-        await init_db()
-        logger.info("База данных инициализирована")
-        await test_db_connection()
-        logger.info("Подключение к базе данных проверено")
-        await update_ton_price()
-        logger.info("Цена TON обновлена")
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        logger.info(f"Установка вебхука: {webhook_url}")
-        # Очистка накопленных обновлений перед установкой вебхука
-        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Накопленные обновления очищены")
-        await telegram_app.bot.set_webhook(webhook_url)
-        webhook_info = await telegram_app.bot.get_webhook_info()
-        logger.info(f"Вебхук установлен: {webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
-        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
-        scheduler.add_job(update_ton_price, 'interval', minutes=5)
-        scheduler.add_job(heartbeat_check, 'interval', minutes=10, args=[telegram_app])
-        scheduler.add_job(keep_alive, 'interval', minutes=15, args=[telegram_app])
-        scheduler.add_job(backup_db, 'interval', hours=24)
-        scheduler.start()
-        telegram_app.bot_data["scheduler"] = scheduler
-        logger.info("Планировщик задач запущен")
-    except Exception as e:
-        logger.error(f"Ошибка в on_startup: {e}", exc_info=True)
-        raise
-    
-async def on_shutdown(web_app: web.Application):
-    """Очистка при завершении работы."""
-    logger.info("Запуск on_shutdown")
-    try:
-        if telegram_app is not None and "scheduler" in telegram_app.bot_data:
-            telegram_app.bot_data["scheduler"].shutdown()
-            logger.info("Планировщик задач остановлен")
-        await close_db_pool()
-        logger.info("Пул базы данных закрыт")
-        if telegram_app is not None:
-            await telegram_app.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Вебхук удален")
-    except Exception as e:
-        logger.error(f"Ошибка в on_shutdown: {e}", exc_info=True)
-
-def main():
-    """Главная функция для запуска бота."""
-    global telegram_app
-    logger.info("Запуск main")
     try:
         telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
         logger.info("ApplicationBuilder инициализирован")
+        
+        # Добавление обработчиков
         conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("start", start),
@@ -1438,10 +1281,134 @@ def main():
         telegram_app.add_handler(conv_handler)
         telegram_app.add_error_handler(error_handler)
         logger.info("Обработчики добавлены")
+
+        # Инициализация приложения
+        await telegram_app.initialize()
+        logger.info("telegram_app инициализирован")
+        
+        # Выполнение стартовых задач
+        await on_startup(None)
+        logger.info("Стартовые задачи завершены")
+        
+        # Запуск Application для обработки обновлений
+        await telegram_app.start()
+        logger.info("telegram_app запущен")
+        
+        return telegram_app
+    except Exception as e:
+        logger.critical(f"Ошибка при инициализации telegram_app: {e}", exc_info=True)
+        raise
+        
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок."""
+    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
+    ERRORS.labels(type="bot_error", endpoint="error_handler").inc()
+    if update:
+        user_id = update.effective_user.id if update.effective_user else None
+        try:
+            await log_analytics(user_id, "error", {"error": str(context.error)})
+            if update.message:
+                await update.message.reply_text(
+                    "Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛠 Поддержка", url=SUPPORT_CHANNEL)]])
+                )
+            elif update.callback_query:
+                await update.callback_query.answer(text="Произошла ошибка. Попробуйте снова.")
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения об ошибке: {e}", exc_info=True)
+
+async def root_handler(request: web.Request):
+    """Обработчик корневого маршрута для проверки работоспособности."""
+    logger.debug(f"Root handler received: method={request.method}, path={request.path}")
+    if request.method == "HEAD":
+        logger.debug("Получен запрос HEAD от UptimeRobot")
+        return web.Response(status=200)
+    elif request.method == "POST":
+        logger.warning(f"Получен неподдерживаемый POST запрос на корневой маршрут: {request.path}")
+        return web.Response(status=405, text="Method Not Allowed")
+    return web.Response(status=200, text="Bot is running")
+
+async def webhook_handler(request: web.Request):
+    """Обработчик вебхука."""
+    logger.debug(f"Webhook handler received: method={request.method}, path={request.path}")
+    if telegram_app is None or not telegram_app._initialized:
+        logger.error(f"Application не инициализирован: telegram_app={telegram_app}, initialized={telegram_app._initialized if telegram_app else None}")
+        return web.Response(status=503, text="Application not initialized")
+    try:
+        data = await request.json()
+        logger.info(f"Webhook update received: {json.dumps(data, ensure_ascii=False)}")
+        update = Update.de_json(data, telegram_app.bot)
+        if update is None:
+            logger.error("Не удалось разобрать обновление из данных вебхука")
+            return web.Response(status=400, text="Invalid update data")
+        logger.info(f"Обработка обновления: update_id={update.update_id}, type={update.to_dict().get('message') or update.to_dict().get('callback_query')}")
+        await telegram_app.process_update(update)
+        logger.info("Обновление вебхука успешно обработано")
+        return web.Response(status=200)
+    except Exception as e:
+        logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
+        return web.Response(status=500, text="Internal Server Error")
+
+async def on_startup(_):
+    """Инициализация приложения при старте."""
+    logger.info("Запуск on_startup")
+    try:
+        await check_environment()
+        logger.info("Проверка переменных окружения пройдена")
+        await init_db()
+        logger.info("База данных инициализирована")
+        await test_db_connection()
+        logger.info("Подключение к базе данных проверено")
+        await update_ton_price()
+        logger.info("Цена TON обновлена")
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        logger.info(f"Установка вебхука: {webhook_url}")
+        # Очистка накопленных обновлений
+        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Накопленные обновления очищены")
+        await telegram_app.bot.set_webhook(webhook_url)
+        webhook_info = await telegram_app.bot.get_webhook_info()
+        logger.info(f"Вебхук установлен: {webhook_url}, pending_updates={webhook_info.pending_update_count}")
+        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
+        scheduler.add_job(update_ton_price, 'interval', minutes=5)
+        scheduler.add_job(heartbeat_check, 'interval', minutes=10, args=[telegram_app])
+        scheduler.add_job(keep_alive, 'interval', minutes=15, args=[telegram_app])
+        scheduler.add_job(backup_db, 'interval', hours=24)
+        scheduler.start()
+        telegram_app.bot_data["scheduler"] = scheduler
+        logger.info("Планировщик задач запущен")
+    except Exception as e:
+        logger.critical(f"Ошибка в on_startup: {e}", exc_info=True)
+        raise
+
+async def on_shutdown(_):
+    """Очистка при завершении работы."""
+    logger.info("Запуск on_shutdown")
+    try:
+        if telegram_app is not None:
+            scheduler = telegram_app.bot_data.get("scheduler")
+            if scheduler:
+                scheduler.shutdown()
+                logger.info("Планировщик задач остановлен")
+            await telegram_app.stop()
+            logger.info("telegram_app остановлен")
+            await telegram_app.shutdown()
+            logger.info("telegram_app завершен")
+    except Exception as e:
+        logger.error(f"Ошибка в on_shutdown: {e}", exc_info=True)
+
+def main():
+    """Главная функция для запуска бота."""
+    logger.info("Запуск main")
+    try:
+        # Выполнение асинхронной инициализации
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(init_telegram_app())
+
+        # Настройка веб-приложения
         web_app = web.Application()
-        web_app.router.add_get("/", root_handler)  # Handles both GET and HEAD
+        web_app.router.add_get("/", root_handler)  # Обрабатывает GET и HEAD
         web_app.router.add_post("/webhook", webhook_handler)
-        web_app.on_startup.append(on_startup)
         web_app.on_shutdown.append(on_shutdown)
         logger.info("Веб-приложение настроено")
         logger.info(f"Запуск веб-сервера на порту {PORT}")
