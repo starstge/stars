@@ -1225,6 +1225,66 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await log_analytics(user_id, "invalid_text_input", {"state": state, "text": text})
             return STATES[state]
 
+async def init_telegram_app():
+    """Инициализация приложения Telegram и выполнение стартовых задач."""
+    global telegram_app
+    logger.info("Инициализация приложения Telegram")
+    telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    logger.info("ApplicationBuilder инициализирован")
+    
+    # Добавление обработчиков
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("tonprice", ton_price_command),
+            CallbackQueryHandler(callback_query_handler)
+        ],
+        states={
+            STATES[STATE_MAIN_MENU]: [
+                CallbackQueryHandler(callback_query_handler),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input)
+            ],
+            STATES[STATE_PROFILE]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_REFERRALS]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_BUY_STARS_RECIPIENT]: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                CallbackQueryHandler(callback_query_handler)
+            ],
+            STATES[STATE_BUY_STARS_AMOUNT]: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                CallbackQueryHandler(callback_query_handler)
+            ],
+            STATES[STATE_BUY_STARS_PAYMENT_METHOD]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_BUY_STARS_CRYPTO_TYPE]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_BUY_STARS_CONFIRM]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_ADMIN_PANEL]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_ADMIN_STATS]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_ADMIN_BROADCAST]: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                CallbackQueryHandler(callback_query_handler)
+            ],
+            STATES[STATE_ADMIN_EDIT_PROFILE]: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
+                CallbackQueryHandler(callback_query_handler)
+            ],
+            STATES[STATE_TOP_REFERRALS]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_TOP_PURCHASES]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_EXPORT_DATA]: [CallbackQueryHandler(callback_query_handler)],
+            STATES[STATE_ALL_USERS]: [CallbackQueryHandler(callback_query_handler)]
+        },
+        fallbacks=[CommandHandler("start", start)],
+        per_chat=True,
+        per_user=True
+    )
+    telegram_app.add_handler(conv_handler)
+    telegram_app.add_error_handler(error_handler)
+    logger.info("Обработчики добавлены")
+
+    # Выполнение стартовых задач
+    await on_startup(None)  # Вызов on_startup вручную для завершения инициализации
+    logger.info("Стартовые задачи завершены")
+    return telegram_app
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок."""
     logger.error(f"Update {update} caused error {context.error}", exc_info=True)
@@ -1278,9 +1338,8 @@ async def webhook_handler(request: web.Request):
             ERRORS.labels(type="webhook_error", endpoint="webhook").inc()
             return web.Response(status=500, text="Internal Server Error")
 
-async def on_startup(web_app: web.Application):
+async def on_startup(_):
     """Инициализация приложения при старте."""
-    global telegram_app
     logger.info("Запуск on_startup")
     try:
         await check_environment()
@@ -1293,6 +1352,9 @@ async def on_startup(web_app: web.Application):
         logger.info("Цена TON обновлена")
         webhook_url = f"{WEBHOOK_URL}/webhook"
         logger.info(f"Установка вебхука: {webhook_url}")
+        # Очистка накопленных обновлений перед установкой вебхука
+        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Накопленные обновления очищены")
         await telegram_app.bot.set_webhook(webhook_url)
         webhook_info = await telegram_app.bot.get_webhook_info()
         logger.info(f"Вебхук установлен: {webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
@@ -1307,7 +1369,7 @@ async def on_startup(web_app: web.Application):
     except Exception as e:
         logger.error(f"Ошибка в on_startup: {e}", exc_info=True)
         raise
-
+    
 async def on_shutdown(web_app: web.Application):
     """Очистка при завершении работы."""
     logger.info("Запуск on_shutdown")
