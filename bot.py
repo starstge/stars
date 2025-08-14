@@ -267,15 +267,17 @@ async def update_ton_price():
             ton_price = data["rates"]["TON"]["prices"]["USD"]
             diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
             try:
+                # Replace Unicode minus sign (U+2212) with standard minus (-)
+                diff_24h = diff_24h.replace("−", "-")
                 diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
-            except (ValueError, TypeError):
-                logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0")
+            except (ValueError, TypeError) as e:
+                logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0, ошибка: {e}")
                 diff_24h = 0.0
-            app.bot_data["ton_price_info"] = {
+            telegram_app.bot_data["ton_price_info"] = {
                 "price": ton_price,
                 "diff_24h": diff_24h
             }
-            logger.info(f"Цена TON обновлена: ${ton_price}, изменение за 24ч: {diff_24h}%")
+            logger.info(f"Цена TON обновлена: ${ton_price:.2f}, изменение за 24ч: {diff_24h:.2f}%")
         else:
             logger.error(f"Ошибка получения цены TON: {response.status_code} - {response.text}")
             ERRORS.labels(type="api", endpoint="update_ton_price").inc()
@@ -1413,19 +1415,19 @@ async def webhook_handler(request: web.Request):
     """Обработчик вебхука."""
     REQUESTS.labels(endpoint="webhook").inc()
     with RESPONSE_TIME.labels(endpoint="webhook").time():
-        if not app._initialized:
-            logger.error("Application not initialized")
+        if telegram_app is None or not telegram_app._initialized:
+            logger.error("Application не инициализирован")
             ERRORS.labels(type="app_not_initialized", endpoint="webhook").inc()
             return web.Response(status=503, text="Application not initialized")
         try:
-            update = Update.de_json(await request.json(), app.bot)
-            await app.process_update(update)
+            update = Update.de_json(await request.json(), telegram_app.bot)
+            await telegram_app.process_update(update)
             return web.Response(status=200)
         except Exception as e:
             logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
             ERRORS.labels(type="webhook_error", endpoint="webhook").inc()
             return web.Response(status=500)
-
+        
 # Глобальная переменная для Telegram-бота
 telegram_app = None
 
@@ -1484,13 +1486,14 @@ async def on_shutdown(web_app: web.Application):
     """Очистка при завершении работы."""
     logger.info("Запуск on_shutdown")
     try:
-        if "scheduler" in telegram_app.bot_data:
+        if telegram_app is not None and "scheduler" in telegram_app.bot_data:
             telegram_app.bot_data["scheduler"].shutdown()
             logger.info("Планировщик задач остановлен")
         await close_db_pool()
         logger.info("Пул базы данных закрыт")
-        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Вебхук удален")
+        if telegram_app is not None:
+            await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Вебхук удален")
     except Exception as e:
         logger.error(f"Ошибка в on_shutdown: {e}", exc_info=True)
 
@@ -1573,7 +1576,6 @@ def main():
     except Exception as e:
         logger.error(f"Ошибка запуска веб-сервера: {e}", exc_info=True)
         raise
-
 if __name__ == "__main__":
     try:
         main()
