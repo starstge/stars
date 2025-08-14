@@ -1,4 +1,4 @@
-import os
+redimport os
 import json
 import logging
 import asyncio
@@ -1361,7 +1361,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 f"Реферальный бонус для пользователя {target_user_id} обновлен: {bonus:.2f} TON",
                                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
                             )
-                                                        await log_analytics(user_id, "edit_profile_ref_bonus", {"target_user_id": target_user_id, "bonus": bonus})
+                            await log_analytics(user_id, "edit_profile_ref_bonus", {"target_user_id": target_user_id, "bonus": bonus})
                         context.user_data["edit_profile_field"] = None
                         context.user_data["edit_user_id"] = None
                         context.user_data["state"] = STATE_ADMIN_PANEL
