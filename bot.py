@@ -1377,8 +1377,7 @@ def main():
         telegram_app.add_error_handler(error_handler)
         logger.info("Обработчики добавлены")
         web_app = web.Application()
-        web_app.router.add_get("/", root_handler)
-        web_app.router.add_head("/", root_handler)
+        web_app.router.add_get("/", root_handler)  # Handles both GET and HEAD
         web_app.router.add_post("/webhook", webhook_handler)
         web_app.on_startup.append(on_startup)
         web_app.on_shutdown.append(on_shutdown)
