@@ -1279,7 +1279,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             return STATES[STATE_ADMIN_EDIT_PROFILE]
                         ref_count = len(json.loads(user["referrals"])) if user["referrals"] else 0
                         text = (
-                                                    text = (
                             f"Профиль пользователя @{user['username'] or 'Unknown'} (ID: <code>{target_user_id}</code>):\n"
                             f"Куплено звезд: {user['stars_bought']}\n"
                             f"Реферальный бонус: {user['ref_bonus_ton']:.2f} TON\n"
