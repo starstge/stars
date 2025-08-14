@@ -353,12 +353,17 @@ async def check_environment():
     required_vars = ["BOT_TOKEN", "POSTGRES_URL", "SPLIT_API_TOKEN", "PROVIDER_TOKEN", "OWNER_WALLET", "WEBHOOK_URL"]
     optional_vars = ["TON_SPACE_API_TOKEN", "CRYPTOBOT_API_TOKEN", "TON_API_KEY"]
     for var in required_vars:
-        if not os.getenv(var):
+        value = os.getenv(var)
+        if not value:
             logger.error(f"Отсутствует обязательная переменная окружения: {var}")
             raise ValueError(f"Переменная окружения {var} не установлена")
+        logger.debug(f"Переменная окружения {var} установлена")
     for var in optional_vars:
-        if not os.getenv(var):
+        value = os.getenv(var)
+        if not value:
             logger.warning(f"Опциональная переменная окружения {var} не установлена")
+        else:
+            logger.debug(f"Опциональная переменная окружения {var} установлена")
 
 async def test_db_connection():
     """Тестирование подключения к базе данных."""
@@ -1422,32 +1427,59 @@ async def on_startup(app: Application):
     """Инициализация при запуске."""
     global _db_pool
     try:
+        logger.info("Начало инициализации приложения")
         # Явно вызываем initialize
         await app.initialize()
-        logger.info("Application инициализирован")
-        
+        logger.info("Application успешно инициализирован")
+
+        # Проверка переменных окружения
+        logger.info("Проверка переменных окружения")
         await check_environment()
+
+        # Инициализация базы данных
+        logger.info("Инициализация базы данных")
         await init_db()
+        logger.info("Тестирование подключения к базе данных")
         await test_db_connection()
+
+        # Обновление цены TON
+        logger.info("Обновление цены TON")
         await update_ton_price()
-        # Настройка вебхука
+
+        # Настройка вебхука с повторными попытками
+        logger.info("Настройка вебхука")
         webhook_info = await app.bot.get_webhook_info()
         parsed_url = urlparse(WEBHOOK_URL)
         webhook_url = f"{parsed_url.scheme}://{parsed_url.netloc}/webhook"
-        if webhook_info.url != webhook_url:
-            await app.bot.set_webhook(url=webhook_url)
-            logger.info(f"Вебхук установлен: {webhook_url}")
+        for attempt in range(3):
+            try:
+                if webhook_info.url != webhook_url:
+                    await app.bot.set_webhook(url=webhook_url)
+                    logger.info(f"Вебхук успешно установлен: {webhook_url}")
+                    break
+                else:
+                    logger.info(f"Вебхук уже установлен: {webhook_url}")
+                    break
+            except TelegramError as e:
+                logger.error(f"Попытка {attempt + 1}: Ошибка установки вебхука: {e}")
+                ERRORS.labels(type="telegram_api", endpoint="set_webhook").inc()
+                if attempt == 2:
+                    raise Exception(f"Не удалось установить вебхук после 3 попыток: {e}")
+                await asyncio.sleep(2)
+
         # Запуск планировщика
+        logger.info("Запуск планировщика задач")
         scheduler = AsyncIOScheduler()
         scheduler.add_job(update_ton_price, "interval", minutes=10)
         scheduler.add_job(heartbeat_check, "interval", minutes=5, args=[app])
         scheduler.add_job(keep_alive, "interval", minutes=15, args=[app])
         scheduler.start()
-        logger.info("Бот запущен")
+
+        logger.info("Бот успешно запущен")
     except Exception as e:
         logger.error(f"Ошибка при запуске: {e}", exc_info=True)
         ERRORS.labels(type="startup", endpoint="on_startup").inc()
-        # Отправляем уведомление админу
+        # Попытка отправить уведомление админу
         try:
             await app.bot.send_message(
                 chat_id=ADMIN_BACKUP_ID,
@@ -1456,7 +1488,7 @@ async def on_startup(app: Application):
         except Exception as notify_error:
             logger.error(f"Не удалось отправить уведомление об ошибке: {notify_error}")
         raise
-
+        
 async def on_shutdown(app: Application):
     """Завершение работы."""
     try:
@@ -1562,6 +1594,7 @@ def main():
         # Запуск веб-сервера
         web_app = web.Application()
         web_app.router.add_post("/webhook", webhook_handler)
+        web_app.router.add_get("/", root_handler)  # Новый маршрут для корневого URL
         web.run_app(web_app, host="0.0.0.0", port=PORT)
     except Exception as e:
         logger.error(f"Ошибка в main: {e}", exc_info=True)
