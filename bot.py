@@ -1805,6 +1805,15 @@ async def main():
         await telegram_app.initialize()
         logger.info("Telegram Application initialized successfully")
         
+        # Register handlers
+        telegram_app.add_handler(CommandHandler("start", start, filters=filters.RegexCommandsFilter(commands=["start"])))
+        telegram_app.add_handler(CommandHandler("tonprice", ton_price_command, filters=filters.RegexCommandsFilter(commands=["tonprice"])))
+        telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
+        telegram_app.add_error_handler(error_handler)
+        logger.info("Handlers registered")
+        
         await telegram_app.start()
         logger.info("Telegram Application started")
         
@@ -1816,14 +1825,6 @@ async def main():
         scheduler.add_job(backup_db, 'interval', hours=24)
         scheduler.start()
         logger.info("Scheduler started")
-        
-        telegram_app.add_handler(CommandHandler("start", start, filters=filters.COMMAND))
-        telegram_app.add_handler(CommandHandler("tonprice", ton_price_command, filters=filters.COMMAND))
-        telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
-        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
-        telegram_app.add_error_handler(error_handler)  # Added error_handler
-        logger.info("Handlers registered")
         
         webhook_url = f"{WEBHOOK_URL}/webhook"
         logger.info(f"Setting webhook to {webhook_url}")
@@ -1840,7 +1841,7 @@ async def main():
     except Exception as e:
         logger.error(f"Ошибка запуска бота: {e}", exc_info=True)
         ERRORS.labels(type="startup", endpoint="main").inc()
-        if telegram_app and telegram_app.running:  # Check if application is running before stopping
+        if telegram_app and telegram_app.running:
             await telegram_app.stop()
             await telegram_app.shutdown()
             logger.info("Telegram Application stopped and shut down")
@@ -1849,7 +1850,7 @@ async def main():
         raise
     
     finally:
-        if telegram_app and telegram_app.running:  # Check if application is running before stopping
+        if telegram_app and telegram_app.running:
             await telegram_app.stop()
             await telegram_app.shutdown()
             logger.info("Telegram Application stopped and shut down")
