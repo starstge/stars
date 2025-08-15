@@ -229,13 +229,25 @@ async def close_db_pool():
             logger.info("Пул DB закрыт")
             _db_pool = None
 
-async def get_text(key, **kwargs):
-    """Получение текста из базы данных."""
+async def get_text(key: str, **kwargs) -> str:
+    """Получение текста из базы данных и форматирование с параметрами."""
     async with (await ensure_db_pool()) as conn:
-        text = await conn.fetchval("SELECT value FROM texts WHERE key = $1", key)
-        if text:
+        text_row = await conn.fetchrow("SELECT text FROM texts WHERE key = $1", key)
+        if not text_row:
+            logger.warning(f"Текст с ключом {key} не найден в базе данных")
+            return f"Текст для {key} не задан."
+        
+        text = text_row["text"]
+        try:
             return text.format(**kwargs)
-        return f"Текст для {key} не найден"
+        except KeyError as e:
+            logger.error(f"Ошибка форматирования текста для ключа {key}: отсутствует параметр {e}")
+            # Возвращаем текст без форматирования или с частичным форматированием
+            default_kwargs = {k: v for k, v in kwargs.items() if k in text}
+            try:
+                return text.format(**default_kwargs)
+            except KeyError:
+                return text  # Возвращаем неформатированный текст как последний резерв
 
 async def log_analytics(user_id: int, action: str, data: dict = None):
     """Логирование аналитики."""
@@ -596,6 +608,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id, username
             )
             logger.info(f"Создан новый пользователь: user_id={user_id}, username={username}")
+            stars_bought = 0
+        else:
+            stars_bought = user["stars_bought"]
         
         # Добавляем реферала, если есть реферер
         if referrer_id:
@@ -609,14 +624,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         json.dumps(referrals), referrer_id
                     )
                     logger.info(f"Добавлен реферал user_id={user_id} для referrer_id={referrer_id}")
-                    # Начисление бонуса рефереру (пример: 0.1 TON за реферала)
+                    # Начисление бонуса рефереру (0.1 TON за реферала)
                     await conn.execute(
                         "UPDATE users SET ref_bonus_ton = ref_bonus_ton + 0.1 WHERE user_id = $1",
                         referrer_id
                     )
     
     # Формируем приветственное сообщение
-    text = await get_text("welcome", user_id=user_id, username=username)
+    try:
+        text = await get_text(
+            "welcome",
+            user_id=user_id,
+            username=username,
+            stars_bought=stars_bought,  # Добавляем stars_bought для шаблона
+            stars_sold=stars_bought     # Включаем stars_sold как синоним, если требуется
+        )
+    except KeyError as e:
+        logger.error(f"Ошибка в шаблоне welcome: отсутствует параметр {e}")
+        text = f"Привет, {username}! Добро пожаловать в Stars Shop! 🎉"
+    
     keyboard = [
         [
             InlineKeyboardButton("📰 Новости", url="https://t.me/CheapStarsShopNews"),
@@ -634,7 +660,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Отправляем или редактируем сообщение
     try:
         last_message = telegram_app.bot_data.get(f"last_message_{user_id}")
-        if last_message:
+        if last_message and last_message["chat_id"] and last_message["message_id"]:
             await telegram_app.bot.edit_message_text(
                 text=text,
                 chat_id=last_message["chat_id"],
@@ -643,7 +669,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-    except BadRequest:
+    except BadRequest as e:
+        logger.warning(f"Не удалось отредактировать сообщение: {e}")
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     
     telegram_app.bot_data[f"last_message_{user_id}"] = {
@@ -654,61 +681,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["state"] = STATE_MAIN_MENU
     logger.info(f"/start успешно обработан для user_id={user_id}")
     return STATES[STATE_MAIN_MENU]
-
-async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать админ-панель."""
-    user_id = update.effective_user.id
-    async with (await ensure_db_pool()) as conn:
-        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
-        if not is_admin:
-            if update.callback_query:
-                await update.callback_query.answer(text="Доступ только для админов.")
-            else:
-                await update.message.reply_text("Доступ только для админов.")
-            return context.user_data.get("state", STATES[STATE_MAIN_MENU])
-        keyboard = [
-            [InlineKeyboardButton("📊 Статистика", callback_data=STATE_ADMIN_STATS)],
-            [InlineKeyboardButton("📢 Рассылка", callback_data=STATE_ADMIN_BROADCAST)],
-            [InlineKeyboardButton("📈 Топ рефералов", callback_data=STATE_TOP_REFERRALS)],
-            [InlineKeyboardButton("🛒 Топ покупок", callback_data=STATE_TOP_PURCHASES)],
-            [InlineKeyboardButton("📂 Копировать базу данных", callback_data=STATE_EXPORT_DATA)],
-            [InlineKeyboardButton("✏️ Редактировать профиль", callback_data=STATE_ADMIN_EDIT_PROFILE)],
-            [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
-        ]
-        text = "🔧 Админ-панель"
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            if update.callback_query:
-                query = update.callback_query
-                try:
-                    await query.edit_message_text(text, reply_markup=reply_markup)
-                    await query.answer()
-                    telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
-                        "chat_id": query.message.chat_id,
-                        "message_id": query.message.message_id
-                    }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка редактирования сообщения админ-панели для user_id={user_id}: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="show_admin_panel").inc()
-                        sent_message = await query.message.reply_text(text, reply_markup=reply_markup)
-                        telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
-            else:
-                sent_message = await update.message.reply_text(text, reply_markup=reply_markup)
-                telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
-                    "chat_id": sent_message.chat_id,
-                    "message_id": sent_message.message_id
-                }
-            await log_analytics(user_id, "open_admin_panel")
-            context.user_data["state"] = STATE_ADMIN_PANEL
-            return STATES[STATE_ADMIN_PANEL]
-        except Exception as e:
-            logger.error(f"Ошибка отправки админ-панели для user_id={user_id}: {e}", exc_info=True)
-            ERRORS.labels(type="telegram_api", endpoint="show_admin_panel").inc()
-            return STATES[STATE_MAIN_MENU]
 
 async def show_all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список всех пользователей."""
