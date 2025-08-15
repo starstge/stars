@@ -1029,8 +1029,8 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
     ]
     try:
-        if update.:
-            query = update.
+        if update.callback_query:  # Corrected from "if update.:"
+            query = update.callback_query
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
             await query.answer()
             telegram_app.bot_data[f"last_admin_message_{user_id}"] = {
