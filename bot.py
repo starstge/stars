@@ -1400,17 +1400,24 @@ async def main():
             await asyncio.sleep(3600)
     except Exception as e:
         logger.error(f"Критическая ошибка в main: {e}", exc_info=True)
-        await telegram_app.bot.send_message(
-            chat_id=ADMIN_BACKUP_ID,
-            text=f"⚠️ Критическая ошибка бота: {str(e)}"
-        )
+        try:
+            await telegram_app.bot.send_message(
+                chat_id=ADMIN_BACKUP_ID,
+                text=f"⚠️ Критическая ошибка бота: {str(e)}"
+            )
+        except Exception as notify_error:
+            logger.error(f"Не удалось отправить уведомление об ошибке: {notify_error}")
         raise
     finally:
         await close_db_pool()
-        if telegram_app and telegram_app.updater:
-            await telegram_app.updater.stop()
-            await telegram_app.stop()
-            await telegram_app.shutdown()
+        if telegram_app:
+            try:
+                if telegram_app.updater and telegram_app.updater.running:
+                    await telegram_app.updater.stop()
+                await telegram_app.stop()
+                await telegram_app.shutdown()
+            except Exception as e:
+                logger.error(f"Ошибка при остановке бота: {e}", exc_info=True)
         logger.info("Бот остановлен")
 
 if __name__ == "__main__":
