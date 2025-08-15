@@ -1336,6 +1336,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
+    global tech_break_info  # Declare at the start of the function
     user_id = update.effective_user.id
     text = update.message.text.strip()
     state = context.user_data.get("state", STATE_MAIN_MENU)
@@ -1458,7 +1459,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     minutes = int(parts[0])
                     reason = parts[1]
                     end_time = datetime.now(pytz.UTC) + timedelta(minutes=minutes)
-                    global tech_break_info
                     tech_break_info = {"end_time": end_time, "reason": reason}
                     text = await get_text(
                         "tech_break_set",
@@ -1469,7 +1469,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text,
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
                     )
-                    await log_analytics(user_id, "set_tech_break", {"minutes":                     minutes, "reason": reason})
+                    await log_analytics(user_id, "set_tech_break", {"minutes": minutes, "reason": reason})
                     context.user_data["state"] = STATE_ADMIN_PANEL
                     return await show_admin_panel(update, context)
                 except ValueError:
