@@ -1469,4 +1469,174 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text,
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
                     )
-                    await log_analytics(user_id, "set_tech_break", {"minutes":
+                    await log_analytics(user_id, "set_tech_break", {"minutes":                     minutes, "reason": reason})
+                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    return await show_admin_panel(update, context)
+                except ValueError:
+                    await update.message.reply_text(
+                        "Пожалуйста, введите корректное число минут и причину через пробел (например: 60 Обновление сервера).",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                    )
+                    return STATES[STATE_TECH_BREAK]
+            elif state == STATE_BOT_SETTINGS:
+                if user_id != 6956377285:
+                    await update.message.reply_text("Доступ только для админов.")
+                    return context.user_data.get("state", STATES[STATE_ADMIN_PANEL])
+                setting_field = context.user_data.get("setting_field")
+                if not setting_field:
+                    await update.message.reply_text("Ошибка: поле для настройки не выбрано.")
+                    return STATES[STATE_BOT_SETTINGS]
+                try:
+                    value = float(text)
+                    if setting_field == "price_usd":
+                        if value <= 0:
+                            raise ValueError("Цена должна быть положительной.")
+                        global PRICE_USD_PER_50
+                        PRICE_USD_PER_50 = value
+                        await update.message.reply_text(
+                            f"Цена за 50 звезд установлена: ${value:.2f}",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        await log_analytics(user_id, "set_price_usd", {"price_usd": value})
+                    elif setting_field == "markup":
+                        if value < 0:
+                            raise ValueError("Процент накрутки не может быть отрицательным.")
+                        global MARKUP_PERCENTAGE
+                        MARKUP_PERCENTAGE = value
+                        await update.message.reply_text(
+                            f"Процент накрутки установлен: {value}%",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        await log_analytics(user_id, "set_markup", {"markup_percentage": value})
+                    elif setting_field == "ref_bonus":
+                        if value < 0 or value > 100:
+                            raise ValueError("Процент бонуса должен быть от 0 до 100.")
+                        global REFERRAL_BONUS_PERCENTAGE
+                        REFERRAL_BONUS_PERCENTAGE = value
+                        await update.message.reply_text(
+                            f"Процент реферального бонуса установлен: {value}%",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        await log_analytics(user_id, "set_ref_bonus", {"ref_bonus_percentage": value})
+                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    return await show_admin_panel(update, context)
+                except ValueError as e:
+                    await update.message.reply_text(
+                        f"Ошибка: {str(e)} Пожалуйста, введите корректное число.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                    )
+                    return STATES[STATE_BOT_SETTINGS]
+            elif state == STATE_ADMIN_EDIT_PROFILE and context.user_data.get("edit_user_id"):
+                edit_field = context.user_data.get("edit_profile_field")
+                target_user_id = context.user_data["edit_user_id"]
+                try:
+                    if edit_field == "stars_bought":
+                        stars = int(text)
+                        if stars < 0:
+                            raise ValueError("Количество звезд не может быть отрицательным.")
+                        await conn.execute(
+                            "UPDATE users SET stars_bought = $1 WHERE user_id = $2",
+                            stars, target_user_id
+                        )
+                        await update.message.reply_text(
+                            f"Количество звезд для пользователя {target_user_id} обновлено: {stars}",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        await log_analytics(user_id, "edit_profile_stars", {"target_user_id": target_user_id, "stars": stars})
+                    elif edit_field == "referrals":
+                        ref_ids = [int(x) for x in text.split(",") if x.strip().isdigit()]
+                        await conn.execute(
+                            "UPDATE users SET referrals = $1 WHERE user_id = $2",
+                            json.dumps(ref_ids), target_user_id
+                        )
+                        await update.message.reply_text(
+                            f"Рефералы для пользователя {target_user_id} обновлены: {ref_ids}",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        await log_analytics(user_id, "edit_profile_referrals", {"target_user_id": target_user_id, "referrals": ref_ids})
+                    elif edit_field == "ref_bonus_ton":
+                        bonus = float(text)
+                        if bonus < 0:
+                            raise ValueError("Бонус не может быть отрицательным.")
+                        await conn.execute(
+                            "UPDATE users SET ref_bonus_ton = $1 WHERE user_id = $2",
+                            bonus, target_user_id
+                        )
+                        await update.message.reply_text(
+                            f"Реферальный бонус для пользователя {target_user_id} обновлен: {bonus} TON",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        await log_analytics(user_id, "edit_profile_ref_bonus", {"target_user_id": target_user_id, "bonus": bonus})
+                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    return await show_admin_panel(update, context)
+                except ValueError as e:
+                    await update.message.reply_text(
+                        f"Ошибка: {str(e)} Пожалуйста, введите корректные данные.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                    )
+                    return STATES[STATE_ADMIN_EDIT_PROFILE]
+            else:
+                await update.message.reply_text("Пожалуйста, используйте меню.")
+                return STATES[STATE_MAIN_MENU]
+
+async def webhook_handler(request):
+    """Обработчик вебхука."""
+    try:
+        update = telegram.Update.de_json(await request.json(), telegram_app.bot)
+        await telegram_app.process_update(update)
+        return web.Response(status=200)
+    except Exception as e:
+        logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
+        ERRORS.labels(type="webhook", endpoint="webhook").inc()
+        return web.Response(status=500)
+
+async def main():
+    """Основная функция запуска бота."""
+    global telegram_app
+    try:
+        await check_environment()
+        await init_db()
+        telegram_app = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .build()
+        )
+        
+        # Инициализация планировщика
+        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
+        scheduler.add_job(heartbeat_check, 'interval', minutes=5, args=[telegram_app])
+        scheduler.add_job(update_ton_price, 'interval', minutes=30)
+        scheduler.add_job(keep_alive, 'interval', minutes=10, args=[telegram_app])
+        scheduler.add_job(check_reminders, 'interval', minutes=60)
+        scheduler.add_job(backup_db, 'interval', hours=24)
+        scheduler.start()
+        
+        # Регистрация обработчиков
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CommandHandler("tonprice", ton_price_command))
+        telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        
+        # Запуск вебхука
+        await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+        app = web.Application()
+        app.router.add_post("/webhook", webhook_handler)
+        
+        # Обновление меню для всех пользователей
+        await broadcast_new_menu()
+        
+        # Запуск сервера
+        logger.info(f"Starting webhook server on port {PORT}")
+        await web._run_app(app, host="0.0.0.0", port=PORT)
+        
+    except Exception as e:
+        logger.error(f"Ошибка запуска бота: {e}", exc_info=True)
+        ERRORS.labels(type="startup", endpoint="main").inc()
+        raise
+    
+    finally:
+        await close_db_pool()
+
+if __name__ == "__main__":
+    start_http_server(8000)  # Prometheus metrics server
+    asyncio.run(main())
