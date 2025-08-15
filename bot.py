@@ -1283,7 +1283,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await log_analytics(user_id, "invalid_text_input", {"state": state, "text": text})
             return STATES[state]
 
-async def init_telegram_app():
+async def init_telegram_app(_):
     """Инициализация приложения Telegram и выполнение стартовых задач."""
     global telegram_app
     logger.info("Инициализация приложения Telegram")
@@ -1515,7 +1515,7 @@ def main():
         app = web.Application()
         app.router.add_get("/", root_handler)
         app.router.add_post("/webhook", webhook_handler)
-        app.on_startup.append(init_telegram_app)  ### ФИКС: Инициализация telegram_app в on_startup
+        app.on_startup.append(init_telegram_app)  # Убедитесь, что функция соответствует сигнатуре
         app.on_shutdown.append(on_shutdown)
         logger.info("Веб-приложение настроено")
         
@@ -1527,6 +1527,6 @@ def main():
         logger.critical(f"Ошибка в main: {e}", exc_info=True)
         ERRORS.labels(type="main", endpoint="main").inc()
         raise
-
+    
 if __name__ == "__main__":
     main()
