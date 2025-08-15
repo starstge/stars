@@ -1088,7 +1088,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                                     "UPDATE users SET stars_bought = stars_bought + $1 WHERE user_id = $2",
                                     stars, user_id
                                 )
-                                # Награждение реферала (30% от прибыли в TON)
                                 ton_price = telegram_app.bot_data.get("ton_price_info", {"price": 0.0})["price"]
                                 if ton_price == 0.0:
                                     logger.warning(f"Цена TON не доступна, пропуск начисления реферального бонуса для user_id={user_id}")
@@ -1127,10 +1126,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                                 context.user_data["state"] = STATE_MAIN_MENU
                                 transaction_cache[payload] = True
                                 return STATES[STATE_MAIN_MENU]
-                            else:
-                                await query.message.reply_text("Оплата еще не подтверждена. Попробуйте снова.")
-                                await query.answer()
-                                return STATES[STATE_BUY_STARS_CONFIRM]
+                        else:
+                            await query.message.reply_text("Оплата еще не подтверждена. Попробуйте снова.")
+                            await query.answer()
+                            return STATES[STATE_BUY_STARS_CONFIRM]
                     else:
                         logger.error(f"Cryptobot API error: {response.status} - {await response.text()}")
                         await query.message.reply_text("Ошибка проверки оплаты. Попробуйте позже.")
