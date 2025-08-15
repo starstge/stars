@@ -231,33 +231,28 @@ async def close_db_pool():
             _db_pool = None
 
 async def get_text(key: str, **kwargs) -> str:
-    """Получение текста из базы данных и форматирование с параметрами."""
-    async with (await ensure_db_pool()) as conn:
-        # Проверяем, существует ли таблица texts
-        table_exists = await conn.fetchval(
-            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'texts')"
-        )
-        if not table_exists:
-            logger.warning(f"Таблица texts не существует")
-            return f"Текст для {key} не задан."
+    """Получение текста из статических шаблонов и форматирование с параметрами."""
+    # Статические шаблоны текстов
+    templates = {
+        "welcome": "Привет, {username}! Добро пожаловать в Stars Shop! 🎉 Ты купил {stars_bought} звезд.",
+        "referrals": "🤝 Твоя реферальная ссылка: {ref_link}\nРефералов: {ref_count}\nБонус: {ref_bonus_ton} TON",
+        "profile": "👤 Профиль:\nЗвезд куплено: {stars_bought}\nРефералов: {ref_count}\nРеферальный бонус: {ref_bonus_ton} TON",
+        "buy_success": "✅ Успешная покупка! {stars} звезд отправлено на {recipient}."
+    }
 
-        # Запрашиваем столбец value вместо text
-        text_row = await conn.fetchrow("SELECT value FROM texts WHERE key = $1", key)
-        if not text_row:
-            logger.warning(f"Текст с ключом {key} не найден в базе данных")
-            return f"Текст для {key} не задан."
-
-        text = text_row["value"]
+    # Получаем текст по ключу или возвращаем заглушку
+    text = templates.get(key, f"Текст для {key} не задан.")
+    
+    try:
+        return text.format(**kwargs)
+    except KeyError as e:
+        logger.error(f"Ошибка форматирования текста для ключа {key}: отсутствует параметр {e}")
+        # Пытаемся форматировать с доступными параметрами
+        default_kwargs = {k: v for k, v in kwargs.items() if k in text}
         try:
-            return text.format(**kwargs)
-        except KeyError as e:
-            logger.error(f"Ошибка форматирования текста для ключа {key}: отсутствует параметр {e}")
-            # Пытаемся форматировать с доступными параметрами
-            default_kwargs = {k: v for k, v in kwargs.items() if k in text}
-            try:
-                return text.format(**default_kwargs)
-            except KeyError:
-                return text  # Возвращаем неформатированный текст
+            return text.format(**default_kwargs)
+        except KeyError:
+            return text  # Возвращаем неформатированный текст
                 
 async def log_analytics(user_id: int, action: str, data: dict = None):
     """Логирование аналитики."""
