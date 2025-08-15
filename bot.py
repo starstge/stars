@@ -30,6 +30,7 @@ import hmac
 import hashlib
 import requests
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import telegram  ### ФИКС: Импорт для логирования версии библиотеки
 
 # Настройка логирования с ротацией
 logging.basicConfig(
@@ -249,6 +250,11 @@ async def log_analytics(user_id: int, action: str, data: dict = None):
 
 async def update_ton_price():
     """Обновление цены TON с использованием TonAPI."""
+    ### ФИКС: Проверка наличия TON_API_KEY
+    if not TON_API_KEY:
+        logger.error("TON_API_KEY не задан, пропуск обновления цены TON")
+        telegram_app.bot_data["ton_price_info"] = {"price": 0.0, "diff_24h": 0.0}
+        return
     try:
         headers = {"Authorization": f"Bearer {TON_API_KEY}"}
         url = "https://tonapi.io/v2/rates?tokens=ton&currencies=usd"
@@ -272,6 +278,7 @@ async def update_ton_price():
     except Exception as e:
         logger.error(f"Ошибка получения цены TON: {e}", exc_info=True)
         ERRORS.labels(type="api", endpoint="update_ton_price").inc()
+        telegram_app.bot_data["ton_price_info"] = {"price": 0.0, "diff_24h": 0.0}
 
 async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /tonprice."""
@@ -313,6 +320,10 @@ async def verify_payload(payload, signature):
 
 async def create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipient, payload):
     """Создание инвойса в Cryptobot."""
+    ### ФИКС: Проверка наличия CRYPTOBOT_API_TOKEN
+    if not CRYPTOBOT_API_TOKEN:
+        logger.error("CRYPTOBOT_API_TOKEN не задан")
+        return None, None
     async with aiohttp.ClientSession(timeout=ClientTimeout(total=30)) as session:
         for attempt in range(3):
             try:
@@ -339,7 +350,17 @@ async def create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipie
 
 async def check_environment():
     """Проверка переменных окружения."""
-    required_vars = ["BOT_TOKEN", "POSTGRES_URL", "SPLIT_API_TOKEN", "PROVIDER_TOKEN", "OWNER_WALLET", "WEBHOOK_URL"]
+    ### ФИКС: Добавлены CRYPTOBOT_API_TOKEN и TON_API_KEY как обязательные
+    required_vars = [
+        "BOT_TOKEN",
+        "POSTGRES_URL",
+        "SPLIT_API_TOKEN",
+        "PROVIDER_TOKEN",
+        "OWNER_WALLET",
+        "WEBHOOK_URL",
+        "CRYPTOBOT_API_TOKEN",
+        "TON_API_KEY"
+    ]
     missing_vars = []
     for var in required_vars:
         value = os.getenv(var)
@@ -372,6 +393,9 @@ async def check_webhook():
             logger.info(f"Webhook reset to {WEBHOOK_URL}/webhook")
         if webhook_info.pending_update_count > 0:
             logger.warning(f"Pending updates: {webhook_info.pending_update_count}")
+            await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+            await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+            logger.info("Pending updates cleared and webhook reset")
     except Exception as e:
         logger.error(f"Ошибка проверки вебхука: {e}", exc_info=True)
         ERRORS.labels(type="webhook", endpoint="check_webhook").inc()
@@ -415,7 +439,8 @@ async def keep_alive(app):
         ERRORS.labels(type="telegram_api", endpoint="keep_alive").inc()
 
 async def backup_db():
-    """Создание бэкапа базы данных в формате JSON."""
+    """Создание бэкапа базы данных и отправка администратору."""
+    ### ФИКС: Отправка бэкапа через Telegram вместо записи в файл
     try:
         async with (await ensure_db_pool()) as conn:
             users = await conn.fetch("SELECT * FROM users")
@@ -439,12 +464,21 @@ async def backup_db():
                 ]
             }
             backup_file = f"db_backup_{datetime.now(pytz.UTC).strftime('%Y-%m-%d_%H-%M-%S')}.json"
-            with open(backup_file, 'w', encoding='utf-8') as f:
-                json.dump(backup_data, f, ensure_ascii=False, indent=2)
-            logger.info(f"Бэкап создан: {backup_file}")
+            # Сохраняем временно в строку вместо файла
+            backup_json = json.dumps(backup_data, ensure_ascii=False, indent=2)
+            # Отправляем JSON как документ администратору
+            from io import BytesIO
+            bio = BytesIO(backup_json.encode('utf-8'))
+            bio.name = backup_file
+            await telegram_app.bot.send_document(
+                chat_id=ADMIN_BACKUP_ID,
+                document=bio,
+                filename=backup_file
+            )
+            logger.info(f"Бэкап отправлен администратору: {backup_file}")
             return backup_file, backup_data
     except Exception as e:
-        logger.error(f"Ошибка создания бэкапа: {e}", exc_info=True)
+        logger.error(f"Ошибка создания/отправки бэкапа: {e}", exc_info=True)
         raise
 
 async def broadcast_new_menu():
@@ -732,11 +766,37 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     REQUESTS.labels(endpoint="callback_query").inc()
     with RESPONSE_TIME.labels(endpoint="callback_query").time():
         logger.info(f"Callback query received: user_id={user_id}, callback_data={data}, message_id={query.message.message_id}")
-        if data.isdigit():
+        ### ФИКС: Более строгая проверка числовых callback_data
+        if data and data.isdigit():
             logger.warning(f"Устаревший числовой callback_data: {data} для user_id={user_id}")
             await query.answer(text="Команда устарела. Пожалуйста, используйте новое меню.")
             await start(update, context)
             return STATES[STATE_MAIN_MENU]
+        ### ФИКС: Обработка set_amount_* для покупки звезд
+        if data.startswith("set_amount_"):
+            try:
+                stars = int(data.split("_")[2])
+                context.user_data["buy_data"] = context.user_data.get("buy_data", {})
+                context.user_data["buy_data"]["stars"] = stars
+                amount_usd = (stars / 50) * PRICE_USD_PER_50 * (1 + MARKUP_PERCENTAGE / 100)
+                context.user_data["buy_data"]["amount_usd"] = round(amount_usd, 2)
+                await query.message.reply_text(
+                    f"Вы выбрали {stars} звезд. Стоимость: ${amount_usd:.2f}",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("TON Space", callback_data=PAY_TON_SPACE)],
+                        [InlineKeyboardButton("Cryptobot (Crypto)", callback_data=PAY_CRYPTOBOT)],
+                        [InlineKeyboardButton("Cryptobot (Card)", callback_data=PAY_CARD)],
+                        [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                    ])
+                )
+                await query.answer()
+                await log_analytics(user_id, "set_amount", {"stars": stars, "amount_usd": amount_usd})
+                context.user_data["state"] = STATE_BUY_STARS_PAYMENT_METHOD
+                return STATES[STATE_BUY_STARS_PAYMENT_METHOD]
+            except ValueError:
+                await query.message.reply_text("Ошибка обработки количества звезд.")
+                await query.answer()
+                return STATES[STATE_BUY_STARS_AMOUNT]
         if data == BACK_TO_MENU:
             context.user_data.clear()
             context.user_data["state"] = STATE_MAIN_MENU
@@ -775,7 +835,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             async with (await ensure_db_pool()) as conn:
                 user = await conn.fetchrow("SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id)
                 ref_count = len(json.loads(user["referrals"])) if user["referrals"] else 0
-                ref_link = f"https://t.me/CheapStarsShop_bot?start=ref_{user_id}"
+                ref_link = f"https://t.me/CheapStarsShopBot?start=ref_{user_id}"  ### ФИКС: Исправлен префикс бота
                 text = await get_text("referrals", ref_count=ref_count, ref_bonus_ton=user["ref_bonus_ton"], ref_link=ref_link)
                 keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -801,9 +861,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 return context.user_data.get("state", STATES[STATE_ADMIN_PANEL])
             try:
                 backup_file, backup_data = await backup_db()
-                with open(backup_file, 'rb') as f:
-                    await query.message.reply_document(document=f, filename=backup_file)
-                await query.answer(text="Бэкап базы данных отправлен.")
+                await query.answer(text="Бэкап базы данных отправлен администратору.")
                 await log_analytics(user_id, "copy_db")
                 context.user_data["state"] = STATE_ADMIN_PANEL
                 return await show_admin_panel(update, context)
@@ -1229,8 +1287,10 @@ async def init_telegram_app():
     """Инициализация приложения Telegram и выполнение стартовых задач."""
     global telegram_app
     logger.info("Инициализация приложения Telegram")
-    
     try:
+        ### ФИКС: Логирование версии python-telegram-bot
+        logger.info(f"Версия python-telegram-bot: {telegram.__version__}")
+        
         telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
         logger.info("ApplicationBuilder инициализирован")
         
@@ -1286,19 +1346,19 @@ async def init_telegram_app():
         await telegram_app.initialize()
         logger.info("telegram_app инициализирован")
         
+        # Запуск приложения перед установкой вебхука
+        await telegram_app.start()
+        logger.info("telegram_app запущен")
+        
         # Выполнение стартовых задач
         await on_startup(None)
         logger.info("Стартовые задачи завершены")
-        
-        # Запуск Application для обработки обновлений
-        await telegram_app.start()
-        logger.info("telegram_app запущен")
         
         return telegram_app
     except Exception as e:
         logger.critical(f"Ошибка при инициализации telegram_app: {e}", exc_info=True)
         raise
-        
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок."""
     logger.error(f"Update {update} caused error {context.error}", exc_info=True)
@@ -1331,95 +1391,142 @@ async def root_handler(request: web.Request):
 async def webhook_handler(request: web.Request):
     """Обработчик вебхука."""
     logger.debug(f"Webhook handler received: method={request.method}, path={request.path}")
-    if telegram_app is None or not telegram_app._initialized:
-        logger.error(f"Application не инициализирован: telegram_app={telegram_app}, initialized={telegram_app._initialized if telegram_app else None}")
-        return web.Response(status=503, text="Application not initialized")
+    ### ФИКС: Усиленное логирование для диагностики
     try:
-        data = await request.json()
-        logger.info(f"Webhook update received: {json.dumps(data, ensure_ascii=False)}")
-        update = Update.de_json(data, telegram_app.bot)
-        if update is None:
-            logger.error("Не удалось разобрать обновление из данных вебхука")
-            return web.Response(status=400, text="Invalid update data")
-        logger.info(f"Обработка обновления: update_id={update.update_id}, type={update.to_dict().get('message') or update.to_dict().get('callback_query')}")
-        await telegram_app.process_update(update)
-        logger.info("Обновление вебхука успешно обработано")
-        return web.Response(status=200)
+        if request.method != "POST":
+            logger.warning(f"Неподдерживаемый метод в вебхуке: {request.method}")
+            return web.Response(status=405, text="Method Not Allowed")
+        
+        # Логируем тело запроса для диагностики
+        content_type = request.headers.get("content-type", "")
+        logger.debug(f"Content-Type: {content_type}")
+        body = await request.read()
+        logger.debug(f"Webhook raw body: {body[:1000]}")  # Ограничение для избежания огромных логов
+        
+        # Проверяем, что тело запроса не пустое
+        if not body:
+            logger.error("Пустое тело запроса в вебхуке")
+            return web.Response(status=400, text="Empty request body")
+        
+        # Парсим JSON
+        try:
+            update = await request.json()
+            logger.debug(f"Parsed webhook update: {update}")
+        except ValueError as e:
+            logger.error(f"Ошибка парсинга JSON в вебхуке: {e}")
+            return web.Response(status=400, text="Invalid JSON")
+        
+        # Проверяем, что telegram_app инициализирован
+        if telegram_app is None:
+            logger.critical("telegram_app не инициализирован в webhook_handler")
+            return web.Response(status=500, text="Bot not initialized")
+        
+        # Обрабатываем обновление
+        update_obj = Update.de_json(update, telegram_app.bot)
+        if update_obj is None:
+            logger.error("Не удалось десериализовать Update")
+            return web.Response(status=400, text="Invalid update")
+        
+        logger.info(f"Обработка обновления: update_id={update_obj.update_id}")
+        await telegram_app.process_update(update_obj)
+        logger.debug(f"Обновление обработано: update_id={update_obj.update_id}")
+        return web.Response(status=200, text="OK")
     except Exception as e:
-        logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
-        return web.Response(status=500, text="Internal Server Error")
+        logger.error(f"Ошибка в webhook_handler: {e}", exc_info=True)
+        ERRORS.labels(type="webhook", endpoint="webhook_handler").inc()
+        return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
 
 async def on_startup(_):
-    """Инициализация приложения при старте."""
-    logger.info("Запуск on_startup")
+    """Задачи при запуске приложения."""
     try:
+        ### ФИКС: Проверка переменных окружения в начале
         await check_environment()
-        logger.info("Проверка переменных окружения пройдена")
+        logger.info("Переменные окружения проверены")
+        
+        ### ФИКС: Инициализация базы данных
         await init_db()
         logger.info("База данных инициализирована")
+        
+        ### ФИКС: Проверка подключения к базе данных
         await test_db_connection()
-        logger.info("Подключение к базе данных проверено")
+        
+        ### ФИКС: Проверка и установка вебхука
+        await check_webhook()
+        
+        ### ФИКС: Обновление цены TON
         await update_ton_price()
-        logger.info("Цена TON обновлена")
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        logger.info(f"Установка вебхука: {webhook_url}")
-        # Очистка накопленных обновлений
-        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Накопленные обновления очищены")
-        await telegram_app.bot.set_webhook(webhook_url)
-        webhook_info = await telegram_app.bot.get_webhook_info()
-        logger.info(f"Вебхук установлен: {webhook_url}, pending_updates={webhook_info.pending_update_count}")
-        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
-        scheduler.add_job(update_ton_price, 'interval', minutes=5)
-        scheduler.add_job(heartbeat_check, 'interval', minutes=10, args=[telegram_app])
-        scheduler.add_job(keep_alive, 'interval', minutes=15, args=[telegram_app])
-        scheduler.add_job(backup_db, 'interval', hours=24)
+        
+        # Запуск планировщика задач
+        scheduler = AsyncIOScheduler(timezone="UTC")
+        scheduler.add_job(backup_db, "interval", hours=24)
+        scheduler.add_job(update_ton_price, "interval", minutes=30)
+        scheduler.add_job(heartbeat_check, "interval", minutes=5, args=[telegram_app])
+        scheduler.add_job(keep_alive, "interval", minutes=15, args=[telegram_app])
         scheduler.start()
-        telegram_app.bot_data["scheduler"] = scheduler
         logger.info("Планировщик задач запущен")
+        
+        # Отправка уведомления администратору
+        try:
+            await telegram_app.bot.send_message(
+                chat_id=ADMIN_BACKUP_ID,
+                text="🚀 Бот успешно запущен!"
+            )
+            logger.info("Уведомление о запуске отправлено администратору")
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления о запуске: {e}")
+            ERRORS.labels(type="telegram_api", endpoint="on_startup").inc()
+            
     except Exception as e:
-        logger.critical(f"Ошибка в on_startup: {e}", exc_info=True)
+        logger.critical(f"Ошибка при запуске приложения: {e}", exc_info=True)
         raise
 
 async def on_shutdown(_):
-    """Очистка при завершении работы."""
-    logger.info("Запуск on_shutdown")
+    """Задачи при остановке приложения."""
     try:
+        await close_db_pool()
+        logger.info("Пул базы данных закрыт")
+        
         if telegram_app is not None:
-            scheduler = telegram_app.bot_data.get("scheduler")
-            if scheduler:
-                scheduler.shutdown()
-                logger.info("Планировщик задач остановлен")
             await telegram_app.stop()
-            logger.info("telegram_app остановлен")
             await telegram_app.shutdown()
-            logger.info("telegram_app завершен")
+            logger.info("telegram_app остановлен и выключен")
+            
+        try:
+            await telegram_app.bot.send_message(
+                chat_id=ADMIN_BACKUP_ID,
+                text="🛑 Бот остановлен."
+            )
+            logger.info("Уведомление об остановке отправлено администратору")
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления об остановке: {e}")
+            
     except Exception as e:
-        logger.error(f"Ошибка в on_shutdown: {e}", exc_info=True)
+        logger.error(f"Ошибка при остановке приложения: {e}", exc_info=True)
+        ERRORS.labels(type="shutdown", endpoint="on_shutdown").inc()
 
 def main():
-    """Главная функция для запуска бота."""
-    logger.info("Запуск main")
+    """Основная функция запуска бота."""
     try:
-        # Выполнение асинхронной инициализации
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(init_telegram_app())
-
-        # Настройка веб-приложения
-        web_app = web.Application()
-        web_app.router.add_get("/", root_handler)  # Обрабатывает GET и HEAD
-        web_app.router.add_post("/webhook", webhook_handler)
-        web_app.on_shutdown.append(on_shutdown)
+        # Запуск Prometheus сервера
+        start_http_server(8000)
+        logger.info("Prometheus сервер запущен на порту 8000")
+        
+        # Создание веб-приложения
+        app = web.Application()
+        app.router.add_get("/", root_handler)
+        app.router.add_post("/webhook", webhook_handler)
+        app.on_startup.append(init_telegram_app)  ### ФИКС: Инициализация telegram_app в on_startup
+        app.on_shutdown.append(on_shutdown)
         logger.info("Веб-приложение настроено")
-        logger.info(f"Запуск веб-сервера на порту {PORT}")
-        web.run_app(web_app, host="0.0.0.0", port=PORT)
+        
+        # Запуск веб-приложения
+        web.run_app(app, host="0.0.0.0", port=PORT)
+        logger.info(f"Веб-приложение запущено на порту {PORT}")
+        
     except Exception as e:
-        logger.critical(f"Критическая ошибка в main: {e}", exc_info=True)
+        logger.critical(f"Ошибка в main: {e}", exc_info=True)
+        ERRORS.labels(type="main", endpoint="main").inc()
         raise
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.critical(f"Критическая ошибка в main: {e}", exc_info=True)
-        raise
+    main()
