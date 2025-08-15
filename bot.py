@@ -403,15 +403,29 @@ async def heartbeat_check(app):
         await check_webhook()
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=30)) as session:
             headers = {"Authorization": f"Bearer {TON_API_KEY}"}
-            async with session.get("https://tonapi.io/v2/status", headers=headers) as resp:
-                if resp.status != 200:
-                    logger.warning(f"TON API health check failed: {resp.status}")
-                    ERRORS.labels(type="api", endpoint="ton_health").inc()
-            if CRYPTOBOT_API_TOKEN:
-                async with session.get(CRYPTOBOT_API_URL + "/getMe", headers={"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN}) as resp:
+            try:
+                async with session.get("https://tonapi.io/v2/status", headers=headers) as resp:
                     if resp.status != 200:
-                        logger.warning(f"Cryptobot API health check failed: {resp.status}")
-                        ERRORS.labels(type="api", endpoint="cryptobot_health").inc()
+                        logger.warning(f"TON API health check failed: {resp.status}")
+                        ERRORS.labels(type="api", endpoint="ton_health").inc()
+            except asyncio.exceptions.CancelledError as e:
+                logger.error(f"CancelledError in TON API health check: {e}", exc_info=True)
+                ERRORS.labels(type="cancelled", endpoint="ton_health").inc()
+            except Exception as e:
+                logger.error(f"Ошибка проверки TON API: {e}", exc_info=True)
+                ERRORS.labels(type="api", endpoint="ton_health").inc()
+            if CRYPTOBOT_API_TOKEN:
+                try:
+                    async with session.get(CRYPTOBOT_API_URL + "/getMe", headers={"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN}) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"Cryptobot API health check failed: {resp.status}")
+                            ERRORS.labels(type="api", endpoint="cryptobot_health").inc()
+                except asyncio.exceptions.CancelledError as e:
+                    logger.error(f"CancelledError in Cryptobot API health check: {e}", exc_info=True)
+                    ERRORS.labels(type="cancelled", endpoint="cryptobot_health").inc()
+                except Exception as e:
+                    logger.error(f"Ошибка проверки Cryptobot API: {e}", exc_info=True)
+                    ERRORS.labels(type="api", endpoint="cryptobot_health").inc()
         logger.info("Heartbeat check passed")
     except Exception as e:
         logger.error(f"Heartbeat check failed: {e}", exc_info=True)
@@ -932,7 +946,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
                 await query.answer()
-                telegram_app.bot_data[f"last_message_{user_id}"] = {
+                telegram_app.bot_data[f"last_ckage {user_id}"] = {
                     "chat_id": query.message.chat_id,
                     "message_id": query.message.message_id
                 }
@@ -1382,6 +1396,7 @@ async def main():
                 return web.Response(status=500)
         app = web.Application()
         app.router.add_post("/webhook", webhook_handler)
+        await telegram_app.bot.delete_webhook(drop_pending_updates=True)  # Clear any existing webhook
         await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
         runner = web.AppRunner(app)
         await runner.setup()
@@ -1390,12 +1405,6 @@ async def main():
         logger.info(f"Бот запущен на порту {PORT}, Webhook: {WEBHOOK_URL}/webhook")
         await telegram_app.initialize()
         await telegram_app.start()
-        await telegram_app.updater.start_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path="/webhook",
-            webhook_url=f"{WEBHOOK_URL}/webhook"
-        )
         while True:
             await asyncio.sleep(3600)
     except Exception as e:
