@@ -568,96 +568,92 @@ async def broadcast_message_to_users(message: str):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start."""
-    REQUESTS.labels(endpoint="start").inc()
-    with RESPONSE_TIME.labels(endpoint="start").time():
-        user_id = update.effective_user.id
-        username = update.effective_user.username or f"User_{user_id}"
-        logger.info(f"Вызов /start для user_id={user_id}, message={update.message.text if update.message else 'No message'}")
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "Unknown"
+    chat_id = update.effective_chat.id
+    logger.info(f"Вызов /start для user_id={user_id}, message={update.message.text}")
+    
+    # Проверяем, есть ли реферальный параметр
+    args = context.args
+    referrer_id = None
+    if args and args[0].startswith("ref_"):
         try:
-            async with (await ensure_db_pool()) as conn:
-                ref_id = None
-                if update.message and update.message.text.startswith("/start ref_"):
-                    try:
-                        ref_id = int(update.message.text.split("ref_")[1])
-                        referrer_exists = await conn.fetchval(
-                            "SELECT EXISTS(SELECT 1 FROM users WHERE user_id = $1)", ref_id
-                        )
-                        if referrer_exists and ref_id != user_id:
-                            user_refs = await conn.fetchval(
-                                "SELECT referrals FROM users WHERE user_id = $1", ref_id
-                            )
-                            user_refs = json.loads(user_refs) if user_refs else []
-                            if user_id not in user_refs:
-                                user_refs.append(user_id)
-                                await conn.execute(
-                                    "UPDATE users SET referrals = $1 WHERE user_id = $2",
-                                    json.dumps(user_refs), ref_id
-                                )
-                                logger.info(f"Добавлен реферал user_id={user_id} для referrer_id={ref_id}")
-                                await log_analytics(user_id, "referred", {"referrer_id": ref_id})
-                    except (ValueError, IndexError):
-                        logger.warning(f"Некорректная реферальная ссылка: {update.message.text}")
-                        ref_id = None
-
-                await conn.execute(
-                    """
-                    INSERT INTO users (user_id, username, stars_bought, ref_bonus_ton, referrals, is_new, is_admin)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        username = $2,
-                        is_admin = COALESCE(users.is_admin, $7)
-                    """,
-                    user_id, username, 0, 0.0, json.dumps([]), True, user_id == 6956377285
-                )
-                total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
-                user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
-                text = await get_text("welcome", stars_sold=total_stars, stars_bought=user_stars)
-                keyboard = [
-                    [
-                        InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
-                        InlineKeyboardButton("🛠 Поддержка и отзывы", url=SUPPORT_CHANNEL)
-                    ],
-                    [InlineKeyboardButton("👤 Профиль", callback_data=PROFILE), InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)],
-                    [InlineKeyboardButton("💸 Купить звезды", callback_data=BUY_STARS)]
-                ]
-                if user_id == 6956377285:
-                    keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                context.user_data.clear()
-                context.user_data["last_start_message"] = {"text": text, "reply_markup": reply_markup.to_dict()}
-                try:
-                    if update.callback_query:
-                        query = update.callback_query
-                        await query.edit_message_text(text, reply_markup=reply_markup)
-                        await query.answer()
-                        telegram_app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": query.message.chat_id,
-                            "message_id": query.message.message_id
-                        }
-                    else:
-                        sent_message = await update.message.reply_text(text, reply_markup=reply_markup)
-                        telegram_app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
-                except BadRequest as e:
-                    if "Message is not modified" not in str(e):
-                        logger.error(f"Ошибка отправки сообщения: {e}")
-                        ERRORS.labels(type="telegram_api", endpoint="start").inc()
-                        sent_message = await update.message.reply_text(text, reply_markup=reply_markup)
-                        telegram_app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
-                await log_analytics(user_id, "start", {"referrer_id": ref_id} if ref_id else None)
-                context.user_data["state"] = STATE_MAIN_MENU
-                logger.info(f"/start успешно обработан для user_id={user_id}")
-                return STATES[STATE_MAIN_MENU]
-        except Exception as e:
-            logger.error(f"Ошибка в start для user_id={user_id}: {e}", exc_info=True)
-            ERRORS.labels(type="start", endpoint="start").inc()
-            await update.message.reply_text("Произошла ошибка. Попробуйте снова или свяжитесь с поддержкой.")
-            return STATES[STATE_MAIN_MENU]
+            referrer_id = int(args[0].split("_")[1])
+            if referrer_id == user_id:
+                referrer_id = None  # Пользователь не может быть своим рефералом
+        except (IndexError, ValueError):
+            logger.warning(f"Некорректный реферальный параметр: {args[0]}")
+    
+    # Инициализация пользователя в базе данных
+    async with (await ensure_db_pool()) as conn:
+        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+        if not user:
+            await conn.execute(
+                """
+                INSERT INTO users (user_id, username, stars_bought, ref_bonus_ton, referrals)
+                VALUES ($1, $2, 0, 0.0, '[]')
+                """,
+                user_id, username
+            )
+            logger.info(f"Создан новый пользователь: user_id={user_id}, username={username}")
+        
+        # Добавляем реферала, если есть реферер
+        if referrer_id:
+            referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", referrer_id)
+            if referrer:
+                referrals = json.loads(referrer["referrals"]) if referrer["referrals"] else []
+                if user_id not in referrals:
+                    referrals.append(user_id)
+                    await conn.execute(
+                        "UPDATE users SET referrals = $1 WHERE user_id = $2",
+                        json.dumps(referrals), referrer_id
+                    )
+                    logger.info(f"Добавлен реферал user_id={user_id} для referrer_id={referrer_id}")
+                    # Начисление бонуса рефереру (пример: 0.1 TON за реферала)
+                    await conn.execute(
+                        "UPDATE users SET ref_bonus_ton = ref_bonus_ton + 0.1 WHERE user_id = $1",
+                        referrer_id
+                    )
+    
+    # Формируем приветственное сообщение
+    text = await get_text("welcome", user_id=user_id, username=username)
+    keyboard = [
+        [
+            InlineKeyboardButton("📰 Новости", url="https://t.me/CheapStarsShopNews"),
+            InlineKeyboardButton("📞 Поддержка", url="https://t.me/CheapStarsSupport")
+        ],
+        [
+            InlineKeyboardButton("👤 Профиль", callback_data=PROFILE),
+            InlineKeyboardButton("🤝 Рефералы", callback_data=REFERRALS)
+        ],
+        [InlineKeyboardButton("🛒 Купить звезды", callback_data=BUY_STARS)]
+    ]
+    if user_id == 6956377285:  # Админ-панель для главного админа
+        keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
+    
+    # Отправляем или редактируем сообщение
+    try:
+        last_message = telegram_app.bot_data.get(f"last_message_{user_id}")
+        if last_message:
+            await telegram_app.bot.edit_message_text(
+                text=text,
+                chat_id=last_message["chat_id"],
+                message_id=last_message["message_id"],
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    except BadRequest:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    telegram_app.bot_data[f"last_message_{user_id}"] = {
+        "chat_id": chat_id,
+        "message_id": update.message.message_id + 1 if update.message else None
+    }
+    await log_analytics(user_id, "start", {"referrer_id": referrer_id})
+    context.user_data["state"] = STATE_MAIN_MENU
+    logger.info(f"/start успешно обработан для user_id={user_id}")
+    return STATES[STATE_MAIN_MENU]
 
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать админ-панель."""
@@ -820,7 +816,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         InlineKeyboardButton("📈 Топ рефералов", callback_data=STATE_TOP_REFERRALS),
                         InlineKeyboardButton("🛒 Топ покупок", callback_data=STATE_TOP_PURCHASES)
                     ],
-                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]  ### ФИКС: Изменено на BACK_TO_MENU
+                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
                 ]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
                 await query.answer()
@@ -835,7 +831,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             async with (await ensure_db_pool()) as conn:
                 user = await conn.fetchrow("SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id)
                 ref_count = len(json.loads(user["referrals"])) if user["referrals"] else 0
-                ref_link = f"https://t.me/CheapStarsShopBot?start=ref_{user_id}"
+                ref_link = f"https://t.me/CheapStarsShop_bot?start=ref_{user_id}"  ### ФИКС: Исправлено на @CheapStarsShop_bot
                 text = await get_text("referrals", ref_count=ref_count, ref_bonus_ton=user["ref_bonus_ton"], ref_link=ref_link)
                 keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -926,7 +922,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 for i, user in enumerate(users, 1):
                     ref_count = len(json.loads(user["referrals"])) if user["referrals"] != '[]' else 0
                     text += f"{i}. @{user['username'] or 'Unknown'}: {ref_count} рефералов\n"
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]  ### ФИКС: Изменено на BACK_TO_MENU
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
                 await query.answer()
                 telegram_app.bot_data[f"last_message_{user_id}"] = {
@@ -944,7 +940,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     text += "Нет данных о покупках."
                 for i, user in enumerate(users, 1):
                     text += f"{i}. @{user['username'] or 'Unknown'}: {user['stars_bought']} звезд\n"
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]  ### ФИКС: Изменено на BACK_TO_MENU
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
                 await query.answer()
                 telegram_app.bot_data[f"last_message_{user_id}"] = {
