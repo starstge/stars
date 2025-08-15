@@ -350,6 +350,24 @@ async def generate_payload(user_id):
     signature = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{signature}"
 
+def format_time_remaining(end_time):
+    """Format the time remaining until end_time in days, hours, and minutes."""
+    now = datetime.now(pytz.UTC)
+    if end_time <= now:
+        return "Технический перерыв завершён."
+    delta = end_time - now
+    days = delta.days
+    hours = delta.seconds // 3600
+    minutes = (delta.seconds % 3600) // 60
+    parts = []
+    if days > 0:
+        parts.append(f"{days} дн.")
+    if hours > 0:
+        parts.append(f"{hours} ч.")
+    if minutes > 0 or (days == 0 and hours == 0):
+        parts.append(f"{minutes} мин.")
+    return " ".join(parts) if parts else "менее минуты"
+
 async def verify_payload(payload, signature):
     """Проверка подписи payload."""
     secret = os.getenv("BOT_TOKEN").encode()
@@ -662,28 +680,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text if update.message else "CallbackQuery: back_to_menu"
     logger.info(f"Вызов /start для user_id={user_id}, message={message_text}")
     
-    if tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
-        minutes_left = int((tech_break_info["end_time"] - datetime.now(pytz.UTC)).total_seconds() / 60)
-        text = await get_text(
-            "tech_break_active",
-            end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-            minutes_left=minutes_left,
-            reason=tech_break_info["reason"]
-        )
-        await update.message.reply_text(text)
-        return STATES[STATE_MAIN_MENU]
-    
-    args = context.args
-    referrer_id = None
-    if args and args[0].startswith("ref_"):
-        try:
-            referrer_id = int(args[0].split("_")[1])
-            if referrer_id == user_id:
-                referrer_id = None
-        except (IndexError, ValueError):
-            logger.warning(f"Некорректный реферальный параметр: {args[0]}")
-    
     async with (await ensure_db_pool()) as conn:
+        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
+        # Skip technical break check for admin
+        if not is_admin and tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
+            time_remaining = format_time_remaining(tech_break_info["end_time"])
+            text = await get_text(
+                "tech_break_active",
+                end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
+                minutes_left=time_remaining,  # Use formatted time
+                reason=tech_break_info["reason"]
+            )
+            await update.message.reply_text(text)
+            return STATES[STATE_MAIN_MENU]
+        
+        # Register user if not exists
         user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
         if not user:
             await conn.execute(
@@ -698,6 +709,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             stars_bought = user["stars_bought"]
         total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+        
+        args = context.args
+        referrer_id = None
+        if args and args[0].startswith("ref_"):
+            try:
+                referrer_id = int(args[0].split("_")[1])
+                if referrer_id == user_id:
+                    referrer_id = None
+            except (IndexError, ValueError):
+                logger.warning(f"Некорректный реферальный параметр: {args[0]}")
         
         if referrer_id:
             referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", referrer_id)
@@ -724,7 +745,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [
-            InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
+            InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
             InlineKeyboardButton("📞 Поддержка и Отзывы", url="https://t.me/CheapStarsShop_support")
         ],
         [
@@ -733,7 +754,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [InlineKeyboardButton("🛒 Купить звезды", callback_data=BUY_STARS)]
     ]
-    if user_id == 6956377285:
+    if is_admin:
         keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data=ADMIN_PANEL)])
     
     try:
@@ -1377,12 +1398,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Message received: user_id={user_id}, text={text}, state={state}")
         async with (await ensure_db_pool()) as conn:
             is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
+            # Skip technical break check for admin
             if not is_admin and tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
-                minutes_left = int((tech_break_info["end_time"] - datetime.now(pytz.UTC)).total_seconds() / 60)
+                time_remaining = format_time_remaining(tech_break_info["end_time"])
                 text = await get_text(
                     "tech_break_active",
                     end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                    minutes_left=minutes_left,
+                    minutes_left=time_remaining,  # Use formatted time
                     reason=tech_break_info["reason"]
                 )
                 await update.message.reply_text(text)
@@ -1452,9 +1474,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 edit_field = context.user_data.get("edit_profile_field")
                 target_user_id = context.user_data.get("edit_user_id")
                 logger.info(f"Editing profile: target_user_id={target_user_id}, edit_field={edit_field}, input={text}")
-                # Verify user still exists in database
                 user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
                 if not user:
+                    logger.error(f"User {target_user_id} not found during field update")
                     await update.message.reply_text(
                         f"Пользователь {target_user_id} не найден в базе данных.",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
@@ -1493,7 +1515,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if bonus < 0:
                             raise ValueError("Бонус не может быть отрицательным.")
                         await conn.execute(
-                            "UPDATE users SET ref_bonus_ton = $1 WHERE user_id = $2",
+                            "UPDATE users SET ref_bonus_ton = $1 WHERE user_id = $1",
                             bonus, target_user_id
                         )
                         await update.message.reply_text(
@@ -1700,8 +1722,8 @@ async def main():
         telegram_app.add_handler(CommandHandler("tonprice", ton_price_command, filters=filters.COMMAND))
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))  # Debug handler for all updates
-        telegram_app.add_error_handler(error_handler)  # Error handler
+        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
+        telegram_app.add_error_handler(error_handler)
         logger.info("Handlers registered")
         
         # Запуск вебхука
@@ -1735,7 +1757,7 @@ async def main():
             logger.info("Telegram Application stopped and shut down")
         await close_db_pool()
         logger.info("Database pool closed")
-
+    
 if __name__ == "__main__":
     start_http_server(8000)  # Prometheus metrics server
     asyncio.run(main())
