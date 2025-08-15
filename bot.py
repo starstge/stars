@@ -440,7 +440,6 @@ async def keep_alive(app):
 
 async def backup_db():
     """Создание бэкапа базы данных и отправка администратору."""
-    ### ФИКС: Отправка бэкапа через Telegram вместо записи в файл
     try:
         async with (await ensure_db_pool()) as conn:
             users = await conn.fetch("SELECT * FROM users")
@@ -479,6 +478,7 @@ async def backup_db():
             return backup_file, backup_data
     except Exception as e:
         logger.error(f"Ошибка создания/отправки бэкапа: {e}", exc_info=True)
+        ERRORS.labels(type="backup", endpoint="backup_db").inc()
         raise
 
 async def broadcast_new_menu():
@@ -820,7 +820,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         InlineKeyboardButton("📈 Топ рефералов", callback_data=STATE_TOP_REFERRALS),
                         InlineKeyboardButton("🛒 Топ покупок", callback_data=STATE_TOP_PURCHASES)
                     ],
-                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]  ### ФИКС: Изменено на BACK_TO_MENU
                 ]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
                 await query.answer()
@@ -835,7 +835,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             async with (await ensure_db_pool()) as conn:
                 user = await conn.fetchrow("SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id)
                 ref_count = len(json.loads(user["referrals"])) if user["referrals"] else 0
-                ref_link = f"https://t.me/CheapStarsShopBot?start=ref_{user_id}"  ### ФИКС: Исправлен префикс бота
+                ref_link = f"https://t.me/CheapStarsShopBot?start=ref_{user_id}"
                 text = await get_text("referrals", ref_count=ref_count, ref_bonus_ton=user["ref_bonus_ton"], ref_link=ref_link)
                 keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -926,7 +926,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 for i, user in enumerate(users, 1):
                     ref_count = len(json.loads(user["referrals"])) if user["referrals"] != '[]' else 0
                     text += f"{i}. @{user['username'] or 'Unknown'}: {ref_count} рефералов\n"
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]  ### ФИКС: Изменено на BACK_TO_MENU
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
                 await query.answer()
                 telegram_app.bot_data[f"last_message_{user_id}"] = {
@@ -944,7 +944,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     text += "Нет данных о покупках."
                 for i, user in enumerate(users, 1):
                     text += f"{i}. @{user['username'] or 'Unknown'}: {user['stars_bought']} звезд\n"
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]  ### ФИКС: Изменено на BACK_TO_MENU
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
                 await query.answer()
                 telegram_app.bot_data[f"last_message_{user_id}"] = {
