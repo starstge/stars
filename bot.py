@@ -798,6 +798,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"/start успешно обработан для user_id={user_id}")
     return STATES[STATE_MAIN_MENU]
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок."""
+    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
+    ERRORS.labels(type="handler", endpoint="error").inc()
+    if update and update.effective_user:
+        await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
+        
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отображение админ-панели."""
     user_id = update.effective_user.id
