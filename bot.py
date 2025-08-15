@@ -15,11 +15,10 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ContextTypes,
-    ConversationHandler,
 )
 from telegram.error import BadRequest, TelegramError
 import asyncpg
-from datetime import datetime
+from datetime import datetime, timedelta  # Ensure timedelta is imported
 import pytz
 import random
 import string
@@ -656,6 +655,13 @@ async def broadcast_message_to_users(message: str):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start."""
+    global tech_break_info
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "Unknown"
+    chat_id = update.effective_chat.id
+    message_text = update.message.text if update.message else "CallbackQuery: back_to_menu"
+    logger.info(f"Вызов /start для user_id={user_id}, message={message_text}")
+    
     if tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
         minutes_left = int((tech_break_info["end_time"] - datetime.now(pytz.UTC)).total_seconds() / 60)
         text = await get_text(
@@ -665,12 +671,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reason=tech_break_info["reason"]
         )
         await update.message.reply_text(text)
-        return
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "Unknown"
-    chat_id = update.effective_chat.id
-    message_text = update.message.text if update.message else "CallbackQuery: back_to_menu"
-    logger.info(f"Вызов /start для user_id={user_id}, message={message_text}")
+        return STATES[STATE_MAIN_MENU]
     
     args = context.args
     referrer_id = None
@@ -723,8 +724,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [
-            InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
-            InlineKeyboardButton("📞 Поддержка и Отзывы", callback_data="support_reviews")
+            InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
+            InlineKeyboardButton("📞 Поддержка и Отзывы", url="https://t.me/CheapStarsShop_support")
         ],
         [
             InlineKeyboardButton("👤 Профиль", callback_data=PROFILE),
@@ -743,16 +744,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=text,
                 chat_id=last_message["chat_id"],
                 message_id=last_message["message_id"],
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
             )
         else:
             if update.message:
-                await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+                sent_message = await update.message.reply_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                telegram_app.bot_data[f"last_message_{user_id}"] = {
+                    "chat_id": sent_message.chat_id,
+                    "message_id": sent_message.message_id
+                }
             else:
                 sent_message = await telegram_app.bot.send_message(
                     chat_id=chat_id,
                     text=text,
-                    reply_markup=InlineKeyboardMarkup(keyboard)
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
                 )
                 telegram_app.bot_data[f"last_message_{user_id}"] = {
                     "chat_id": sent_message.chat_id,
@@ -761,22 +772,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except BadRequest as e:
         logger.warning(f"Не удалось отредактировать сообщение: {e}")
         if update.message:
-            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            sent_message = await update.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+            telegram_app.bot_data[f"last_message_{user_id}"] = {
+                "chat_id": sent_message.chat_id,
+                "message_id": sent_message.message_id
+            }
         else:
             sent_message = await telegram_app.bot.send_message(
                 chat_id=chat_id,
                 text=text,
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
             )
             telegram_app.bot_data[f"last_message_{user_id}"] = {
                 "chat_id": sent_message.chat_id,
                 "message_id": sent_message.message_id
             }
     
-    telegram_app.bot_data[f"last_message_{user_id}"] = {
-        "chat_id": chat_id,
-        "message_id": update.message.message_id + 1 if update.message else None
-    }
     await log_analytics(user_id, "start", {"referrer_id": referrer_id})
     context.user_data["state"] = STATE_MAIN_MENU
     logger.info(f"/start успешно обработан для user_id={user_id}")
@@ -1345,7 +1361,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
-    global tech_break_info  # Declare at the start of the function
+    global tech_break_info
     user_id = update.effective_user.id
     text = update.message.text.strip()
     state = context.user_data.get("state", STATE_MAIN_MENU)
@@ -1378,7 +1394,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data["state"] = STATE_BUY_STARS_AMOUNT
                 await log_analytics(user_id, "set_recipient", {"recipient": recipient})
                 return STATES[STATE_BUY_STARS_AMOUNT]
-            elif state == STATE_ADMIN_EDIT_PROFILE:
+            elif state == STATE_ADMIN_EDIT_PROFILE and not context.user_data.get("edit_user_id"):
                 if user_id != 6956377285:
                     await update.message.reply_text("Доступ только для админов.")
                     return context.user_data.get("state", STATES[STATE_ADMIN_PANEL])
@@ -1415,7 +1431,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode="HTML"
                     )
                     await log_analytics(user_id, "edit_profile_select_user", {"target_user_id": target_user_id})
-                    context.user_data["state"] = STATE_ADMIN_EDIT_PROFILE
                     return STATES[STATE_ADMIN_EDIT_PROFILE]
                 except ValueError:
                     await update.message.reply_text(
@@ -1424,6 +1439,74 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             [InlineKeyboardButton("📋 Все пользователи", callback_data=STATE_ALL_USERS)],
                             [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
                         ])
+                    )
+                    return STATES[STATE_ADMIN_EDIT_PROFILE]
+            elif state == STATE_ADMIN_EDIT_PROFILE and context.user_data.get("edit_user_id"):
+                edit_field = context.user_data.get("edit_profile_field")
+                target_user_id = context.user_data.get("edit_user_id")
+                logger.info(f"Editing profile: target_user_id={target_user_id}, edit_field={edit_field}, input={text}")
+                # Verify user still exists in database
+                user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
+                if not user:
+                    await update.message.reply_text(
+                        f"Пользователь {target_user_id} не найден в базе данных.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                    )
+                    context.user_data.pop("edit_user_id", None)
+                    context.user_data.pop("edit_profile_field", None)
+                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    return await show_admin_panel(update, context)
+                try:
+                    if edit_field == "stars_bought":
+                        stars = int(text)
+                        if stars < 0:
+                            raise ValueError("Количество звезд не может быть отрицательным.")
+                        await conn.execute(
+                            "UPDATE users SET stars_bought = $1 WHERE user_id = $2",
+                            stars, target_user_id
+                        )
+                        await update.message.reply_text(
+                            f"Количество звезд для пользователя {target_user_id} обновлено: {stars}",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        await log_analytics(user_id, "edit_profile_stars", {"target_user_id": target_user_id, "stars": stars})
+                    elif edit_field == "referrals":
+                        ref_ids = [int(x) for x in text.split(",") if x.strip().isdigit()]
+                        await conn.execute(
+                            "UPDATE users SET referrals = $1 WHERE user_id = $2",
+                            json.dumps(ref_ids), target_user_id
+                        )
+                        await update.message.reply_text(
+                            f"Рефералы для пользователя {target_user_id} обновлены: {ref_ids}",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        await log_analytics(user_id, "edit_profile_referrals", {"target_user_id": target_user_id, "referrals": ref_ids})
+                    elif edit_field == "ref_bonus_ton":
+                        bonus = float(text)
+                        if bonus < 0:
+                            raise ValueError("Бонус не может быть отрицательным.")
+                        await conn.execute(
+                            "UPDATE users SET ref_bonus_ton = $1 WHERE user_id = $2",
+                            bonus, target_user_id
+                        )
+                        await update.message.reply_text(
+                            f"Реферальный бонус для пользователя {target_user_id} обновлен: {bonus} TON",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        await log_analytics(user_id, "edit_profile_ref_bonus", {"target_user_id": target_user_id, "bonus": bonus})
+                    else:
+                        await update.message.reply_text(
+                            "Ошибка: поле для редактирования не выбрано. Пожалуйста, выберите поле через меню.",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                        )
+                        return STATES[STATE_ADMIN_EDIT_PROFILE]
+                    context.user_data.pop("edit_profile_field", None)
+                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    return await show_admin_panel(update, context)
+                except ValueError as e:
+                    await update.message.reply_text(
+                        f"Ошибка: {str(e)} Пожалуйста, введите корректные данные.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
                     )
                     return STATES[STATE_ADMIN_EDIT_PROFILE]
             elif state == STATE_ADMIN_BROADCAST:
@@ -1549,55 +1632,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
                     )
                     return STATES[STATE_BOT_SETTINGS]
-            elif state == STATE_ADMIN_EDIT_PROFILE and context.user_data.get("edit_user_id"):
-                edit_field = context.user_data.get("edit_profile_field")
-                target_user_id = context.user_data["edit_user_id"]
-                try:
-                    if edit_field == "stars_bought":
-                        stars = int(text)
-                        if stars < 0:
-                            raise ValueError("Количество звезд не может быть отрицательным.")
-                        await conn.execute(
-                            "UPDATE users SET stars_bought = $1 WHERE user_id = $2",
-                            stars, target_user_id
-                        )
-                        await update.message.reply_text(
-                            f"Количество звезд для пользователя {target_user_id} обновлено: {stars}",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-                        )
-                        await log_analytics(user_id, "edit_profile_stars", {"target_user_id": target_user_id, "stars": stars})
-                    elif edit_field == "referrals":
-                        ref_ids = [int(x) for x in text.split(",") if x.strip().isdigit()]
-                        await conn.execute(
-                            "UPDATE users SET referrals = $1 WHERE user_id = $2",
-                            json.dumps(ref_ids), target_user_id
-                        )
-                        await update.message.reply_text(
-                            f"Рефералы для пользователя {target_user_id} обновлены: {ref_ids}",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-                        )
-                        await log_analytics(user_id, "edit_profile_referrals", {"target_user_id": target_user_id, "referrals": ref_ids})
-                    elif edit_field == "ref_bonus_ton":
-                        bonus = float(text)
-                        if bonus < 0:
-                            raise ValueError("Бонус не может быть отрицательным.")
-                        await conn.execute(
-                            "UPDATE users SET ref_bonus_ton = $1 WHERE user_id = $2",
-                            bonus, target_user_id
-                        )
-                        await update.message.reply_text(
-                            f"Реферальный бонус для пользователя {target_user_id} обновлен: {bonus} TON",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-                        )
-                        await log_analytics(user_id, "edit_profile_ref_bonus", {"target_user_id": target_user_id, "bonus": bonus})
-                    context.user_data["state"] = STATE_ADMIN_PANEL
-                    return await show_admin_panel(update, context)
-                except ValueError as e:
-                    await update.message.reply_text(
-                        f"Ошибка: {str(e)} Пожалуйста, введите корректные данные.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-                    )
-                    return STATES[STATE_ADMIN_EDIT_PROFILE]
             else:
                 await update.message.reply_text("Пожалуйста, используйте меню.")
                 return STATES[STATE_MAIN_MENU]
@@ -1660,6 +1694,7 @@ async def main():
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))  # Debug handler for all updates
+        telegram_app.add_error_handler(error_handler)  # Error handler
         logger.info("Handlers registered")
         
         # Запуск вебхука
