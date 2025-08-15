@@ -1582,13 +1582,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def webhook_handler(request):
     """Обработчик вебхука."""
     try:
+        if telegram_app is None:
+            logger.error("telegram_app is None in webhook_handler")
+            return web.Response(status=500, text="Application not initialized")
         update = telegram.Update.de_json(await request.json(), telegram_app.bot)
+        if update is None:
+            logger.error("Failed to parse update from webhook")
+            return web.Response(status=400, text="Invalid update data")
         await telegram_app.process_update(update)
         return web.Response(status=200)
     except Exception as e:
         logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
         ERRORS.labels(type="webhook", endpoint="webhook").inc()
-        return web.Response(status=500)
+        return web.Response(status=500, text=str(e))
 
 async def main():
     """Основная функция запуска бота."""
@@ -1596,11 +1602,21 @@ async def main():
     try:
         await check_environment()
         await init_db()
+        
+        # Initialize the Application
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
             .build()
         )
+        
+        # Explicitly initialize the application
+        await telegram_app.initialize()
+        logger.info("Telegram Application initialized successfully")
+        
+        # Start the update queue and bot
+        await telegram_app.start()
+        logger.info("Telegram Application started")
         
         # Инициализация планировщика
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
@@ -1610,32 +1626,43 @@ async def main():
         scheduler.add_job(check_reminders, 'interval', minutes=60)
         scheduler.add_job(backup_db, 'interval', hours=24)
         scheduler.start()
+        logger.info("Scheduler started")
         
         # Регистрация обработчиков
         telegram_app.add_handler(CommandHandler("start", start))
         telegram_app.add_handler(CommandHandler("tonprice", ton_price_command))
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        logger.info("Handlers registered")
         
         # Запуск вебхука
-        await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        app = web.Application()
-        app.router.add_post("/webhook", webhook_handler)
-        
-        # Обновление меню для всех пользователей
-        await broadcast_new_menu()
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        logger.info(f"Setting webhook to {webhook_url}")
+        await telegram_app.bot.set_webhook(webhook_url, allowed_updates=telegram.Update.ALL_TYPES)
+        logger.info(f"Webhook set to {webhook_url}")
         
         # Запуск сервера
+        app = web.Application()
+        app.router.add_post("/webhook", webhook_handler)
         logger.info(f"Starting webhook server on port {PORT}")
         await web._run_app(app, host="0.0.0.0", port=PORT)
         
     except Exception as e:
         logger.error(f"Ошибка запуска бота: {e}", exc_info=True)
         ERRORS.labels(type="startup", endpoint="main").inc()
+        if telegram_app:
+            await telegram_app.stop()
+            await telegram_app.shutdown()
+        await close_db_pool()
         raise
     
     finally:
+        if telegram_app:
+            await telegram_app.stop()
+            await telegram_app.shutdown()
+            logger.info("Telegram Application stopped and shut down")
         await close_db_pool()
+        logger.info("Database pool closed")
 
 if __name__ == "__main__":
     start_http_server(8000)  # Prometheus metrics server
