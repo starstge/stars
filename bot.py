@@ -926,7 +926,54 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return STATES[STATE_BUY_STARS_RECIPIENT]
         
         elif data == SELECT_AMOUNT:
-            await query.message.reply_text("Введите количество звезд (например, 50, 100, 250, 500):")
+            await query.message.reply_text(
+                "Выберите количество звезд или введите свое значение:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("50", callback_data="set_amount_50"), InlineKeyboardButton("100", callback_data="set_amount_100")],
+                    [InlineKeyboardButton("500", callback_data="set_amount_500"), InlineKeyboardButton("1000", callback_data="set_amount_1000")],
+                    [InlineKeyboardButton("🔢 Ввести свое", callback_data="set_amount_custom")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                ])
+            )
+            context.user_data["state"] = STATE_BUY_STARS_AMOUNT
+            await query.answer()
+            return STATES[STATE_BUY_STARS_AMOUNT]
+        
+        elif data.startswith("set_amount_"):
+            try:
+                amount = int(data.split("_")[-1])
+                buy_data = context.user_data.get("buy_data", {})
+                buy_data["amount"] = amount
+                context.user_data["buy_data"] = buy_data
+                recipient = buy_data.get("recipient", "####")
+                payment_method = buy_data.get("payment_method", "Криптовалютой")
+                price_ton = await calculate_price_ton(amount)
+                keyboard = [
+                    [InlineKeyboardButton(f"Пользователь {recipient}", callback_data=SELECT_USER)],
+                    [InlineKeyboardButton(f"Способ оплаты: {payment_method}", callback_data=SELECT_PAYMENT)],
+                    [InlineKeyboardButton(f"Количество звезд: {amount}", callback_data=SELECT_AMOUNT)],
+                    [
+                        InlineKeyboardButton(f"Цена: {price_ton} TON", callback_data="price_info"),
+                        InlineKeyboardButton("Оплатить", callback_data=CONFIRM_PAYMENT)
+                    ],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                ]
+                await query.message.edit_text(
+                    "Выберите параметры покупки:",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
+                await log_analytics(user_id, "set_amount", {"amount": amount})
+                await query.answer()
+                return STATES[STATE_BUY_STARS_RECIPIENT]
+            except ValueError:
+                await query.message.reply_text("Ошибка при выборе количества звезд.")
+                await query.answer()
+                return STATES[STATE_BUY_STARS_AMOUNT]
+        
+        elif data == "set_amount_custom":
+            await query.message.reply_text("Введите количество звезд (например, 250):")
             context.user_data["state"] = STATE_BUY_STARS_AMOUNT
             await query.answer()
             return STATES[STATE_BUY_STARS_AMOUNT]
@@ -1004,7 +1051,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_text("Неизвестная команда.")
             await query.answer()
             return STATES[STATE_MAIN_MENU]
-
 
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отображение админ-панели."""
@@ -1118,44 +1164,31 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await update.message.reply_text(text)
                 return context.user_data.get("state", STATES[STATE_MAIN_MENU])
-            
             if state == STATE_BUY_STARS_RECIPIENT:
                 recipient = text.replace("@", "")
-                buy_data = context.user_data.get("buy_data", {})
-                buy_data["recipient"] = recipient
-                context.user_data["buy_data"] = buy_data
-                amount = buy_data.get("amount", "####")
-                payment_method = buy_data.get("payment_method", "Криптовалютой")
-                price_ton = await calculate_price_ton(amount) if amount != "####" else "0.0"
-                keyboard = [
-                    [InlineKeyboardButton(f"Пользователь {recipient}", callback_data=SELECT_USER)],
-                    [InlineKeyboardButton(f"Способ оплаты: {payment_method}", callback_data=SELECT_PAYMENT)],
-                    [InlineKeyboardButton(f"Количество звезд: {amount}", callback_data=SELECT_AMOUNT)],
-                    [
-                        InlineKeyboardButton(f"Цена: {price_ton} TON", callback_data="price_info"),
-                        InlineKeyboardButton("Оплатить", callback_data=CONFIRM_PAYMENT)
-                    ],
-                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
-                ]
+                context.user_data["buy_data"] = context.user_data.get("buy_data", {})
+                context.user_data["buy_data"]["recipient"] = recipient
                 await update.message.reply_text(
-                    "Выберите параметры покупки:",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML"
+                    "Выберите количество звезд или введите свое значение:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("50", callback_data="set_amount_50"), InlineKeyboardButton("100", callback_data="set_amount_100")],
+                        [InlineKeyboardButton("500", callback_data="set_amount_500"), InlineKeyboardButton("1000", callback_data="set_amount_1000")],
+                        [InlineKeyboardButton("🔢 Ввести свое", callback_data="set_amount_custom")],
+                        [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                    ])
                 )
-                context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
+                context.user_data["state"] = STATE_BUY_STARS_AMOUNT
                 await log_analytics(user_id, "set_recipient", {"recipient": recipient})
-                return STATES[STATE_BUY_STARS_RECIPIENT]
-            
+                return STATES[STATE_BUY_STARS_AMOUNT]
             elif state == STATE_BUY_STARS_AMOUNT:
                 try:
                     amount = int(text)
                     if amount <= 0:
                         raise ValueError("Количество звезд должно быть положительным.")
-                    buy_data = context.user_data.get("buy_data", {})
-                    buy_data["amount"] = amount
-                    context.user_data["buy_data"] = buy_data
-                    recipient = buy_data.get("recipient", "####")
-                    payment_method = buy_data.get("payment_method", "Криптовалютой")
+                    context.user_data["buy_data"] = context.user_data.get("buy_data", {})
+                    context.user_data["buy_data"]["amount"] = amount
+                    recipient = context.user_data["buy_data"].get("recipient", "####")
+                    payment_method = context.user_data["buy_data"].get("payment_method", "Криптовалютой")
                     price_ton = await calculate_price_ton(amount)
                     keyboard = [
                         [InlineKeyboardButton(f"Пользователь {recipient}", callback_data=SELECT_USER)],
@@ -1176,9 +1209,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await log_analytics(user_id, "set_amount", {"amount": amount})
                     return STATES[STATE_BUY_STARS_RECIPIENT]
                 except ValueError:
-                    await update.message.reply_text("Пожалуйста, введите корректное число звезд.")
+                    await update.message.reply_text(
+                        "Пожалуйста, введите корректное число звезд (целое положительное число).",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("50", callback_data="set_amount_50"), InlineKeyboardButton("100", callback_data="set_amount_100")],
+                            [InlineKeyboardButton("500", callback_data="set_amount_500"), InlineKeyboardButton("1000", callback_data="set_amount_1000")],
+                            [InlineKeyboardButton("🔢 Ввести свое", callback_data="set_amount_custom")],
+                            [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                        ])
+                    )
                     return STATES[STATE_BUY_STARS_AMOUNT]
-            
             elif state == STATE_ADMIN_EDIT_PROFILE and not context.user_data.get("edit_user_id"):
                 if user_id != 6956377285:
                     await update.message.reply_text("Доступ только для админов.")
@@ -1226,7 +1266,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         ])
                     )
                     return STATES[STATE_ADMIN_EDIT_PROFILE]
-            
             elif state == STATE_ADMIN_EDIT_PROFILE and context.user_data.get("edit_user_id"):
                 edit_field = context.user_data.get("edit_profile_field")
                 target_user_id = context.user_data.get("edit_user_id")
@@ -1295,7 +1334,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
                     )
                     return STATES[STATE_ADMIN_EDIT_PROFILE]
-            
             elif state == STATE_ADMIN_BROADCAST:
                 if user_id != 6956377285:
                     await update.message.reply_text("Доступ только для админов.")
@@ -1310,7 +1348,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await log_analytics(user_id, "set_broadcast_text", {"text": text})
                 return STATES[STATE_ADMIN_BROADCAST]
-            
             elif state == STATE_SET_DB_REMINDER:
                 if user_id != 6956377285:
                     await update.message.reply_text("Доступ только для админов.")
@@ -1338,7 +1375,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
                     )
                     return STATES[STATE_SET_DB_REMINDER]
-            
             elif state == STATE_TECH_BREAK:
                 if user_id != 6956377285:
                     await update.message.reply_text("Доступ только для админов.")
@@ -1373,7 +1409,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
                     )
                     return STATES[STATE_TECH_BREAK]
-            
             elif state == STATE_BOT_SETTINGS:
                 if user_id != 6956377285:
                     await update.message.reply_text("Доступ только для админов.")
@@ -1422,7 +1457,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
                     )
                     return STATES[STATE_BOT_SETTINGS]
-            
             else:
                 await update.message.reply_text("Пожалуйста, используйте меню.")
                 return STATES[STATE_MAIN_MENU]
