@@ -1386,7 +1386,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     target_user_id = int(text)
                     user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", target_user_id)
                     if not user:
-                        await update.message.reply_text("Пользователь не найден.")
+                        await update.message.reply_text(
+                            "Пользователь не найден.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("📋 Все пользователи", callback_data=STATE_ALL_USERS)],
+                                [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
+                            ])
+                        )
                         return STATES[STATE_ADMIN_EDIT_PROFILE]
                     context.user_data["edit_user_id"] = target_user_id
                     ref_count = len(json.loads(user["referrals"])) if user["referrals"] else 0
@@ -1405,12 +1411,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ]
                     await update.message.reply_text(
                         f"Редактирование профиля {target_user_id}:\n{profile_text}",
-                        reply_markup=InlineKeyboardMarkup(keyboard)
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="HTML"
                     )
                     await log_analytics(user_id, "edit_profile_select_user", {"target_user_id": target_user_id})
+                    context.user_data["state"] = STATE_ADMIN_EDIT_PROFILE
                     return STATES[STATE_ADMIN_EDIT_PROFILE]
                 except ValueError:
-                    await update.message.reply_text("Пожалуйста, введите корректный ID пользователя.")
+                    await update.message.reply_text(
+                        "Пожалуйста, введите корректный ID пользователя (целое число).",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Все пользователи", callback_data=STATE_ALL_USERS)],
+                            [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
+                        ])
+                    )
                     return STATES[STATE_ADMIN_EDIT_PROFILE]
             elif state == STATE_ADMIN_BROADCAST:
                 if user_id != 6956377285:
@@ -1641,7 +1655,8 @@ async def main():
         logger.info("Scheduler started")
         
         # Регистрация обработчиков
-        telegram_app.add_handler(CommandHandler(["start", "tonprice"], start, filters=filters.COMMAND))
+        telegram_app.add_handler(CommandHandler("start", start, filters=filters.COMMAND))
+        telegram_app.add_handler(CommandHandler("tonprice", ton_price_command, filters=filters.COMMAND))
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))  # Debug handler for all updates
