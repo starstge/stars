@@ -30,6 +30,7 @@ import hmac
 import hashlib
 import requests
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from io import BytesIO
 import telegram  ### ФИКС: Импорт для логирования версии библиотеки
 
 # Настройка логирования с ротацией
@@ -232,23 +233,32 @@ async def close_db_pool():
 async def get_text(key: str, **kwargs) -> str:
     """Получение текста из базы данных и форматирование с параметрами."""
     async with (await ensure_db_pool()) as conn:
-        text_row = await conn.fetchrow("SELECT text FROM texts WHERE key = $1", key)
+        # Проверяем, существует ли таблица texts
+        table_exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'texts')"
+        )
+        if not table_exists:
+            logger.warning(f"Таблица texts не существует")
+            return f"Текст для {key} не задан."
+
+        # Запрашиваем столбец value вместо text
+        text_row = await conn.fetchrow("SELECT value FROM texts WHERE key = $1", key)
         if not text_row:
             logger.warning(f"Текст с ключом {key} не найден в базе данных")
             return f"Текст для {key} не задан."
-        
-        text = text_row["text"]
+
+        text = text_row["value"]
         try:
             return text.format(**kwargs)
         except KeyError as e:
             logger.error(f"Ошибка форматирования текста для ключа {key}: отсутствует параметр {e}")
-            # Возвращаем текст без форматирования или с частичным форматированием
+            # Пытаемся форматировать с доступными параметрами
             default_kwargs = {k: v for k, v in kwargs.items() if k in text}
             try:
                 return text.format(**default_kwargs)
             except KeyError:
-                return text  # Возвращаем неформатированный текст как последний резерв
-
+                return text  # Возвращаем неформатированный текст
+                
 async def log_analytics(user_id: int, action: str, data: dict = None):
     """Логирование аналитики."""
     try:
@@ -636,11 +646,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "welcome",
             user_id=user_id,
             username=username,
-            stars_bought=stars_bought,  # Добавляем stars_bought для шаблона
-            stars_sold=stars_bought     # Включаем stars_sold как синоним, если требуется
+            stars_bought=stars_bought
         )
-    except KeyError as e:
-        logger.error(f"Ошибка в шаблоне welcome: отсутствует параметр {e}")
+    except Exception as e:
+        logger.error(f"Ошибка в get_text для welcome: {e}")
         text = f"Привет, {username}! Добро пожаловать в Stars Shop! 🎉"
     
     keyboard = [
@@ -661,6 +670,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         last_message = telegram_app.bot_data.get(f"last_message_{user_id}")
         if last_message and last_message["chat_id"] and last_message["message_id"]:
+            logger.debug(f"Attempting to edit message: chat_id={last_message['chat_id']}, message_id={last_message['message_id']}")
             await telegram_app.bot.edit_message_text(
                 text=text,
                 chat_id=last_message["chat_id"],
