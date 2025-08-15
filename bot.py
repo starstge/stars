@@ -144,6 +144,15 @@ telegram_app = None
 transaction_cache = TTLCache(maxsize=1000, ttl=3600)
 tech_break_info = {}  # Хранит информацию о техническом перерыве: {"end_time": datetime, "reason": str}
 
+async def debug_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug handler to log all incoming updates."""
+    logger.info(f"Received update: {update.to_dict()}")
+    await log_analytics(
+        update.effective_user.id if update.effective_user else 0,
+        "debug_update",
+        {"update": update.to_dict()}
+    )
+
 async def ensure_db_pool():
     """Получение пула соединений с базой данных."""
     global _db_pool
@@ -1585,10 +1594,13 @@ async def webhook_handler(request):
         if telegram_app is None:
             logger.error("telegram_app is None in webhook_handler")
             return web.Response(status=500, text="Application not initialized")
-        update = telegram.Update.de_json(await request.json(), telegram_app.bot)
+        data = await request.json()
+        logger.debug(f"Incoming webhook data: {data}")
+        update = telegram.Update.de_json(data, telegram_app.bot)
         if update is None:
-            logger.error("Failed to parse update from webhook")
+            logger.error("Failed to parse update from webhook data")
             return web.Response(status=400, text="Invalid update data")
+        logger.info(f"Processing update: update_id={update.update_id}, type={update.to_dict().get('message', {}).get('text', 'unknown')}")
         await telegram_app.process_update(update)
         return web.Response(status=200)
     except Exception as e:
@@ -1629,10 +1641,10 @@ async def main():
         logger.info("Scheduler started")
         
         # Регистрация обработчиков
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CommandHandler("tonprice", ton_price_command))
+        telegram_app.add_handler(CommandHandler(["start", "tonprice"], start, filters=filters.COMMAND))
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))  # Debug handler for all updates
         logger.info("Handlers registered")
         
         # Запуск вебхука
@@ -1640,6 +1652,9 @@ async def main():
         logger.info(f"Setting webhook to {webhook_url}")
         await telegram_app.bot.set_webhook(webhook_url, allowed_updates=telegram.Update.ALL_TYPES)
         logger.info(f"Webhook set to {webhook_url}")
+        
+        # Обновление меню для всех пользователей
+        await broadcast_new_menu()
         
         # Запуск сервера
         app = web.Application()
