@@ -1742,6 +1742,18 @@ async def webhook_handler(request):
         logger.error(f"Ошибка обработки вебхука: {e}", exc_info=True)
         ERRORS.labels(type="webhook", endpoint="webhook").inc()
         return web.Response(status=500, text=str(e))
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle errors in the Telegram bot."""
+    logger.error(f"Update {update} caused error: {context.error}", exc_info=True)
+    ERRORS.labels(type="telegram_error", endpoint="error_handler").inc()
+    if update and update.effective_user:
+        try:
+            await update.effective_message.reply_text(
+                "Произошла ошибка. Пожалуйста, попробуйте позже или свяжитесь с поддержкой: https://t.me/CheapStarsSupport"
+            )
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}", exc_info=True)
         
 async def main():
     """Основная функция запуска бота."""
@@ -1776,7 +1788,7 @@ async def main():
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
-        telegram_app.add_error_handler(error_handler)
+        telegram_app.add_error_handler(error_handler)  # Added error_handler
         logger.info("Handlers registered")
         
         webhook_url = f"{WEBHOOK_URL}/webhook"
@@ -1794,14 +1806,16 @@ async def main():
     except Exception as e:
         logger.error(f"Ошибка запуска бота: {e}", exc_info=True)
         ERRORS.labels(type="startup", endpoint="main").inc()
-        if telegram_app:
+        if telegram_app and telegram_app.running:  # Check if application is running before stopping
             await telegram_app.stop()
             await telegram_app.shutdown()
+            logger.info("Telegram Application stopped and shut down")
         await close_db_pool()
+        logger.info("Database pool closed")
         raise
     
     finally:
-        if telegram_app:
+        if telegram_app and telegram_app.running:  # Check if application is running before stopping
             await telegram_app.stop()
             await telegram_app.shutdown()
             logger.info("Telegram Application stopped and shut down")
