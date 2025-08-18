@@ -2077,8 +2077,24 @@ async def main():
 
         app = web.Application()
         app.router.add_post("/webhook", webhook_handler)
-        start_http_server(8000)
-        await web.run_app(app, port=PORT)
+        start_http_server(8000)  # Start Prometheus metrics server
+
+        # Use the same event loop for aiohttp and telegram.ext.Application
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        await site.start()
+        logger.info(f"aiohttp server started on port {PORT}")
+
+        # Start the telegram application
+        await telegram_app.start()
+        logger.info("Telegram bot started")
+
+        # Keep the application running
+        try:
+            await asyncio.Event().wait()  # Keep the event loop running indefinitely
+        except asyncio.CancelledError:
+            logger.info("Shutting down bot")
     except Exception as e:
         logger.error(f"Ошибка в main: {e}", exc_info=True)
         await telegram_app.bot.send_message(
@@ -2089,7 +2105,10 @@ async def main():
     finally:
         await close_db_pool()
         if telegram_app:
+            await telegram_app.stop()
             await telegram_app.shutdown()
+        if 'runner' in locals():
+            await runner.cleanup()
         logger.info("Бот завершен")
 
 if __name__ == "__main__":
