@@ -833,121 +833,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback-запросов."""
+    global tech_break_info, PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
     logger.info(f"Callback query received: user_id={user_id}, data={data}")
     
-    async with (await ensure_db_pool()) as conn:
-        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
-        if not is_admin and tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
-            time_remaining = format_time_remaining(tech_break_info["end_time"])
-            text = await get_text(
-                "tech_break_active",
-                end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                minutes_left=time_remaining,
-                reason=tech_break_info["reason"]
-            )
-            await query.message.reply_text(text)
-            await query.answer()
-            return STATES[STATE_MAIN_MENU]
-        
-        if data == BUY_STARS:
-            buy_data = context.user_data.get("buy_data", {})
-            recipient = buy_data.get("recipient", "####")
-            amount = buy_data.get("amount", "####")
-            payment_method = buy_data.get("payment_method", "Криптовалютой")
-            price_ton = await calculate_price_ton(amount) if amount != "####" else "0.0"
-            keyboard = [
-                [InlineKeyboardButton(f"Пользователь {recipient}", callback_data=SELECT_USER)],
-                [InlineKeyboardButton(f"Способ оплаты: {payment_method}", callback_data=SELECT_PAYMENT)],
-                [InlineKeyboardButton(f"Количество звезд: {amount}", callback_data=SELECT_AMOUNT)],
-                [
-                    InlineKeyboardButton(f"Цена: {price_ton} TON", callback_data="price_info"),
-                    InlineKeyboardButton("Оплатить", callback_data=CONFIRM_PAYMENT)
-                ],
-                [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
-            ]
-            await query.message.edit_text(
-                "Выберите параметры покупки:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
-            await log_analytics(user_id, "buy_stars_menu", {})
-            await query.answer()
-            return STATES[STATE_BUY_STARS_RECIPIENT]
-        
-        elif data == SELECT_USER:
-            await query.message.reply_text("Введите имя пользователя (например, @username):")
-            context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
-            await query.answer()
-            return STATES[STATE_BUY_STARS_RECIPIENT]
-        
-        elif data == SELECT_PAYMENT:
-            keyboard = [
-                [InlineKeyboardButton("Криптовалютой", callback_data="set_payment_crypto")],
-                [InlineKeyboardButton("🔙 Назад", callback_data=BUY_STARS)]
-            ]
-            await query.message.edit_text(
-                "Выберите способ оплаты:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            context.user_data["state"] = STATE_BUY_STARS_PAYMENT
-            await query.answer()
-            return STATES[STATE_BUY_STARS_PAYMENT]
-        
-        elif data == "set_payment_crypto":
-            buy_data = context.user_data.get("buy_data", {})
-            buy_data["payment_method"] = "Криптовалютой"
-            context.user_data["buy_data"] = buy_data
-            recipient = buy_data.get("recipient", "####")
-            amount = buy_data.get("amount", "####")
-            price_ton = await calculate_price_ton(amount) if amount != "####" else "0.0"
-            keyboard = [
-                [InlineKeyboardButton(f"Пользователь {recipient}", callback_data=SELECT_USER)],
-                [InlineKeyboardButton(f"Способ оплаты: Криптовалютой", callback_data=SELECT_PAYMENT)],
-                [InlineKeyboardButton(f"Количество звезд: {amount}", callback_data=SELECT_AMOUNT)],
-                [
-                    InlineKeyboardButton(f"Цена: {price_ton} TON", callback_data="price_info"),
-                    InlineKeyboardButton("Оплатить", callback_data=CONFIRM_PAYMENT)
-                ],
-                [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
-            ]
-            await query.message.edit_text(
-                "Выберите параметры покупки:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
-            await log_analytics(user_id, "set_payment_crypto", {})
-            await query.answer()
-            return STATES[STATE_BUY_STARS_RECIPIENT]
-        
-        elif data == SELECT_AMOUNT:
-            await query.message.reply_text(
-                "Выберите количество звезд или введите свое значение:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("50", callback_data="set_amount_50"), InlineKeyboardButton("100", callback_data="set_amount_100")],
-                    [InlineKeyboardButton("500", callback_data="set_amount_500"), InlineKeyboardButton("1000", callback_data="set_amount_1000")],
-                    [InlineKeyboardButton("🔢 Ввести свое", callback_data="set_amount_custom")],
-                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
-                ])
-            )
-            context.user_data["state"] = STATE_BUY_STARS_AMOUNT
-            await query.answer()
-            return STATES[STATE_BUY_STARS_AMOUNT]
-        
-        elif data.startswith("set_amount_"):
-            try:
-                amount = int(data.split("_")[-1])
+    try:
+        async with (await ensure_db_pool()) as conn:
+            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
+            if not is_admin and tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
+                time_remaining = format_time_remaining(tech_break_info["end_time"])
+                text = await get_text(
+                    "tech_break_active",
+                    end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    minutes_left=time_remaining,
+                    reason=tech_break_info["reason"],
+                    default=f"Технический перерыв до {tech_break_info['end_time'].strftime('%Y-%m-%d %H:%M:%S UTC')} ({time_remaining} минут). Причина: {tech_break_info['reason']}"
+                )
+                await query.message.reply_text(text)
+                await query.answer()
+                return STATES[STATE_MAIN_MENU]
+            
+            if data == BUY_STARS:
                 buy_data = context.user_data.get("buy_data", {})
-                buy_data["amount"] = amount
-                context.user_data["buy_data"] = buy_data
                 recipient = buy_data.get("recipient", "####")
+                amount = buy_data.get("amount", "####")
                 payment_method = buy_data.get("payment_method", "Криптовалютой")
-                price_ton = await calculate_price_ton(amount)
+                price_ton = await calculate_price_ton(amount) if amount != "####" else "0.0"
                 keyboard = [
                     [InlineKeyboardButton(f"Пользователь {recipient}", callback_data=SELECT_USER)],
                     [InlineKeyboardButton(f"Способ оплаты: {payment_method}", callback_data=SELECT_PAYMENT)],
@@ -964,275 +877,465 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     parse_mode="HTML"
                 )
                 context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
-                await log_analytics(user_id, "set_amount", {"amount": amount})
+                await log_analytics(user_id, "buy_stars_menu", {})
                 await query.answer()
                 return STATES[STATE_BUY_STARS_RECIPIENT]
-            except ValueError:
-                await query.message.reply_text("Ошибка при выборе количества звезд.")
+            
+            elif data == SELECT_USER:
+                await query.message.reply_text("Введите имя пользователя (например, @username):")
+                context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
+                await query.answer()
+                return STATES[STATE_BUY_STARS_RECIPIENT]
+            
+            elif data == SELECT_PAYMENT:
+                keyboard = [
+                    [InlineKeyboardButton("Криптовалютой", callback_data="set_payment_crypto")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=BUY_STARS)]
+                ]
+                await query.message.edit_text(
+                    "Выберите способ оплаты:",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATE_BUY_STARS_PAYMENT
+                await query.answer()
+                return STATES[STATE_BUY_STARS_PAYMENT]
+            
+            elif data == "set_payment_crypto":
+                buy_data = context.user_data.get("buy_data", {})
+                buy_data["payment_method"] = "Криптовалютой"
+                context.user_data["buy_data"] = buy_data
+                recipient = buy_data.get("recipient", "####")
+                amount = buy_data.get("amount", "####")
+                price_ton = await calculate_price_ton(amount) if amount != "####" else "0.0"
+                keyboard = [
+                    [InlineKeyboardButton(f"Пользователь {recipient}", callback_data=SELECT_USER)],
+                    [InlineKeyboardButton(f"Способ оплаты: Криптовалютой", callback_data=SELECT_PAYMENT)],
+                    [InlineKeyboardButton(f"Количество звезд: {amount}", callback_data=SELECT_AMOUNT)],
+                    [
+                        InlineKeyboardButton(f"Цена: {price_ton} TON", callback_data="price_info"),
+                        InlineKeyboardButton("Оплатить", callback_data=CONFIRM_PAYMENT)
+                    ],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                ]
+                await query.message.edit_text(
+                    "Выберите параметры покупки:",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
+                await log_analytics(user_id, "set_payment_crypto", {})
+                await query.answer()
+                return STATES[STATE_BUY_STARS_RECIPIENT]
+            
+            elif data == SELECT_AMOUNT:
+                await query.message.reply_text(
+                    "Выберите количество звезд или введите свое значение:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("50", callback_data="set_amount_50"), InlineKeyboardButton("100", callback_data="set_amount_100")],
+                        [InlineKeyboardButton("500", callback_data="set_amount_500"), InlineKeyboardButton("1000", callback_data="set_amount_1000")],
+                        [InlineKeyboardButton("🔢 Ввести свое", callback_data="set_amount_custom")],
+                        [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                    ])
+                )
+                context.user_data["state"] = STATE_BUY_STARS_AMOUNT
                 await query.answer()
                 return STATES[STATE_BUY_STARS_AMOUNT]
-        
-        elif data == "set_amount_custom":
-            await query.message.reply_text("Введите количество звезд (например, 250):")
-            context.user_data["state"] = STATE_BUY_STARS_AMOUNT
-            await query.answer()
-            return STATES[STATE_BUY_STARS_AMOUNT]
-        
-        elif data == CONFIRM_PAYMENT:
-            buy_data = context.user_data.get("buy_data", {})
-            recipient = buy_data.get("recipient", "####")
-            amount = buy_data.get("amount", "####")
-            if recipient == "####" or amount == "####":
-                await query.message.reply_text("Пожалуйста, выберите пользователя и количество звезд.")
-                await query.answer()
-                return STATES[STATE_BUY_STARS_RECIPIENT]
-            price_ton = await calculate_price_ton(amount)
-            keyboard = [
-                [InlineKeyboardButton("Оплатить", callback_data="process_payment")],
-                [InlineKeyboardButton("Проверить оплату", callback_data=CHECK_PAYMENT)],
-                [InlineKeyboardButton("🔙 Назад", callback_data=BUY_STARS)]
-            ]
-            await query.message.edit_text(
-                f"Подтвердите покупку:\nПользователь: {recipient}\nКоличество звезд: {amount}\nЦена: {price_ton} TON",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            context.user_data["state"] = STATE_BUY_STARS_CONFIRM
-            await log_analytics(user_id, "confirm_payment", {"recipient": recipient, "amount": amount, "price_ton": price_ton})
-            await query.answer()
-            return STATES[STATE_BUY_STARS_CONFIRM]
-        
-        elif data == "process_payment":
-            buy_data = context.user_data.get("buy_data", {})
-            recipient = buy_data.get("recipient", "####")
-            amount = buy_data.get("amount", "####")
-            price_ton = await calculate_price_ton(amount)
-            # Mock payment check for testing
-            logger.info(f"Mock payment processed for user_id={user_id}, recipient={recipient}, amount={amount}, price={price_ton} TON")
-            await log_analytics(user_id, "mock_payment", {"recipient": recipient, "amount": amount, "price_ton": price_ton})
-            await query.message.edit_text(
-                f"Оплата успешно обработана (тестовый режим):\nПользователь: {recipient}\nКоличество звезд: {amount}\nЦена: {price_ton} TON",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]])
-            )
-            # Update user stars in database
-            await conn.execute(
-                "UPDATE users SET stars_bought = stars_bought + $1 WHERE user_id = $2",
-                amount, user_id
-            )
-            context.user_data.pop("buy_data", None)
-            context.user_data["state"] = STATE_MAIN_MENU
-            await query.answer()
-            return await start(update, context)
-        
-        elif data == CHECK_PAYMENT:
-            await query.message.reply_text("Проверка оплаты не требуется в тестовом режиме.")
-            await query.answer()
-            return STATES[STATE_BUY_STARS_CONFIRM]
-        
-        elif data == BACK_TO_MENU:
-            return await start(update, context)
-        
-        elif data == PROFILE:
-            user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
-            ref_count = len(json.loads(user["referrals"])) if user["referrals"] else 0
-            text = await get_text(
-                "profile",
-                user_id=user_id,
-                stars_bought=user["stars_bought"],
-                ref_count=ref_count,
-                ref_bonus_ton=user["ref_bonus_ton"]
-            )
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
-            await query.message.edit_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            context.user_data["state"] = STATE_MAIN_MENU
-            await query.answer()
-            return STATES[STATE_MAIN_MENU]
-        
-        elif data == REFERRALS:
-            user = await conn.fetchrow("SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id)
-            referrals = json.loads(user["referrals"]) if user["referrals"] else []
-            ref_count = len(referrals)
-            ref_bonus_ton = user["ref_bonus_ton"] or 0.0
-            referral_link = f"https://t.me/CheapStarsShop_bot?start=ref_{user_id}"
-            # Fetch usernames for referred users (limited to avoid rate limits)
-            referred_users = []
-            if referrals:
-                for ref_id in referrals[:10]:  # Limit to 10 to avoid Telegram API rate limits
-                    try:
-                        chat = await telegram_app.bot.get_chat(ref_id)
-                        username = f"@{chat.username}" if chat.username else f"ID {ref_id}"
-                        referred_users.append(username)
-                    except Exception as e:
-                        logger.error(f"Failed to fetch username for user_id {ref_id}: {e}")
-                        referred_users.append(f"ID {ref_id}")
-            # Hardcoded referral text
-            text = (
-                f"🤝 Ваши рефералы:\n"
-                f"Количество рефералов: {ref_count}\n"
-                f"Реферальная ссылка: <a href='{referral_link}'>Пригласить друга</a>\n"
-                f"Бонус TON: {ref_bonus_ton:.2f}\n"
-                f"Приглашенные пользователи: {', '.join(referred_users) if referred_users else 'Нет рефералов'}"
-            )
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
-            await query.message.edit_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            context.user_data["state"] = STATE_MAIN_MENU
-            await log_analytics(user_id, "view_referrals", {"ref_count": ref_count, "ref_bonus_ton": ref_bonus_ton})
-            await query.answer()
-            return STATES[STATE_MAIN_MENU]
-        
-        elif data == ADMIN_PANEL and is_admin:
-            return await show_admin_panel(update, context)
-        
-        elif data == STATE_ADMIN_STATS and is_admin:
-            total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
-            total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
-            text = await get_text(
-                "admin_stats",
-                total_users=total_users,
-                total_stars=total_stars
-            )
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
-            await query.message.edit_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            context.user_data["state"] = STATE_ADMIN_PANEL
-            await log_analytics(user_id, "view_admin_stats", {})
-            await query.answer()
-            return STATES[STATE_ADMIN_PANEL]
-        
-        elif data == BROADCAST_MESSAGE and is_admin:
-            await query.message.reply_text(
-                "Введите текст для рассылки:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-            )
-            context.user_data["state"] = STATE_ADMIN_BROADCAST
-            await query.answer()
-            return STATES[STATE_ADMIN_BROADCAST]
-        
-        elif data == CONFIRM_BROADCAST and is_admin:
-            broadcast_text = context.user_data.get("broadcast_text")
-            if not broadcast_text:
-                await query.message.reply_text(
-                    "Текст рассылки не задан. Пожалуйста, введите текст.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-                )
-                await query.answer()
-                return STATES[STATE_ADMIN_BROADCAST]
-            users = await conn.fetch("SELECT user_id FROM users")
-            sent_count = 0
-            for user in users:
+            
+            elif data.startswith("set_amount_"):
                 try:
-                    await telegram_app.bot.send_message(
-                        chat_id=user["user_id"],
-                        text=broadcast_text,
+                    amount = int(data.split("_")[-1])
+                    buy_data = context.user_data.get("buy_data", {})
+                    buy_data["amount"] = amount
+                    context.user_data["buy_data"] = buy_data
+                    recipient = buy_data.get("recipient", "####")
+                    payment_method = buy_data.get("payment_method", "Криптовалютой")
+                    price_ton = await calculate_price_ton(amount)
+                    keyboard = [
+                        [InlineKeyboardButton(f"Пользователь {recipient}", callback_data=SELECT_USER)],
+                        [InlineKeyboardButton(f"Способ оплаты: {payment_method}", callback_data=SELECT_PAYMENT)],
+                        [InlineKeyboardButton(f"Количество звезд: {amount}", callback_data=SELECT_AMOUNT)],
+                        [
+                            InlineKeyboardButton(f"Цена: {price_ton} TON", callback_data="price_info"),
+                            InlineKeyboardButton("Оплатить", callback_data=CONFIRM_PAYMENT)
+                        ],
+                        [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+                    ]
+                    await query.message.edit_text(
+                        "Выберите параметры покупки:",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
                         parse_mode="HTML"
                     )
-                    sent_count += 1
+                    context.user_data["state"] = STATE_BUY_STARS_RECIPIENT
+                    await log_analytics(user_id, "set_amount", {"amount": amount})
+                    await query.answer()
+                    return STATES[STATE_BUY_STARS_RECIPIENT]
+                except ValueError:
+                    await query.message.reply_text("Ошибка при выборе количества звезд.")
+                    await query.answer()
+                    return STATES[STATE_BUY_STARS_AMOUNT]
+            
+            elif data == "set_amount_custom":
+                await query.message.reply_text("Введите количество звезд (например, 250):")
+                context.user_data["state"] = STATE_BUY_STARS_AMOUNT
+                await query.answer()
+                return STATES[STATE_BUY_STARS_AMOUNT]
+            
+            elif data == CONFIRM_PAYMENT:
+                buy_data = context.user_data.get("buy_data", {})
+                recipient = buy_data.get("recipient", "####")
+                amount = buy_data.get("amount", "####")
+                if recipient == "####" or amount == "####":
+                    await query.message.reply_text("Пожалуйста, выберите пользователя и количество звезд.")
+                    await query.answer()
+                    return STATES[STATE_BUY_STARS_RECIPIENT]
+                price_ton = await calculate_price_ton(amount)
+                keyboard = [
+                    [InlineKeyboardButton("Оплатить", callback_data="process_payment")],
+                    [InlineKeyboardButton("Проверить оплату", callback_data=CHECK_PAYMENT)],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=BUY_STARS)]
+                ]
+                await query.message.edit_text(
+                    f"Подтвердите покупку:\nПользователь: {recipient}\nКоличество звезд: {amount}\nЦена: {price_ton} TON",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATE_BUY_STARS_CONFIRM
+                await log_analytics(user_id, "confirm_payment", {"recipient": recipient, "amount": amount, "price_ton": price_ton})
+                await query.answer()
+                return STATES[STATE_BUY_STARS_CONFIRM]
+            
+            elif data == "process_payment":
+                buy_data = context.user_data.get("buy_data", {})
+                recipient = buy_data.get("recipient", "####")
+                amount = buy_data.get("amount", "####")
+                price_ton = await calculate_price_ton(amount)
+                logger.info(f"Mock payment processed for user_id={user_id}, recipient={recipient}, amount={amount}, price={price_ton} TON")
+                await log_analytics(user_id, "mock_payment", {"recipient": recipient, "amount": amount, "price_ton": price_ton})
+                await query.message.edit_text(
+                    f"Оплата успешно обработана (тестовый режим):\nПользователь: {recipient}\nКоличество звезд: {amount}\nЦена: {price_ton} TON",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]])
+                )
+                try:
+                    await conn.execute(
+                        "UPDATE users SET stars_bought = stars_bought + $1 WHERE user_id = $2",
+                        amount, user_id
+                    )
                 except Exception as e:
-                    logger.error(f"Failed to send broadcast to user {user['user_id']}: {e}")
-            await query.message.edit_text(
-                f"Рассылка отправлена {sent_count} пользователям.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-            )
-            context.user_data.pop("broadcast_text", None)
-            context.user_data["state"] = STATE_ADMIN_PANEL
-            await log_analytics(user_id, "send_broadcast", {"sent_count": sent_count})
-            await query.answer()
-            return await show_admin_panel(update, context)
-        
-        elif data == CANCEL_BROADCAST and is_admin:
-            context.user_data.pop("broadcast_text", None)
-            await query.message.edit_text(
-                "Рассылка отменена.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-            )
-            context.user_data["state"] = STATE_ADMIN_PANEL
-            await query.answer()
-            return await show_admin_panel(update, context)
-        
-        elif data == STATE_ADMIN_EDIT_PROFILE and is_admin:
-            await query.message.reply_text(
-                "Введите ID пользователя для редактирования профиля:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📋 Все пользователи", callback_data=STATE_ALL_USERS)],
+                    logger.error(f"Failed to update stars_bought for user_id={user_id}: {e}")
+                    await query.message.reply_text("Ошибка при обновлении базы данных. Пожалуйста, свяжитесь с поддержкой: @sacoectasy")
+                    await query.answer()
+                    return STATES[STATE_MAIN_MENU]
+                context.user_data.pop("buy_data", None)
+                context.user_data["state"] = STATE_MAIN_MENU
+                await query.answer()
+                return await start(update, context)
+            
+            elif data == CHECK_PAYMENT:
+                await query.message.reply_text("Проверка оплаты не требуется в тестовом режиме.")
+                await query.answer()
+                return STATES[STATE_BUY_STARS_CONFIRM]
+            
+            elif data == BACK_TO_MENU:
+                return await start(update, context)
+            
+            elif data == PROFILE:
+                user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+                ref_count = len(json.loads(user["referrals"])) if user["referrals"] else 0
+                text = await get_text(
+                    "profile",
+                    user_id=user_id,
+                    stars_bought=user["stars_bought"],
+                    ref_count=ref_count,
+                    ref_bonus_ton=user["ref_bonus_ton"],
+                    default=f"👤 Профиль:\nID: {user_id}\nЗвезды куплено: {user['stars_bought']}\nРефералов: {ref_count}\nБонус TON: {user['ref_bonus_ton']:.2f}"
+                )
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
+                await query.message.edit_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATE_MAIN_MENU
+                await query.answer()
+                return STATES[STATE_MAIN_MENU]
+            
+            elif data == REFERRALS:
+                user = await conn.fetchrow("SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id)
+                referrals = json.loads(user["referrals"]) if user["referrals"] else []
+                ref_count = len(referrals)
+                ref_bonus_ton = user["ref_bonus_ton"] or 0.0
+                referral_link = f"https://t.me/CheapStarsShop_bot?start=ref_{user_id}"
+                referred_users = []
+                if referrals:
+                    for ref_id in referrals[:10]:
+                        try:
+                            chat = await telegram_app.bot.get_chat(ref_id)
+                            username = f"@{chat.username}" if chat.username else f"ID {ref_id}"
+                            referred_users.append(username)
+                        except Exception as e:
+                            logger.error(f"Failed to fetch username for user_id {ref_id}: {e}")
+                            referred_users.append(f"ID {ref_id}")
+                text = (
+                    f"🤝 Ваши рефералы:\n"
+                    f"Количество рефералов: {ref_count}\n"
+                    f"Реферальная ссылка: <a href='{referral_link}'>Пригласить друга</a>\n"
+                    f"Бонус TON: {ref_bonus_ton:.2f}\n"
+                    f"Приглашенные пользователи: {', '.join(referred_users) if referred_users else 'Нет рефералов'}"
+                )
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
+                await query.message.edit_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATE_MAIN_MENU
+                await log_analytics(user_id, "view_referrals", {"ref_count": ref_count, "ref_bonus_ton": ref_bonus_ton})
+                await query.answer()
+                return STATES[STATE_MAIN_MENU]
+            
+            elif data == ADMIN_PANEL and is_admin:
+                return await show_admin_panel(update, context)
+            
+            elif data == STATE_ADMIN_STATS and is_admin:
+                total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+                total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+                text = await get_text(
+                    "admin_stats",
+                    total_users=total_users,
+                    total_stars=total_stars,
+                    default=f"📊 Статистика:\nВсего пользователей: {total_users}\nВсего куплено звезд: {total_stars}"
+                )
+                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]]
+                await query.message.edit_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATE_ADMIN_PANEL
+                await log_analytics(user_id, "view_admin_stats", {})
+                await query.answer()
+                return STATES[STATE_ADMIN_PANEL]
+            
+            elif data == BROADCAST_MESSAGE and is_admin:
+                await query.message.reply_text(
+                    "Введите текст для рассылки:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_ADMIN_BROADCAST
+                await query.answer()
+                return STATES[STATE_ADMIN_BROADCAST]
+            
+            elif data == CONFIRM_BROADCAST and is_admin:
+                broadcast_text = context.user_data.get("broadcast_text")
+                if not broadcast_text:
+                    await query.message.reply_text(
+                        "Текст рассылки не задан. Пожалуйста, введите текст.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                    )
+                    await query.answer()
+                    return STATES[STATE_ADMIN_BROADCAST]
+                users = await conn.fetch("SELECT user_id FROM users")
+                sent_count = 0
+                for user in users:
+                    try:
+                        await telegram_app.bot.send_message(
+                            chat_id=user["user_id"],
+                            text=broadcast_text,
+                            parse_mode="HTML"
+                        )
+                        sent_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to send broadcast to user {user['user_id']}: {e}")
+                await query.message.edit_text(
+                    f"Рассылка отправлена {sent_count} пользователям.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data.pop("broadcast_text", None)
+                context.user_data["state"] = STATE_ADMIN_PANEL
+                await log_analytics(user_id, "send_broadcast", {"sent_count": sent_count})
+                await query.answer()
+                return await show_admin_panel(update, context)
+            
+            elif data == CANCEL_BROADCAST and is_admin:
+                context.user_data.pop("broadcast_text", None)
+                await query.message.edit_text(
+                    "Рассылка отменена.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_ADMIN_PANEL
+                await query.answer()
+                return await show_admin_panel(update, context)
+            
+            elif data == STATE_ADMIN_EDIT_PROFILE and is_admin:
+                await query.message.reply_text(
+                    "Введите ID пользователя для редактирования профиля:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📋 Все пользователи", callback_data=STATE_ALL_USERS)],
+                        [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
+                    ])
+                )
+                context.user_data["state"] = STATE_ADMIN_EDIT_PROFILE
+                await query.answer()
+                return STATES[STATE_ADMIN_EDIT_PROFILE]
+            
+            elif data == EDIT_PROFILE_STARS and is_admin:
+                context.user_data["edit_profile_field"] = "stars_bought"
+                await query.message.reply_text(
+                    "Введите новое количество звезд для пользователя:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_ADMIN_EDIT_PROFILE
+                await query.answer()
+                return STATES[STATE_ADMIN_EDIT_PROFILE]
+            
+            elif data == EDIT_PROFILE_REFERRALS and is_admin:
+                context.user_data["edit_profile_field"] = "referrals"
+                await query.message.reply_text(
+                    "Введите IDs рефералов через запятую (например: 123,456,789):",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_ADMIN_EDIT_PROFILE
+                await query.answer()
+                return STATES[STATE_ADMIN_EDIT_PROFILE]
+            
+            elif data == EDIT_PROFILE_REF_BONUS and is_admin:
+                context.user_data["edit_profile_field"] = "ref_bonus_ton"
+                await query.message.reply_text(
+                    "Введите новый реферальный бонус (TON):",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_ADMIN_EDIT_PROFILE
+                await query.answer()
+                return STATES[STATE_ADMIN_EDIT_PROFILE]
+            
+            elif data == STATE_ALL_USERS and is_admin:
+                page = context.user_data.get("user_list_page", 0)
+                users = await conn.fetch("SELECT user_id, stars_bought FROM users ORDER BY user_id LIMIT 10 OFFSET $1", page * 10)
+                total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+                text = ["Список пользователей (до 10):"]
+                keyboard = []
+                for user in users:
+                    try:
+                        chat = await telegram_app.bot.get_chat(user["user_id"])
+                        username = f"@{chat.username}" if chat.username else f"ID {user['user_id']}"
+                    except Exception as e:
+                        logger.error(f"Failed to fetch username for user_id {user['user_id']}: {e}")
+                        username = f"ID {user['user_id']}"
+                    text.append(f"{username}, Звезды: {user['stars_bought']}")
+                    keyboard.append([InlineKeyboardButton(f"Копировать ID {user['user_id']}", callback_data=f"copy_user_id_{user['user_id']}")])
+                keyboard.append([InlineKeyboardButton("🔍 Поиск по имени", callback_data="search_user")])
+                if total_users > (page + 1) * 10:
+                    keyboard.append([InlineKeyboardButton("➡️ Дальше", callback_data="next_user_page")])
+                if page > 0:
+                    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="prev_user_page")])
+                keyboard.append([InlineKeyboardButton("🔙 Назад в админ-панель", callback_data=BACK_TO_ADMIN)])
+                await query.message.edit_text(
+                    "\n".join(text),
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATE_ALL_USERS
+                await log_analytics(user_id, "view_all_users", {"page": page})
+                await query.answer()
+                return STATES[STATE_ALL_USERS]
+            
+            elif data == "search_user" and is_admin:
+                await query.message.reply_text(
+                    "Введите имя пользователя для поиска (например, @username):",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_SEARCH_USER
+                await query.answer()
+                return STATES[STATE_SEARCH_USER]
+            
+            elif data.startswith("copy_user_id_") and is_admin:
+                user_id_to_copy = data.split("_")[-1]
+                await query.message.reply_text(
+                    f"ID {user_id_to_copy} скопирован в буфер обмена.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=STATE_ALL_USERS)])
+                )
+                await query.answer(text=f"ID {user_id_to_copy}")
+                return STATES[STATE_ALL_USERS]
+            
+            elif data == "next_user_page" and is_admin:
+                context.user_data["user_list_page"] = context.user_data.get("user_list_page", 0) + 1
+                return await callback_query_handler(update, context)
+            
+            elif data == "prev_user_page" and is_admin:
+                context.user_data["user_list_page"] = max(0, context.user_data.get("user_list_page", 0) - 1)
+                return await callback_query_handler(update, context)
+            
+            elif data == STATE_SET_DB_REMINDER and is_admin:
+                await query.message.reply_text(
+                    "Введите дату напоминания в формате гггг-мм-дд (например, 2025-08-18):",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_SET_DB_REMINDER
+                await query.answer()
+                return STATES[STATE_SET_DB_REMINDER]
+            
+            elif data == "clear_db_reminder" and is_admin:
+                await conn.execute(
+                    "DELETE FROM reminders WHERE user_id = $1 AND reminder_type = $2",
+                    user_id, "db_update"
+                )
+                await query.message.edit_text(
+                    "Напоминание об обновлении БД удалено.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_ADMIN_PANEL
+                await log_analytics(user_id, "clear_db_reminder", {})
+                await query.answer()
+                return await show_admin_panel(update, context)
+            
+            elif data == STATE_TECH_BREAK and is_admin:
+                await query.message.reply_text(
+                    "Введите длительность технического перерыва в минутах и причину через пробел (например: 60 Обновление сервера):",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_TECH_BREAK
+                await query.answer()
+                return STATES[STATE_TECH_BREAK]
+            
+            elif data == STATE_BOT_SETTINGS and is_admin:
+                keyboard = [
+                    [InlineKeyboardButton(f"Цена за 50 звезд ({PRICE_USD_PER_50:.2f} USD)", callback_data="set_price_usd")],
+                    [InlineKeyboardButton(f"Процент накрутки ({MARKUP_PERCENTAGE:.2f}%)", callback_data="set_markup")],
+                    [InlineKeyboardButton(f"Реферальный бонус ({REFERRAL_BONUS_PERCENTAGE:.2f}%)", callback_data="set_ref_bonus")],
                     [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
-                ])
-            )
-            context.user_data["state"] = STATE_ADMIN_EDIT_PROFILE
-            await query.answer()
-            return STATES[STATE_ADMIN_EDIT_PROFILE]
-        
-        elif data == STATE_ALL_USERS and is_admin:
-            users = await conn.fetch("SELECT user_id, stars_bought FROM users LIMIT 10")
-            text = "Список пользователей (до 10):\n" + "\n".join(
-                [f"ID: {user['user_id']}, Звезды: {user['stars_bought']}" for user in users]
-            )
-            await query.message.edit_text(
-                text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-            )
-            context.user_data["state"] = STATE_ADMIN_PANEL
-            await log_analytics(user_id, "view_all_users", {})
-            await query.answer()
-            return STATES[STATE_ADMIN_PANEL]
-        
-        elif data == STATE_SET_DB_REMINDER and is_admin:
-            await query.message.reply_text(
-                "Введите дату напоминания в формате гггг-мм-дд (например, 2025-08-18):",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-            )
-            context.user_data["state"] = STATE_SET_DB_REMINDER
-            await query.answer()
-            return STATES[STATE_SET_DB_REMINDER]
-        
-        elif data == STATE_TECH_BREAK and is_admin:
-            await query.message.reply_text(
-                "Введите длительность технического перерыва в минутах и причину через пробел (например: 60 Обновление сервера):",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-            )
-            context.user_data["state"] = STATE_TECH_BREAK
-            await query.answer()
-            return STATES[STATE_TECH_BREAK]
-        
-        elif data == STATE_BOT_SETTINGS and is_admin:
-            keyboard = [
-                [InlineKeyboardButton("Цена за 50 звезд", callback_data="set_price_usd")],
-                [InlineKeyboardButton("Процент накрутки", callback_data="set_markup")],
-                [InlineKeyboardButton("Реферальный бонус", callback_data="set_ref_bonus")],
-                [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]
-            ]
-            await query.message.edit_text(
-                "Выберите параметр для настройки:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            context.user_data["state"] = STATE_BOT_SETTINGS
-            await query.answer()
-            return STATES[STATE_BOT_SETTINGS]
-        
-        elif data in ["set_price_usd", "set_markup", "set_ref_bonus"] and is_admin:
-            context.user_data["setting_field"] = data.replace("set_", "")
-            await query.message.reply_text(
-                f"Введите новое значение для {context.user_data['setting_field']} (число):",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
-            )
-            context.user_data["state"] = STATE_BOT_SETTINGS
-            await query.answer()
-            return STATES[STATE_BOT_SETTINGS]
-        
-        else:
-            await query.message.reply_text("Неизвестная команда.")
-            await query.answer()
-            return STATES[STATE_MAIN_MENU]
+                ]
+                await query.message.edit_text(
+                    "Выберите параметр для настройки:",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATE_BOT_SETTINGS
+                await query.answer()
+                return STATES[STATE_BOT_SETTINGS]
+            
+            elif data in ["set_price_usd", "set_markup", "set_ref_bonus"] and is_admin:
+                context.user_data["setting_field"] = data.replace("set_", "")
+                await query.message.reply_text(
+                    f"Введите новое значение для {context.user_data['setting_field']} (число):",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_ADMIN)]])
+                )
+                context.user_data["state"] = STATE_BOT_SETTINGS
+                await query.answer()
+                return STATES[STATE_BOT_SETTINGS]
+            
+            elif data == BACK_TO_ADMIN and is_admin:
+                return await show_admin_panel(update, context)
+            
+            else:
+                await query.message.reply_text("Неизвестная команда.")
+                await query.answer()
+                return STATES[STATE_MAIN_MENU]
+    except asyncpg.exceptions.InterfaceError as e:
+        logger.error(f"Database pool error: {e}")
+        await query.message.reply_text("Ошибка базы данных. Пожалуйста, свяжитесь с поддержкой: @sacoectasy")
+        await query.answer()
+        return STATES[STATE_MAIN_MENU]
             
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
@@ -1852,15 +1955,25 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display the admin panel with available actions."""
     query = update.callback_query
-    user_id = query.from_user.id
+    user_id = query.from_user.id if query else update.effective_user.id
     logger.info(f"Showing admin panel for user_id={user_id}")
     
     async with (await ensure_db_pool()) as conn:
         is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
         if not is_admin:
-            await query.message.reply_text("Доступ запрещен. Вы не администратор.")
-            await query.answer()
+            text = "Доступ запрещен. Вы не администратор."
+            if query:
+                await query.message.reply_text(text)
+                await query.answer()
+            else:
+                await update.message.reply_text(text)
             return STATES[STATE_MAIN_MENU]
+        
+        reminder = await conn.fetchrow(
+            "SELECT reminder_date FROM reminders WHERE user_id = $1 AND reminder_type = $2",
+            user_id, "db_update"
+        )
+        reminder_text = f"\nНапоминание об обновлении БД: {reminder['reminder_date'].strftime('%Y-%m-%d')}" if reminder else ""
         
         keyboard = [
             [InlineKeyboardButton("📊 Статистика", callback_data=STATE_ADMIN_STATS)],
@@ -1869,17 +1982,30 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔔 Напоминание об обновлении БД", callback_data=STATE_SET_DB_REMINDER)],
             [InlineKeyboardButton("🛠 Технический перерыв", callback_data=STATE_TECH_BREAK)],
             [InlineKeyboardButton("⚙️ Настройки бота", callback_data=STATE_BOT_SETTINGS)],
-            [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
         ]
-        text = await get_text("admin_panel", default="🔧 Админ-панель:\nВыберите действие:")
-        await query.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
+        if reminder:
+            keyboard.append([InlineKeyboardButton("🗑 Удалить напоминание", callback_data="clear_db_reminder")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)])
+        
+        text = await get_text(
+            "admin_panel",
+            default=f"🔧 Админ-панель:\nВыберите действие:{reminder_text}"
         )
+        if query:
+            await query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+            await query.answer()
+        else:
+            await update.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
         context.user_data["state"] = STATE_ADMIN_PANEL
         await log_analytics(user_id, "show_admin_panel", {})
-        await query.answer()
         return STATES[STATE_ADMIN_PANEL]
         
 async def webhook_handler(request):
