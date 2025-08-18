@@ -1253,7 +1253,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 user_id_to_copy = data.split("_")[-1]
                 await query.message.reply_text(
                     f"ID {user_id_to_copy} скопирован в буфер обмена.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=STATE_ALL_USERS)])
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=STATE_ALL_USERS)]])
                 )
                 await query.answer(text=f"ID {user_id_to_copy}")
                 return STATES[STATE_ALL_USERS]
