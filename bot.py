@@ -1056,32 +1056,27 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             user = await conn.fetchrow("SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id)
             referrals = json.loads(user["referrals"]) if user["referrals"] else []
             ref_count = len(referrals)
-            ref_bonus_ton = user["ref_bonus_ton"]
-            referral_link = f"https://t.me/{telegram_app.bot.username}?start=ref_{user_id}"
-            # Fetch usernames for referred users (if available)
+            ref_bonus_ton = user["ref_bonus_ton"] or 0.0
+            referral_link = f"https://t.me/CheapStarsShop_bot?start=ref_{user_id}"
+            # Fetch usernames for referred users (limited to avoid rate limits)
             referred_users = []
             if referrals:
-                referred_users_data = await conn.fetch("SELECT user_id FROM users WHERE user_id = ANY($1)", referrals)
-                referred_users = [str(user["user_id"]) for user in referred_users_data]
-            # Format referral text
-            try:
-                text = await get_text(
-                    "referrals",
-                    ref_count=ref_count,
-                    referral_link=referral_link,
-                    ref_bonus_ton=ref_bonus_ton,
-                    referred_users=", ".join(referred_users) if referred_users else "Нет рефералов"
-                )
-            except Exception as e:
-                logger.error(f"Error formatting referrals text: {e}")
-                # Fallback text if get_text fails
-                text = (
-                    f"🤝 Ваши рефералы:\n"
-                    f"Количество рефералов: {ref_count}\n"
-                    f"Реферальная ссылка: {referral_link}\n"
-                    f"Бонус TON: {ref_bonus_ton:.2f}\n"
-                    f"Приглашенные пользователи: {', '.join(referred_users) if referred_users else 'Нет рефералов'}"
-                )
+                for ref_id in referrals[:10]:  # Limit to 10 to avoid Telegram API rate limits
+                    try:
+                        chat = await telegram_app.bot.get_chat(ref_id)
+                        username = f"@{chat.username}" if chat.username else f"ID {ref_id}"
+                        referred_users.append(username)
+                    except Exception as e:
+                        logger.error(f"Failed to fetch username for user_id {ref_id}: {e}")
+                        referred_users.append(f"ID {ref_id}")
+            # Hardcoded referral text
+            text = (
+                f"🤝 Ваши рефералы:\n"
+                f"Количество рефералов: {ref_count}\n"
+                f"Реферальная ссылка: <a href='{referral_link}'>Пригласить друга</a>\n"
+                f"Бонус TON: {ref_bonus_ton:.2f}\n"
+                f"Приглашенные пользователи: {', '.join(referred_users) if referred_users else 'Нет рефералов'}"
+            )
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
             await query.message.edit_text(
                 text,
@@ -1238,7 +1233,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.reply_text("Неизвестная команда.")
             await query.answer()
             return STATES[STATE_MAIN_MENU]
-
+            
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
     global tech_break_info
@@ -1854,7 +1849,39 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text("Пожалуйста, используйте меню.")
                 return STATES[STATE_MAIN_MENU]
-
+async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display the admin panel with available actions."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    logger.info(f"Showing admin panel for user_id={user_id}")
+    
+    async with (await ensure_db_pool()) as conn:
+        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
+        if not is_admin:
+            await query.message.reply_text("Доступ запрещен. Вы не администратор.")
+            await query.answer()
+            return STATES[STATE_MAIN_MENU]
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Статистика", callback_data=STATE_ADMIN_STATS)],
+            [InlineKeyboardButton("📢 Рассылка", callback_data=BROADCAST_MESSAGE)],
+            [InlineKeyboardButton("✏️ Редактировать профиль", callback_data=STATE_ADMIN_EDIT_PROFILE)],
+            [InlineKeyboardButton("🔔 Напоминание об обновлении БД", callback_data=STATE_SET_DB_REMINDER)],
+            [InlineKeyboardButton("🛠 Технический перерыв", callback_data=STATE_TECH_BREAK)],
+            [InlineKeyboardButton("⚙️ Настройки бота", callback_data=STATE_BOT_SETTINGS)],
+            [InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]
+        ]
+        text = await get_text("admin_panel", default="🔧 Админ-панель:\nВыберите действие:")
+        await query.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        context.user_data["state"] = STATE_ADMIN_PANEL
+        await log_analytics(user_id, "show_admin_panel", {})
+        await query.answer()
+        return STATES[STATE_ADMIN_PANEL]
+        
 async def webhook_handler(request):
     try:
         if telegram_app is None:
@@ -1881,7 +1908,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update and update.effective_user:
         try:
             await update.effective_message.reply_text(
-                "Произошла ошибка. Пожалуйста, попробуйте позже или свяжитесь с поддержкой: https://t.me/CheapStarsSupport"
+                "Произошла ошибка. Пожалуйста, попробуйте позже или свяжитесь с поддержкой: @sacoectasy (https://t.me/sacoectasy)"
             )
         except Exception as e:
             logger.error(f"Failed to send error message to user: {e}", exc_info=True)
