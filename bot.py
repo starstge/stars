@@ -2011,7 +2011,7 @@ async def main():
         telegram_app.add_handler(CommandHandler("tonprice", ton_price_command))
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update), priority=0)
+        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))  # Removed priority=0
         telegram_app.add_error_handler(error_handler)
 
         scheduler = AsyncIOScheduler(timezone="UTC")
