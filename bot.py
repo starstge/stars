@@ -1053,13 +1053,35 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return STATES[STATE_MAIN_MENU]
         
         elif data == REFERRALS:
-            user = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", user_id)
+            user = await conn.fetchrow("SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id)
             referrals = json.loads(user["referrals"]) if user["referrals"] else []
-            text = await get_text(
-                "referrals",
-                ref_count=len(referrals),
-                referral_link=f"https://t.me/{telegram_app.bot.username}?start=ref_{user_id}"
-            )
+            ref_count = len(referrals)
+            ref_bonus_ton = user["ref_bonus_ton"]
+            referral_link = f"https://t.me/{telegram_app.bot.username}?start=ref_{user_id}"
+            # Fetch usernames for referred users (if available)
+            referred_users = []
+            if referrals:
+                referred_users_data = await conn.fetch("SELECT user_id FROM users WHERE user_id = ANY($1)", referrals)
+                referred_users = [str(user["user_id"]) for user in referred_users_data]
+            # Format referral text
+            try:
+                text = await get_text(
+                    "referrals",
+                    ref_count=ref_count,
+                    referral_link=referral_link,
+                    ref_bonus_ton=ref_bonus_ton,
+                    referred_users=", ".join(referred_users) if referred_users else "Нет рефералов"
+                )
+            except Exception as e:
+                logger.error(f"Error formatting referrals text: {e}")
+                # Fallback text if get_text fails
+                text = (
+                    f"🤝 Ваши рефералы:\n"
+                    f"Количество рефералов: {ref_count}\n"
+                    f"Реферальная ссылка: {referral_link}\n"
+                    f"Бонус TON: {ref_bonus_ton:.2f}\n"
+                    f"Приглашенные пользователи: {', '.join(referred_users) if referred_users else 'Нет рефералов'}"
+                )
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=BACK_TO_MENU)]]
             await query.message.edit_text(
                 text,
@@ -1067,6 +1089,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 parse_mode="HTML"
             )
             context.user_data["state"] = STATE_MAIN_MENU
+            await log_analytics(user_id, "view_referrals", {"ref_count": ref_count, "ref_bonus_ton": ref_bonus_ton})
             await query.answer()
             return STATES[STATE_MAIN_MENU]
         
@@ -1074,7 +1097,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return await show_admin_panel(update, context)
         
         elif data == STATE_ADMIN_STATS and is_admin:
-            # Example stats (customize based on your needs)
             total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
             total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
             text = await get_text(
@@ -1881,8 +1903,8 @@ async def main():
         logger.info("Telegram Application initialized successfully")
         
         # Register handlers
-        telegram_app.add_handler(CommandHandler("start", start, filters=filters.RegexCommandsFilter(commands=["start"])))
-        telegram_app.add_handler(CommandHandler("tonprice", ton_price_command, filters=filters.RegexCommandsFilter(commands=["tonprice"])))
+        telegram_app.add_handler(CommandHandler("start", start, filters=filters.COMMAND))
+        telegram_app.add_handler(CommandHandler("tonprice", ton_price_command, filters=filters.COMMAND))
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
