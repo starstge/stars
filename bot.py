@@ -1680,47 +1680,42 @@ async def calculate_price_ton(stars: int) -> float:
     return round(ton_price, 2)
 
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Display the admin panel."""
-    query = update.callback_query
-    user_id = query.from_user.id if query else update.effective_user.id
-    text = await get_text("admin_panel")
+    """Отображение админ-панели."""
+    user_id = update.effective_user.id
     async with (await ensure_db_pool()) as conn:
-        mention = await conn.fetchrow("SELECT mention_date FROM mentions LIMIT 1")
-    keyboard = [
-        [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast_message")],
-        [InlineKeyboardButton("👤 Редактировать профиль", callback_data="admin_edit_profile")],
-        [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
-        [InlineKeyboardButton("📅 Установить напоминание", callback_data="set_db_reminder")],
-        [InlineKeyboardButton("🗑 Удалить напоминание", callback_data="clear_db_reminder")],
-        [
-            InlineKeyboardButton(
-                f"📢 Упоминание: {mention['mention_date']}" if mention else "📢 Установить упоминание",
-                callback_data="set_mention"
-            )
+        reminder = await conn.fetchrow("SELECT reminder_date FROM reminders WHERE reminder_type = 'db_update'")
+        reminder_text = reminder["reminder_date"].strftime("%Y-%m-%d") if reminder else "Не установлено"
+        text = await get_text(
+            "admin_panel",
+            reminder_date=reminder_text
+        )
+        keyboard = [
+            [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton("📝 Редактировать профиль", callback_data="admin_edit_profile")],
+            [InlineKeyboardButton("📋 Список пользователей", callback_data="all_users")],
+            [InlineKeyboardButton("📬 Рассылка", callback_data="broadcast_message")],
+            [InlineKeyboardButton("⚙️ Настройки бота", callback_data="bot_settings")],
+            [
+                InlineKeyboardButton(f"🔔 Напоминание о БД: {reminder_text}", callback_data="set_db_reminder"),
+                InlineKeyboardButton("🗑️ Очистить", callback_data="clear_db_reminder")
+            ],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
         ]
-    ]
-    if mention:
-        keyboard.append([InlineKeyboardButton("🗑 Удалить упоминание", callback_data="clear_mention")])
-    keyboard.append([InlineKeyboardButton("⚠️ Технический перерыв", callback_data="tech_break")])
-    keyboard.append([InlineKeyboardButton("⚙️ Настройки бота", callback_data="bot_settings")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
-    if query:
-        await query.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
-        await query.answer()
-    else:
-        await update.message.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
-    context.user_data["state"] = STATES["admin_panel"]
-    await log_analytics(user_id, "show_admin_panel", {})
-    return STATES["admin_panel"]
+        try:
+            await update.callback_query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+        except AttributeError:
+            await update.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+        context.user_data["state"] = STATES["admin_panel"]
+        await log_analytics(user_id, "view_admin_panel", {})
+        return STATES["admin_panel"]
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors."""
