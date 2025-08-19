@@ -129,7 +129,6 @@ async def debug_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ensure_db_pool():
-    """Получение пула соединений с базой данных."""
     global _db_pool
     async with _db_pool_lock:
         if _db_pool is None or _db_pool._closed:
@@ -233,7 +232,6 @@ async def init_db():
         raise
 
 async def close_db_pool():
-    """Закрытие пула соединений."""
     global _db_pool
     async with _db_pool_lock:
         if _db_pool is not None and not _db_pool._closed:
@@ -481,6 +479,9 @@ async def check_webhook():
 async def heartbeat_check(app):
     """Проверка работоспособности DB и API."""
     try:
+        # Ensure pool is initialized before proceeding
+        async with (await ensure_db_pool()) as conn:
+            pass  # Just to ensure pool is ready
         await test_db_connection()
         await check_webhook()
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=30)) as session:
@@ -1983,6 +1984,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to send error message: {e}")
 
+
 async def webhook_handler(request):
     """Handle incoming webhook updates."""
     try:
@@ -2043,8 +2045,9 @@ async def main():
             await asyncio.sleep(3600)
     except Exception as e:
         logger.error(f"Fatal error in main: {e}", exc_info=True)
-        await close_db_pool()
+        # Do not close the pool here to avoid breaking scheduled tasks
+        # await close_db_pool()
         raise
-
+    
 if __name__ == "__main__":
     asyncio.run(main())
