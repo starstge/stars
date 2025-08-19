@@ -1193,12 +1193,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     "SELECT user_id, username, stars_bought FROM users ORDER BY stars_bought DESC LIMIT 10"
                 )
                 text_lines = []
-                keyboard = []
+                keyboard = [[InlineKeyboardButton("🔙 Назад в админ-панель", callback_data="back_to_admin")]]
                 for user in users:
                     username = f"@{user['username']}" if user['username'] else f"ID <code>{user['user_id']}</code>"
-                    text_lines.append(f"{username}, айди {user['user_id']} Звезды: {user['stars_bought']}")
-                    keyboard.append([InlineKeyboardButton(f"Скопировать ID {user['user_id']}", callback_data=f"copy_user_id_{user['user_id']}")])
-                keyboard.append([InlineKeyboardButton("🔙 Назад в админ-панель", callback_data="back_to_admin")])
+                    text_lines.append(f"{username}, ID <code>{user['user_id']}</code> Звезды: {user['stars_bought']}")
                 text = await get_text(
                     "all_users",
                     users_list="\n".join(text_lines) if text_lines else "Пользователи не найдены."
