@@ -106,11 +106,12 @@ STATES = {
     "all_users": 15,
     "tech_break": 16,
     "bot_settings": 17,
-    STATE_FEEDBACK: 18,
-    STATE_SUPPORT_TICKET: 19,
-    STATE_BAN_USER: 20,
-    STATE_UNBAN_USER: 21,
-    "select_stars_menu": 22
+    "STATE_FEEDBACK": 18,
+    "STATE_SUPPORT_TICKET": 19,
+    "STATE_BAN_USER": 20,
+    "STATE_UNBAN_USER": 21,
+    "select_stars_menu": 22,
+    "buy_stars_menu": 23  # Restore buy_stars_menu
 }
 
 # Глобальные переменные
