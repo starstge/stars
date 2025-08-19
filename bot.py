@@ -109,7 +109,7 @@ STATES = {
     STATE_FEEDBACK: 18,
     STATE_SUPPORT_TICKET: 19,
     STATE_BAN_USER: 20,
-    STATE_UNBAN_USER: 21
+    STATE_UNBAN_USER: 21,
     "select_stars_menu": 22
 }
 
