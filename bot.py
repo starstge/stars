@@ -1489,17 +1489,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global tech_break_info, PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE
     user_id = update.effective_user.id
     text = update.message.text.strip()
-    state = context.user_data.get("state", STATE_MAIN_MENU)
+    state = context.user_data.get("state", STATES["main_menu"])
     REQUESTS.labels(endpoint="message").inc()
     with RESPONSE_TIME.labels(endpoint="message").time():
         logger.info(f"Message received: user_id={user_id}, text={text}, state={state}")
         async with (await ensure_db_pool()) as conn:
-            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
-            is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id)
+            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+            is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id) or False
             if is_banned:
                 text = await get_text("user_banned", support_channel=SUPPORT_CHANNEL)
                 await update.message.reply_text(text)
-                return STATES[STATE_MAIN_MENU]
+                return STATES["main_menu"]
             if not is_admin and tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
                 time_remaining = format_time_remaining(tech_break_info["end_time"])
                 text = await get_text(
@@ -1509,9 +1509,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reason=tech_break_info["reason"]
                 )
                 await update.message.reply_text(text)
-                return context.user_data.get("state", STATES[STATE_MAIN_MENU])
+                return STATES["main_menu"]
             
-            if state == STATE_BUY_STARS_RECIPIENT:
+            if state == STATES["buy_stars_recipient"]:
                 recipient = text.replace("@", "")
                 context.user_data["buy_data"] = context.user_data.get("buy_data", {})
                 context.user_data["buy_data"]["recipient"] = recipient
@@ -1524,11 +1524,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
                     ])
                 )
-                context.user_data["state"] = STATE_BUY_STARS_AMOUNT
+                context.user_data["state"] = STATES["buy_stars_amount"]
                 await log_analytics(user_id, "set_recipient", {"recipient": recipient})
-                return STATES[STATE_BUY_STARS_AMOUNT]
+                return STATES["buy_stars_amount"]
             
-            elif state == STATE_BUY_STARS_AMOUNT:
+            elif state == STATES["buy_stars_amount"]:
                 try:
                     amount = int(text)
                     if amount <= 0:
@@ -1553,14 +1553,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=InlineKeyboardMarkup(keyboard),
                         parse_mode="HTML"
                     )
-                    context.user_data["state"] = STATE_BUY_STARS_CONFIRM
+                    context.user_data["state"] = STATES["buy_stars_confirm"]
                     await log_analytics(user_id, "set_amount", {"amount": amount})
-                    return STATES[STATE_BUY_STARS_CONFIRM]
+                    return STATES["buy_stars_confirm"]
                 except ValueError as e:
                     await update.message.reply_text(f"Ошибка: {str(e)}. Пожалуйста, введите целое число.")
-                    return STATES[STATE_BUY_STARS_AMOUNT]
+                    return STATES["buy_stars_amount"]
 
-            elif state == STATE_ADMIN_BROADCAST and is_admin:
+            elif state == STATES["admin_broadcast"] and is_admin:
                 context.user_data["broadcast_text"] = text
                 keyboard = [
                     [InlineKeyboardButton("✅ Отправить", callback_data="confirm_broadcast")],
@@ -1571,11 +1571,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode="HTML"
                 )
-                context.user_data["state"] = STATE_ADMIN_BROADCAST
+                context.user_data["state"] = STATES["admin_broadcast"]
                 await log_analytics(user_id, "set_broadcast_text", {"text": text[:50]})
-                return STATES[STATE_ADMIN_BROADCAST]
+                return STATES["admin_broadcast"]
 
-            elif state == STATE_ADMIN_EDIT_PROFILE and is_admin:
+            elif state == STATES["admin_edit_profile"] and is_admin:
                 edit_user_id = context.user_data.get("edit_user_id")
                 edit_field = context.user_data.get("edit_profile_field")
                 if not edit_user_id:
@@ -1590,7 +1590,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
                                 ])
                             )
-                            return STATES[STATE_ADMIN_EDIT_PROFILE]
+                            return STATES["admin_edit_profile"]
                         context.user_data["edit_user_id"] = edit_user_id
                         keyboard = [
                             [InlineKeyboardButton("Звезды", callback_data="edit_profile_stars")],
@@ -1602,9 +1602,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"Редактирование профиля ID {edit_user_id}. Выберите поле:",
                             reply_markup=InlineKeyboardMarkup(keyboard)
                         )
-                        context.user_data["state"] = STATE_ADMIN_EDIT_PROFILE
+                        context.user_data["state"] = STATES["admin_edit_profile"]
                         await log_analytics(user_id, "select_edit_user", {"edit_user_id": edit_user_id})
-                        return STATES[STATE_ADMIN_EDIT_PROFILE]
+                        return STATES["admin_edit_profile"]
                     except ValueError:
                         await update.message.reply_text(
                             "Пожалуйста, введите корректный ID пользователя.",
@@ -1613,7 +1613,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
                             ])
                         )
-                        return STATES[STATE_ADMIN_EDIT_PROFILE]
+                        return STATES["admin_edit_profile"]
                 elif edit_field:
                     try:
                         if edit_field == "stars_bought":
@@ -1655,14 +1655,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await log_analytics(user_id, "edit_profile_ref_bonus", {"edit_user_id": edit_user_id, "bonus": bonus})
                         context.user_data.pop("edit_user_id", None)
                         context.user_data.pop("edit_profile_field", None)
-                        context.user_data["state"] = STATE_ADMIN_PANEL
+                        context.user_data["state"] = STATES["admin_panel"]
                         return await show_admin_panel(update, context)
                     except ValueError as e:
                         await update.message.reply_text(
                             f"Ошибка: {str(e)}. Пожалуйста, введите корректное значение.",
                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                         )
-                        return STATES[STATE_ADMIN_EDIT_PROFILE]
+                        return STATES["admin_edit_profile"]
 
             elif state == "search_user" and is_admin:
                 search_text = text.replace("@", "")
@@ -1689,11 +1689,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode="HTML"
                 )
-                context.user_data["state"] = STATE_ALL_USERS
+                context.user_data["state"] = STATES["all_users"]
                 await log_analytics(user_id, "search_user", {"search_text": search_text})
-                return STATES[STATE_ALL_USERS]
+                return STATES["all_users"]
 
-            elif state == STATE_SET_DB_REMINDER and is_admin:
+            elif state == STATES["set_db_reminder"] and is_admin:
                 try:
                     reminder_date = datetime.strptime(text, "%Y-%m-%d").date()
                     if reminder_date < datetime.now(pytz.UTC).date():
@@ -1706,7 +1706,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Напоминание установлено на {reminder_date}.",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     )
-                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    context.user_data["state"] = STATES["admin_panel"]
                     await log_analytics(user_id, "set_db_reminder", {"reminder_date": str(reminder_date)})
                     return await show_admin_panel(update, context)
                 except ValueError as e:
@@ -1714,9 +1714,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Ошибка: {str(e)}. Введите дату в формате гггг-мм-дд.",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     )
-                    return STATES[STATE_SET_DB_REMINDER]
+                    return STATES["set_db_reminder"]
 
-            elif state == STATE_TECH_BREAK and is_admin:
+            elif state == STATES["tech_break"] and is_admin:
                 try:
                     minutes, reason = text.split(" ", 1)
                     minutes = int(minutes)
@@ -1733,7 +1733,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text,
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     )
-                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    context.user_data["state"] = STATES["admin_panel"]
                     await log_analytics(user_id, "set_tech_break", {"minutes": minutes, "reason": reason})
                     return await show_admin_panel(update, context)
                 except ValueError as e:
@@ -1741,9 +1741,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Ошибка: {str(e)}. Введите длительность в минутах и причину через пробел.",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     )
-                    return STATES[STATE_TECH_BREAK]
+                    return STATES["tech_break"]
 
-            elif state == STATE_BOT_SETTINGS and is_admin:
+            elif state == STATES["bot_settings"] and is_admin:
                 setting_field = context.user_data.get("setting_field")
                 try:
                     value = float(text)
@@ -1774,16 +1774,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         await log_analytics(user_id, "set_ref_bonus", {"ref_bonus": value})
                     context.user_data.pop("setting_field", None)
-                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    context.user_data["state"] = STATES["admin_panel"]
                     return await show_admin_panel(update, context)
                 except ValueError as e:
                     await update.message.reply_text(
                         f"Ошибка: {str(e)}. Введите корректное число.",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     )
-                    return STATES[STATE_BOT_SETTINGS]
+                    return STATES["bot_settings"]
 
-            elif state == STATE_FEEDBACK:
+            elif state == STATES["feedback"]:
                 await conn.execute(
                     "INSERT INTO feedback (user_id, message, timestamp) VALUES ($1, $2, $3)",
                     user_id, text, datetime.now(pytz.UTC)
@@ -1802,11 +1802,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except TelegramError as e:
                         logger.error(f"Failed to notify admin {admin['user_id']} about feedback: {e}")
-                context.user_data["state"] = STATE_MAIN_MENU
+                context.user_data["state"] = STATES["main_menu"]
                 await log_analytics(user_id, "submit_feedback", {"message_length": len(text)})
-                return STATES[STATE_MAIN_MENU]
+                return STATES["main_menu"]
 
-            elif state == STATE_SUPPORT_TICKET:
+            elif state == STATES["support_ticket"]:
                 ticket_id = await conn.fetchval(
                     "INSERT INTO support_tickets (user_id, issue, status, timestamp) VALUES ($1, $2, $3, $4) RETURNING id",
                     user_id, text, "open", datetime.now(pytz.UTC)
@@ -1825,11 +1825,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except TelegramError as e:
                         logger.error(f"Failed to notify admin {admin['user_id']} about support ticket: {e}")
-                context.user_data["state"] = STATE_MAIN_MENU
+                context.user_data["state"] = STATES["main_menu"]
                 await log_analytics(user_id, "submit_support_ticket", {"ticket_id": ticket_id, "issue_length": len(text)})
-                return STATES[STATE_MAIN_MENU]
+                return STATES["main_menu"]
 
-            elif state == STATE_BAN_USER and is_admin:
+            elif state == STATES["ban_user"] and is_admin:
                 try:
                     ban_user_id = int(text)
                     user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", ban_user_id)
@@ -1841,7 +1841,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
                             ])
                         )
-                        return STATES[STATE_BAN_USER]
+                        return STATES["ban_user"]
                     await conn.execute(
                         "UPDATE users SET is_banned = TRUE WHERE user_id = $1",
                         ban_user_id
@@ -1858,7 +1858,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except TelegramError as e:
                         logger.error(f"Failed to notify banned user {ban_user_id}: {e}")
-                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    context.user_data["state"] = STATES["admin_panel"]
                     await log_analytics(user_id, "ban_user", {"banned_user_id": ban_user_id})
                     return await show_admin_panel(update, context)
                 except ValueError:
@@ -1869,9 +1869,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
                         ])
                     )
-                    return STATES[STATE_BAN_USER]
+                    return STATES["ban_user"]
 
-            elif state == STATE_UNBAN_USER and is_admin:
+            elif state == STATES["unban_user"] and is_admin:
                 try:
                     unban_user_id = int(text)
                     user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", unban_user_id)
@@ -1883,7 +1883,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
                             ])
                         )
-                        return STATES[STATE_UNBAN_USER]
+                        return STATES["unban_user"]
                     await conn.execute(
                         "UPDATE users SET is_banned = FALSE WHERE user_id = $1",
                         unban_user_id
@@ -1900,7 +1900,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     except TelegramError as e:
                         logger.error(f"Failed to notify unbanned user {unban_user_id}: {e}")
-                    context.user_data["state"] = STATE_ADMIN_PANEL
+                    context.user_data["state"] = STATES["admin_panel"]
                     await log_analytics(user_id, "unban_user", {"unbanned_user_id": unban_user_id})
                     return await show_admin_panel(update, context)
                 except ValueError:
@@ -1911,15 +1911,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
                         ])
                     )
-                    return STATES[STATE_UNBAN_USER]
+                    return STATES["unban_user"]
 
             else:
                 await update.message.reply_text(
                     "Пожалуйста, используйте кнопки меню для взаимодействия с ботом.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
                 )
-                context.user_data["state"] = STATE_MAIN_MENU
-                return STATES[STATE_MAIN_MENU]
+                context.user_data["state"] = STATES["main_menu"]
+                return STATES["main_menu"]
 
 async def calculate_price_ton(stars: int) -> float:
     """Calculate the price in TON for a given number of stars."""
@@ -1964,9 +1964,9 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
-    context.user_data["state"] = STATE_ADMIN_PANEL
+    context.user_data["state"] = STATES["admin_panel"]
     await log_analytics(user_id, "show_admin_panel", {})
-    return STATES[STATE_ADMIN_PANEL]
+    return STATES["admin_panel"]
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors."""
@@ -2011,7 +2011,7 @@ async def main():
         telegram_app.add_handler(CommandHandler("tonprice", ton_price_command))
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update), priority=0)
+        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
         telegram_app.add_error_handler(error_handler)
 
         scheduler = AsyncIOScheduler(timezone="UTC")
