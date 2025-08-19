@@ -155,6 +155,9 @@ async def init_db():
     """Инициализация базы данных."""
     try:
         async with (await ensure_db_pool()) as conn:
+            # Drop settings table to ensure correct schema
+            await conn.execute("DROP TABLE IF EXISTS settings")
+            # Create tables
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -200,12 +203,12 @@ async def init_db():
                     value FLOAT NOT NULL
                 )
             """)
-            # Initialize default settings if not present
+            # Initialize default settings
             await conn.execute("""
                 INSERT INTO settings (key, value)
-                VALUES ('price_usd', $1), ('markup', $2), ('ref_bonus', $3)
+                VALUES ($1, $2), ($3, $4), ($5, $6)
                 ON CONFLICT (key) DO NOTHING
-            """, PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE)
+            """, "price_usd", float(PRICE_USD_PER_50), "markup", float(MARKUP_PERCENTAGE), "ref_bonus", float(REFERRAL_BONUS_PERCENTAGE))
             # Ensure admin user
             await conn.execute(
                 "INSERT INTO users (user_id, is_admin) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET is_admin = $2",
@@ -215,6 +218,13 @@ async def init_db():
             await conn.execute("DROP TABLE IF EXISTS transactions")
             await conn.execute("DROP TABLE IF EXISTS feedback")
             await conn.execute("DROP TABLE IF EXISTS support_tickets")
+            # Fix analytics table if needed
+            columns = await conn.fetch(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'analytics'"
+            )
+            column_names = [col['column_name'] for col in columns]
+            if 'details' in column_names and 'data' not in column_names:
+                await conn.execute("ALTER TABLE analytics RENAME COLUMN details TO data")
         logger.info("База данных инициализирована")
     except Exception as e:
         logger.error(f"Ошибка инициализации базы данных: {e}", exc_info=True)
@@ -306,12 +316,13 @@ async def load_settings():
         settings = await conn.fetch("SELECT key, value FROM settings")
         for setting in settings:
             if setting["key"] == "price_usd":
-                PRICE_USD_PER_50 = setting["value"]
+                PRICE_USD_PER_50 = float(setting["value"])
             elif setting["key"] == "markup":
-                MARKUP_PERCENTAGE = setting["value"]
+                MARKUP_PERCENTAGE = float(setting["value"])
             elif setting["key"] == "ref_bonus":
-                REFERRAL_BONUS_PERCENTAGE = setting["value"]
+                REFERRAL_BONUS_PERCENTAGE = float(setting["value"])
         logger.info("Settings loaded from database")
+
 
 async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /tonprice."""
