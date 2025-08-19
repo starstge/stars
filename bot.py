@@ -187,45 +187,34 @@ async def init_db():
                 )
             """)
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS transactions (
+                CREATE TABLE IF NOT EXISTS mentions (
                     id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    recipient TEXT,
-                    amount INTEGER,
-                    price_ton FLOAT,
-                    payment_method TEXT,
-                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    mention_date DATE NOT NULL,
+                    set_by_user_id BIGINT NOT NULL
                 )
             """)
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS feedback (
+                CREATE TABLE IF NOT EXISTS settings (
                     id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    message TEXT,
-                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    key TEXT UNIQUE NOT NULL,
+                    value FLOAT NOT NULL
                 )
             """)
+            # Initialize default settings if not present
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS support_tickets (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    issue TEXT,
-                    status TEXT DEFAULT 'open',
-                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            columns = await conn.fetch(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = 'analytics'"
-            )
-            column_names = [col['column_name'] for col in columns]
-            if 'details' in column_names and 'data' not in column_names:
-                await conn.execute("""
-                    ALTER TABLE analytics RENAME COLUMN details TO data;
-                """)
+                INSERT INTO settings (key, value)
+                VALUES ('price_usd', $1), ('markup', $2), ('ref_bonus', $3)
+                ON CONFLICT (key) DO NOTHING
+            """, PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE)
+            # Ensure admin user
             await conn.execute(
                 "INSERT INTO users (user_id, is_admin) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET is_admin = $2",
                 6956377285, True
             )
+            # Drop unused tables
+            await conn.execute("DROP TABLE IF EXISTS transactions")
+            await conn.execute("DROP TABLE IF EXISTS feedback")
+            await conn.execute("DROP TABLE IF EXISTS support_tickets")
         logger.info("База данных инициализирована")
     except Exception as e:
         logger.error(f"Ошибка инициализации базы данных: {e}", exc_info=True)
@@ -255,7 +244,8 @@ async def get_text(key: str, **kwargs) -> str:
         "bot_settings": "⚙️ Настройки бота:\nТекущая цена за 50 звезд: ${price_usd:.2f}\nНакрутка: {markup}%\nРеферальный бонус: {ref_bonus}%",
         "referral_leaderboard": "🏆 Топ-10 рефералов:\n{users_list}",
         "top_purchases": "🏅 Топ-10 покупок:\n{users_list}",
-        "reminder_set": "Напоминание установлено на {reminder_date}."
+        "reminder_set": "Напоминание установлено на {reminder_date}.",
+        "mention_set": "Упоминание установлено на {mention_date}."
     }
     text = templates.get(key, f"Текст для {key} не задан.")
     try:
@@ -267,8 +257,6 @@ async def get_text(key: str, **kwargs) -> str:
             return text.format(**default_kwargs)
         except KeyError:
             return text
-
-        
 async def log_analytics(user_id: int, action: str, data: dict = None):
     """Логирование аналитики."""
     try:
@@ -310,6 +298,20 @@ async def update_ton_price():
         logger.error(f"Ошибка получения цены TON: {e}", exc_info=True)
         ERRORS.labels(type="api", endpoint="update_ton_price").inc()
         telegram_app.bot_data["ton_price_info"] = {"price": 0.0, "diff_24h": 0.0}
+
+async def load_settings():
+    """Load bot settings from the database."""
+    global PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE
+    async with (await ensure_db_pool()) as conn:
+        settings = await conn.fetch("SELECT key, value FROM settings")
+        for setting in settings:
+            if setting["key"] == "price_usd":
+                PRICE_USD_PER_50 = setting["value"]
+            elif setting["key"] == "markup":
+                MARKUP_PERCENTAGE = setting["value"]
+            elif setting["key"] == "ref_bonus":
+                REFERRAL_BONUS_PERCENTAGE = setting["value"]
+        logger.info("Settings loaded from database")
 
 async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /tonprice."""
@@ -769,6 +771,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("📞 Отзывы и поддержка", url="https://t.me/CheapStarsShop_support")
                 ],
                 [
+                    InlineKeyboardButton("🤝 Рефералы", callback_data="referrals"),
                     InlineKeyboardButton("👤 Профиль", callback_data="profile")
                 ]
             ]
@@ -782,8 +785,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = STATES["main_menu"]
             await log_analytics(user_id, "start", {"referrer_id": referrer_id})
             return STATES["main_menu"]
-
-
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback-запросов."""
     query = update.callback_query
@@ -821,6 +822,29 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await log_analytics(user_id, "view_profile", {})
                 return STATES["main_menu"]
 
+            elif data == "referrals":
+                user = await conn.fetchrow(
+                    "SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id
+                )
+                referrals = json.loads(user["referrals"]) if user and user["referrals"] else []
+                ref_bonus_ton = user["ref_bonus_ton"] if user else 0.0
+                ref_link = f"https://t.me/{telegram_app.bot.username}?start={user_id}"
+                text = await get_text(
+                    "referrals",
+                    ref_link=ref_link,
+                    ref_count=len(referrals),
+                    ref_bonus_ton=ref_bonus_ton
+                )
+                await query.message.edit_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                    parse_mode="HTML"
+                )
+                await query.answer()
+                context.user_data["state"] = STATES["main_menu"]
+                await log_analytics(user_id, "view_referrals", {})
+                return STATES["main_menu"]
+
             elif data == "referral_leaderboard":
                 users = await conn.fetch(
                     "SELECT user_id, username, jsonb_array_length(referrals) as ref_count "
@@ -831,10 +855,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 for user in users:
                     try:
                         chat = await telegram_app.bot.get_chat(user["user_id"])
-                        username = f"@{chat.username}" if chat.username else f"ID {user['user_id']}"
+                        username = f"@{chat.username}" if chat.username else f"ID <code>{user['user_id']}</code>"
                     except Exception as e:
                         logger.error(f"Failed to fetch username for user_id {user['user_id']}: {e}")
-                        username = f"<code>{user['user_id']}</code>"
+                        username = f"ID <code>{user['user_id']}</code>"
                     text_lines.append(f"{username}, Рефералов: {user['ref_count']}")
                 text = await get_text(
                     "referral_leaderboard",
@@ -859,10 +883,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 for user in users:
                     try:
                         chat = await telegram_app.bot.get_chat(user["user_id"])
-                        username = f"@{chat.username}" if chat.username else f"ID {user['user_id']}"
+                        username = f"@{chat.username}" if chat.username else f"ID <code>{user['user_id']}</code>"
                     except Exception as e:
                         logger.error(f"Failed to fetch username for user_id {user['user_id']}: {e}")
-                        username = f"<code>{user['user_id']}</code>"
+                        username = f"ID <code>{user['user_id']}</code>"
                     text_lines.append(f"{username}, Звезды: {user['stars_bought']}")
                 text = await get_text(
                     "top_purchases",
@@ -969,7 +993,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
             elif data == "all_users" and is_admin:
                 users = await conn.fetch(
-                    "SELECT user_id, username, stars_bought FROM users ORDER BY stars_bought DESC LIMIT 10"
+                    "SELECT user_id, username, stars_bought, is_admin FROM users ORDER BY stars_bought DESC LIMIT 10"
                 )
                 text_lines = []
                 for user in users:
@@ -979,7 +1003,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     except Exception as e:
                         logger.error(f"Failed to fetch username for user_id {user['user_id']}: {e}")
                         username = f"ID <code>{user['user_id']}</code>"
-                    text_lines.append(f"{username}, Звезды: {user['stars_bought']}")
+                    is_admin_text = "Да" if user["is_admin"] else "Нет"
+                    text_lines.append(f"{username}, Звезды: {user['stars_bought']}, Админ: {is_admin_text}")
                 keyboard = [
                     [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
                     [InlineKeyboardButton("🔙 Назад в админ-панель", callback_data="back_to_admin")]
@@ -1067,6 +1092,27 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await log_analytics(user_id, "clear_db_reminder", {})
                 return await show_admin_panel(update, context)
 
+            elif data == "set_mention" and is_admin:
+                await query.message.edit_text(
+                    "Введите дату упоминания в формате гггг-мм-дд:",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                )
+                await query.answer()
+                context.user_data["state"] = STATES["set_mention"]
+                await log_analytics(user_id, "start_set_mention", {})
+                return STATES["set_mention"]
+
+            elif data == "clear_mention" and is_admin:
+                await conn.execute("DELETE FROM mentions")
+                await query.message.edit_text(
+                    "Упоминание удалено.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                )
+                await query.answer()
+                context.user_data["state"] = STATES["admin_panel"]
+                await log_analytics(user_id, "clear_mention", {})
+                return await show_admin_panel(update, context)
+
             elif data == "tech_break" and is_admin:
                 await query.message.edit_text(
                     "Введите длительность технического перерыва в минутах и причину через пробел:",
@@ -1078,11 +1124,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 return STATES["tech_break"]
 
             elif data == "bot_settings" and is_admin:
+                async with (await ensure_db_pool()) as conn:
+                    price_usd = await conn.fetchval("SELECT value FROM settings WHERE key = 'price_usd'") or PRICE_USD_PER_50
+                    markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or MARKUP_PERCENTAGE
+                    ref_bonus = await conn.fetchval("SELECT value FROM settings WHERE key = 'ref_bonus'") or REFERRAL_BONUS_PERCENTAGE
                 text = await get_text(
                     "bot_settings",
-                    price_usd=PRICE_USD_PER_50,
-                    markup=MARKUP_PERCENTAGE,
-                    ref_bonus=REFERRAL_BONUS_PERCENTAGE
+                    price_usd=price_usd,
+                    markup=markup,
+                    ref_bonus=ref_bonus
                 )
                 await query.message.edit_text(
                     text,
@@ -1145,6 +1195,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         InlineKeyboardButton("📞 Отзывы и поддержка", url="https://t.me/CheapStarsShop_support")
                     ],
                     [
+                        InlineKeyboardButton("🤝 Рефералы", callback_data="referrals"),
                         InlineKeyboardButton("👤 Профиль", callback_data="profile")
                     ]
                 ]
@@ -1172,7 +1223,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
-    global tech_break_info, PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE
+    global tech_break_info
     user_id = update.effective_user.id
     text = update.message.text.strip()
     state = context.user_data.get("state", STATES["main_menu"])
@@ -1299,7 +1350,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif state == "search_user" and is_admin:
                 search_text = text.replace("@", "")
                 users = await conn.fetch(
-                    "SELECT user_id, username, stars_bought FROM users WHERE username ILIKE $1 OR user_id::text = $1 LIMIT 10",
+                    "SELECT user_id, username, stars_bought, is_admin FROM users WHERE username ILIKE $1 OR user_id::text = $1 LIMIT 10",
                     f"%{search_text}%"
                 )
                 text_lines = []
@@ -1311,7 +1362,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception as e:
                         logger.error(f"Failed to fetch username for user_id {user['user_id']}: {e}")
                         username = f"ID <code>{user['user_id']}</code>"
-                    text_lines.append(f"{username}, Звезды: {user['stars_bought']}")
+                    is_admin_text = "Да" if user["is_admin"] else "Нет"
+                    text_lines.append(f"{username}, Звезды: {user['stars_bought']}, Админ: {is_admin_text}")
                 keyboard.append([InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")])
                 keyboard.append([InlineKeyboardButton("🔙 Назад в админ-панель", callback_data="back_to_admin")])
                 text = await get_text(
@@ -1351,6 +1403,31 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return STATES["set_db_reminder"]
 
+            elif state == STATES["set_mention"] and is_admin:
+                try:
+                    mention_date = datetime.strptime(text, "%Y-%m-%d").date()
+                    if mention_date < datetime.now(pytz.UTC).date():
+                        raise ValueError("Дата упоминания не может быть в прошлом.")
+                    await conn.execute("DELETE FROM mentions")  # Clear existing mention
+                    await conn.execute(
+                        "INSERT INTO mentions (mention_date, set_by_user_id) VALUES ($1, $2)",
+                        mention_date, user_id
+                    )
+                    text = await get_text("mention_set", mention_date=mention_date)
+                    await update.message.reply_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                    )
+                    context.user_data["state"] = STATES["admin_panel"]
+                    await log_analytics(user_id, "set_mention", {"mention_date": str(mention_date)})
+                    return await show_admin_panel(update, context)
+                except ValueError as e:
+                    await update.message.reply_text(
+                        f"Ошибка: {str(e)}. Введите дату в формате гггг-мм-дд.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                    )
+                    return STATES["set_mention"]
+
             elif state == STATES["tech_break"] and is_admin:
                 try:
                     minutes, reason = text.split(" ", 1)
@@ -1384,33 +1461,49 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     value = float(text)
                     if value < 0:
                         raise ValueError("Значение не может быть отрицательным.")
-                    if setting_field == "price_usd":
-                        global PRICE_USD_PER_50
-                        PRICE_USD_PER_50 = value
-                        await update.message.reply_text(
-                            f"Цена за 50 звезд обновлена: ${value:.2f}.",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                        )
-                        await log_analytics(user_id, "set_price_usd", {"price_usd": value})
-                    elif setting_field == "markup":
-                        global MARKUP_PERCENTAGE
-                        MARKUP_PERCENTAGE = value
-                        await update.message.reply_text(
-                            f"Процент накрутки обновлен: {value:.2f}%.",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                        )
-                        await log_analytics(user_id, "set_markup", {"markup": value})
-                    elif setting_field == "ref_bonus":
-                        global REFERRAL_BONUS_PERCENTAGE
-                        REFERRAL_BONUS_PERCENTAGE = value
-                        await update.message.reply_text(
-                            f"Реферальный бонус обновлен: {value:.2f}%.",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                        )
-                        await log_analytics(user_id, "set_ref_bonus", {"ref_bonus": value})
-                    context.user_data.pop("setting_field", None)
-                    context.user_data["state"] = STATES["admin_panel"]
-                    return await show_admin_panel(update, context)
+                    async with (await ensure_db_pool()) as conn:
+                        if setting_field == "price_usd":
+                            await conn.execute(
+                                "INSERT INTO settings (key, value) VALUES ($1, $2) "
+                                "ON CONFLICT (key) DO UPDATE SET value = $2",
+                                "price_usd", value
+                            )
+                            global PRICE_USD_PER_50
+                            PRICE_USD_PER_50 = value
+                            await update.message.reply_text(
+                                f"Цена за 50 звезд обновлена: ${value:.2f}.",
+                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                            )
+                            await log_analytics(user_id, "set_price_usd", {"price_usd": value})
+                        elif setting_field == "markup":
+                            await conn.execute(
+                                "INSERT INTO settings (key, value) VALUES ($1, $2) "
+                                "ON CONFLICT (key) DO UPDATE SET value = $2",
+                                "markup", value
+                            )
+                            global MARKUP_PERCENTAGE
+                            MARKUP_PERCENTAGE = value
+                            await update.message.reply_text(
+                                f"Процент накрутки обновлен: {value:.2f}%.",
+                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                            )
+                            await log_analytics(user_id, "set_markup", {"markup": value})
+                        elif setting_field == "ref_bonus":
+                            await conn.execute(
+                                "INSERT INTO settings (key, value) VALUES ($1, $2) "
+                                "ON CONFLICT (key) DO UPDATE SET value = $2",
+                                "ref_bonus", value
+                            )
+                            global REFERRAL_BONUS_PERCENTAGE
+                            REFERRAL_BONUS_PERCENTAGE = value
+                            await update.message.reply_text(
+                                f"Реферальный бонус обновлен: {value:.2f}%.",
+                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                            )
+                            await log_analytics(user_id, "set_ref_bonus", {"ref_bonus": value})
+                        context.user_data.pop("setting_field", None)
+                        context.user_data["state"] = STATES["admin_panel"]
+                        return await show_admin_panel(update, context)
                 except ValueError as e:
                     await update.message.reply_text(
                         f"Ошибка: {str(e)}. Введите корректное число.",
@@ -1443,6 +1536,8 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id if query else update.effective_user.id
     text = await get_text("admin_panel")
+    async with (await ensure_db_pool()) as conn:
+        mention = await conn.fetchrow("SELECT mention_date FROM mentions LIMIT 1")
     keyboard = [
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast_message")],
@@ -1450,10 +1545,18 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
         [InlineKeyboardButton("📅 Установить напоминание", callback_data="set_db_reminder")],
         [InlineKeyboardButton("🗑 Удалить напоминание", callback_data="clear_db_reminder")],
-        [InlineKeyboardButton("⚠️ Технический перерыв", callback_data="tech_break")],
-        [InlineKeyboardButton("⚙️ Настройки бота", callback_data="bot_settings")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
+        [
+            InlineKeyboardButton(
+                f"📢 Упоминание: {mention['mention_date']}" if mention else "📢 Установить упоминание",
+                callback_data="set_mention"
+            )
+        ]
     ]
+    if mention:
+        keyboard.append([InlineKeyboardButton("🗑 Удалить упоминание", callback_data="clear_mention")])
+    keyboard.append([InlineKeyboardButton("⚠️ Технический перерыв", callback_data="tech_break")])
+    keyboard.append([InlineKeyboardButton("⚙️ Настройки бота", callback_data="bot_settings")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")])
     if query:
         await query.message.edit_text(
             text,
@@ -1503,6 +1606,7 @@ async def main():
     try:
         await check_environment()
         await init_db()
+        await load_settings()  # Load settings from database
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
