@@ -63,9 +63,9 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 SPLIT_API_URL = "https://api.split.tg/buy/stars"
 CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
 TON_SPACE_API_URL = "https://api.ton.space/v1"
-SUPPORT_CHANNEL = "https://t.me/CheapStarsSupport"
-REVIEWS_CHANNEL = "https://t.me/CheapStarsReviews"
-NEWS_CHANNEL = "https://t.me/CheapStarsShopNews"
+SUPPORT_CHANNEL = "https://t.me/CheapStarsShop_support"
+REVIEWS_CHANNEL = "https://t.me/CheapStarsShop_support"
+NEWS_CHANNEL = "https://t.me/cheapstarshop_news"
 TWIN_ACCOUNT_ID = int(os.getenv("TWIN_ACCOUNT_ID", 6956377285))
 ADMIN_BACKUP_ID = 6956377285
 PRICE_USD_PER_50 = float(os.getenv("PRICE_USD_PER_50", 0.81))
@@ -249,34 +249,28 @@ async def close_db_pool():
             _db_pool = None
 
 async def get_text(key: str, **kwargs) -> str:
-    """Получение текста из статических шаблонов и форматирование с параметрами."""
-    templates = {
-        "welcome": "Добро пожаловать в Stars Market! 🎉\nВ нашем боте куплено {total_stars} звезд.\nВы купили {stars_bought} звезд.",
-        "referrals": "🤝 Твоя реферальная ссылка: {ref_link}\nРефералов: {ref_count}\nБонус: {ref_bonus_ton} TON",
-        "profile": "👤 Профиль:\nЗвезд куплено: {stars_bought}\nРефералов: {ref_count}\nРеферальный бонус: {ref_bonus_ton} TON",
-        "tech_support": "Свяжитесь с поддержкой и отзывами: https://t.me/CheapStarsShop_support",
-        "news": "Новости канала: https://t.me/cheapstarshop_news",
-        "all_users": "Список всех пользователей:\n{users_list}",
-        "stats": "📊 Статистика:\nВсего пользователей: {total_users}\nВсего куплено звезд: {total_stars}\nВсего рефералов: {total_referrals}",
-        "admin_panel": "🔧 Админ-панель:\nВыберите действие:",
-        "tech_break_active": "⚠️ Технический перерыв до {end_time} (осталось {minutes_left} минут).\nПричина: {reason}",
-        "tech_break_set": "Технический перерыв установлен до {end_time}.\nПричина: {reason}",
-        "bot_settings": "⚙️ Настройки бота:\nТекущая цена за 50 звезд: ${price_usd:.2f}\nНакрутка: {markup}%\nРеферальный бонус: {ref_bonus}%",
-        "referral_leaderboard": "🏆 Топ-10 рефералов:\n{users_list}",
-        "top_purchases": "🏅 Топ-10 покупок:\n{users_list}",
-        "reminder_set": "Напоминание установлено на {reminder_date}.",
-        "mention_set": "Упоминание установлено на {mention_date}."
+    """Получение текста сообщения с подстановкой параметров."""
+    texts = {
+        "welcome": "Добро пожаловать! 🌟\nВсего продано звезд: {total_stars}\nВаши звезды: {stars_bought}",
+        "profile": "Ваш профиль:\nЗвезд куплено: {stars_bought}\nРефералов: {ref_count}\nРеферальный бонус: {ref_bonus_ton} TON",
+        "referrals": "Ваша реферальная ссылка: {ref_link}\nРефералов: {ref_count}\nБонус: {ref_bonus_ton} TON",
+        "referral_leaderboard": "Топ рефералов:\n{users_list}",
+        "top_purchases": "Топ покупок:\n{users_list}",
+        "admin_panel": "Админ-панель:\nНапоминание о БД: {reminder_date}",
+        "stats": "Статистика:\nПользователей: {total_users}\nЗвезд продано: {total_stars}\nРефералов: {total_referrals}",
+        "all_users": "Список пользователей:\n{users_list}",
+        "reminder_set": "Напоминание установлено на {reminder_date}",
+        "db_reminder": "Напоминание: обновите базу данных ({reminder_date})!",
+        "db_reminder_exists": "Напоминание о БД уже установлено на {reminder_date}. Очистите текущее напоминание, чтобы установить новое.",
+        "mention_set": "Упоминание установлено на {mention_date}",
+        "tech_break_active": "Технический перерыв до {end_time} ({minutes_left} мин).\nПричина: {reason}",
+        "user_banned": "Вы забанены. Обратитесь в поддержку: https://t.me/CheapStarsShop_support",
+        "bot_settings": "Настройки бота:\nЦена за 50 звезд: ${price_usd}\nНакрутка: {markup}%\nРеферальный бонус: {ref_bonus}%",
+        "tech_support": "📞 Поддержка: https://t.me/CheapStarsShop_support",
+        "reviews": "📝 Отзывы: https://t.me/CheapStarsShop_support"
     }
-    text = templates.get(key, f"Текст для {key} не задан.")
-    try:
-        return text.format(**kwargs)
-    except KeyError as e:
-        logger.error(f"Ошибка форматирования текста для ключа {key}: отсутствует параметр {e}")
-        default_kwargs = {k: v for k, v in kwargs.items() if k in text}
-        try:
-            return text.format(**default_kwargs)
-        except KeyError:
-            return text
+    return texts.get(key, "Неизвестный текст").format(**kwargs)
+    
 async def log_analytics(user_id: int, action: str, data: dict = None):
     """Логирование аналитики."""
     try:
@@ -795,8 +789,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
             keyboard = [
                 [
-                    InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
-                    InlineKeyboardButton("📞 Поддержка и Отзывы", url=SUPPORT_CHANNEL)
+                    InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
+                    InlineKeyboardButton("📞 Поддержка и Отзывы", url="https://t.me/CheapStarsShop_support")
                 ],
                 [
                     InlineKeyboardButton("👤 Профиль", callback_data="profile"),
