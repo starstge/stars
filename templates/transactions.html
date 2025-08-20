@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transactions</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        function submitForm() {
+            document.getElementById("filterForm").submit();
+        }
+    </script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto p-4">
+        <div class="flex justify-between items-center mb-4">
+            <h1 class="text-2xl font-bold">Transactions</h1>
+            <a href="{{ url_for('logout') }}" class="bg-red-600 text-white py-2 px-4 rounded-md hover:bg-red-700">Logout</a>
+        </div>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="mb-4 p-2 text-center {% if category == 'error' %}text-red-700 bg-red-100{% else %}text-green-700 bg-green-100{% endif %}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        <form id="filterForm" method="GET" action="{{ url_for('transactions') }}" class="mb-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <label for="user_id" class="block text-sm font-medium text-gray-700">User ID</label>
+                <input type="text" id="user_id" name="user_id" value="{{ user_id }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
+            </div>
+            <div>
+                <label for="recipient" class="block text-sm font-medium text-gray-700">Recipient Username</label>
+                <input type="text" id="recipient" name="recipient" value="{{ recipient }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
+            </div>
+            <div>
+                <label for="date_from" class="block text-sm font-medium text-gray-700">Date From</label>
+                <input type="date" id="date_from" name="date_from" value="{{ date_from }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" onchange="submitForm()">
+            </div>
+            <div>
+                <label for="date_to" class="block text-sm font-medium text-gray-700">Date To</label>
+                <input type="date" id="date_to" name="date_to" value="{{ date_to }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" onchange="submitForm()">
+            </div>
+            <div>
+                <label for="stars_min" class="block text-sm font-medium text-gray-700">Min Stars</label>
+                <input type="number" id="stars_min" name="stars_min" value="{{ stars_min }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
+            </div>
+            <div>
+                <label for="stars_max" class="block text-sm font-medium text-gray-700">Max Stars</label>
+                <input type="number" id="stars_max" name="stars_max" value="{{ stars_max }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
+            </div>
+        </form>
+        <div class="overflow-x-auto">
+            <table class="min-w-full bg-white border">
+                <thead>
+                    <tr>
+                        <th class="py-2 px-4 border">ID</th>
+                        <th class="py-2 px-4 border">User ID</th>
+                        <th class="py-2 px-4 border">Recipient</th>
+                        <th class="py-2 px-4 border">Stars</th>
+                        <th class="py-2 px-4 border">Price (TON)</th>
+                        <th class="py-2 px-4 border">Purchase Time (EEST)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if transactions %}
+                        {% for t in transactions %}
+                            <tr>
+                                <td class="py-2 px-4 border">{{ t.id }}</td>
+                                <td class="py-2 px-4 border">{{ t.user_id }}</td>
+                                <td class="py-2 px-4 border">{{ t.recipient_username }}</td>
+                                <td class="py-2 px-4 border">{{ t.stars_amount }}</td>
+                                <td class="py-2 px-4 border">{{ t.price_ton | round(2) }}</td>
+                                <td class="py-2 px-4 border">{{ t.purchase_time }}</td>
+                            </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr>
+                            <td colspan="6" class="py-2 px-4 border text-center">No transactions found.</td>
+                        </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+        {% if total_pages > 1 %}
+            <div class="mt-4 flex justify-between">
+                {% if page > 1 %}
+                    <a href="{{ url_for('transactions', page=page-1, user_id=user_id, date_from=date_from, date_to=date_to, stars_min=stars_min, stars_max=stars_max, recipient=recipient) }}" class="bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700">Previous</a>
+                {% else %}
+                    <span></span>
+                {% endif %}
+                <span>Page {{ page }} of {{ total_pages }}</span>
+                {% if page < total_pages %}
+                    <a href="{{ url_for('transactions', page=page+1, user_id=user_id, date_from=date_from, date_to=date_to, stars_min=stars_min, stars_max=stars_max, recipient=recipient) }}" class="bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700">Next</a>
+                {% else %}
+                    <span></span>
+                {% endif %}
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
