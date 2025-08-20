@@ -286,6 +286,8 @@ def transactions():
 
     query = "SELECT id, user_id, recipient_username, stars_amount, price_ton, purchase_time FROM transactions WHERE 1=1"
     params = []
+
+    # Initialize param_count correctly
     param_count = 1
 
     if user_id:
@@ -338,7 +340,7 @@ def transactions():
         params.append(f"%{recipient}%")
         param_count += 1
 
-    # Ensure LIMIT and OFFSET parameters are always added
+    # Add LIMIT and OFFSET with correct parameter indices
     query += f" ORDER BY purchase_time DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
     params.extend([per_page, (page - 1) * per_page])
 
@@ -349,6 +351,7 @@ def transactions():
                 logger.debug(f"Executing query: {query} with params: {params}")
                 cur.execute(query, params)
                 transactions = cur.fetchall()
+                # Construct count query without LIMIT and OFFSET
                 count_query = "SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("WHERE 1=1")[1].split("ORDER BY")[0]
                 cur.execute(count_query, params[:-2])  # Exclude LIMIT and OFFSET params
                 total = cur.fetchone()[0]
@@ -2400,23 +2403,20 @@ async def webhook_handler(request):
         logger.error(f"Webhook error: {e}", exc_info=True)
         ERRORS.labels(type="webhook", endpoint="webhook_handler").inc()
         return web.Response(status=500)
-
 async def main():
-    """Main function to start the bot."""
     global telegram_app
     try:
-        # Check environment variables and initialize database
         await check_environment()
         await init_db()
         await load_settings()
-
-        # Create aiohttp application
         app = web.Application()
-        wsgi_handler = WSGIHandler(app_flask)  # Initialize WSGIHandler for Flask
-        app.router.add_route("*", "/{path_info:.*}", wsgi_handler)  # Updated route
+        # Add webhook route explicitly before Flask routes
+        app.router.add_post("/webhook", webhook_handler)
+        logger.info("Webhook route registered at /webhook")
+        # Add Flask routes
+        wsgi_handler = WSGIHandler(app_flask)
+        app.router.add_route("*", "/{path_info:.*}", wsgi_handler)
         logger.info("Flask routes integrated with aiohttp")
-
-        # Telegram bot setup
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
@@ -2430,8 +2430,6 @@ async def main():
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
         telegram_app.add_error_handler(error_handler)
-
-        # Scheduler setup
         scheduler = AsyncIOScheduler(timezone="UTC")
         scheduler.add_job(heartbeat_check, "interval", seconds=300, args=[telegram_app])
         scheduler.add_job(check_reminders, "interval", seconds=60)
@@ -2439,29 +2437,10 @@ async def main():
         scheduler.add_job(update_ton_price, "interval", minutes=30)
         scheduler.add_job(keep_alive, "interval", minutes=10, args=[telegram_app])
         scheduler.start()
-
-        # Initialize Telegram bot
         await telegram_app.initialize()
         await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
         logger.info(f"Bot started with webhook: {WEBHOOK_URL}/webhook")
-
-        # Add webhook route
-        app.router.add_post("/webhook", webhook_handler)
-
-        # Start server
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", PORT)
-        await site.start()
-        logger.info(f"Webhook server started on port {PORT}")
-
-        # Start Prometheus metrics
-        start_http_server(9090)
-        logger.info("Prometheus metrics server started on port 9090")
-
-        # Keep the bot running
-        while True:
-            await asyncio.sleep(3600)
+        await web._run_app(app, host="0.0.0.0", port=8080)
     except Exception as e:
         logger.error(f"Fatal error in main: {e}", exc_info=True)
         raise
