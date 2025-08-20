@@ -86,7 +86,6 @@ STATE_SUPPORT_TICKET = "support_ticket"
 STATE_BAN_USER = "ban_user"
 STATE_UNBAN_USER = "unban_user"
 
-# Обновление словаря состояний
 STATES = {
     "main_menu": 0,
     "profile": 1,
@@ -111,8 +110,9 @@ STATES = {
     "STATE_BAN_USER": 20,
     "STATE_UNBAN_USER": 21,
     "select_stars_menu": 22,
-    "buy_stars_menu": 23,
-    "transaction_history": 24
+    "buy_stars_custom": 23,  # Fixed: Added buy_stars_custom
+    "transaction_history": 24,
+    "buy_stars_payment": 25  # Added for payment state
 }
 
 # Глобальные переменные
@@ -1232,31 +1232,43 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 context.user_data.pop("invoice_id", None)
                 return STATES["main_menu"]
 
-            elif data == "transaction_history" and is_admin:
+            elif data.startswith("transaction_history") and is_admin:
+                page = int(data.split("_")[-1]) if "_" in data else 0
+                transactions_per_page = 10
+                offset = page * transactions_per_page
                 async with (await ensure_db_pool()) as conn:
                     transactions = await conn.fetch(
                         "SELECT user_id, recipient_username, stars_amount, price_ton, purchase_time "
-                        "FROM transactions ORDER BY purchase_time DESC LIMIT 10"
+                        "FROM transactions ORDER BY purchase_time DESC LIMIT $1 OFFSET $2",
+                        transactions_per_page, offset
                     )
-                    if not transactions:
-                        text = "История транзакций пуста."
-                    else:
-                        text = "Последние транзакции:\n"
-                        for t in transactions:
-                            text += (
-                                f"Пользователь ID {t['user_id']} купил {t['stars_amount']} звезд для {t['recipient_username']} "
-                                f"за {t['price_ton']:.2f} TON в {t['purchase_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                            )
-                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
-                    await query.message.edit_text(
-                        text,
-                        reply_markup=InlineKeyboardMarkup(keyboard),
-                        parse_mode="HTML"
-                    )
-                    await query.answer()
-                    context.user_data["state"] = STATES["transaction_history"]
-                    await log_analytics(user_id, "view_transaction_history", {})
-                    return STATES["transaction_history"]
+                total_transactions = await conn.fetchval("SELECT COUNT(*) FROM transactions")
+                if not transactions:
+                    text = "История транзакций пуста."
+                else:
+                    text = f"Последние транзакции (страница {page + 1}):\n"
+                    for t in transactions:
+                        utc_time = t['purchase_time']
+                        eest_time = utc_time.astimezone(pytz.timezone('Europe/Tallinn')).strftime('%Y-%m-%d %H:%M:%S EEST')
+                        text += (
+                            f"Пользователь ID {t['user_id']} купил {t['stars_amount']} звезд для {t['recipient_username']} "
+                            f"за {t['price_ton']:.2f} TON в {eest_time}\n"
+                        )
+                keyboard = []
+                if total_transactions > (page + 1) * transactions_per_page:
+                    keyboard.append([InlineKeyboardButton("➡️ Далее", callback_data=f"transaction_history_{page + 1}")])
+                if page > 0:
+                    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"transaction_history_{page - 1}")])
+                keyboard.append([InlineKeyboardButton("🔙 В админ-панель", callback_data="back_to_admin")])
+                await query.message.edit_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )    
+                await query.answer()
+                context.user_data["state"] = STATES["transaction_history"]
+                await log_analytics(user_id, "view_transaction_history", {"page": page})
+                return STATES["transaction_history"]
 
             elif data == "admin_panel" and is_admin:
                 return await show_admin_panel(update, context)
@@ -1540,6 +1552,45 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 context.user_data["state"] = STATES["main_menu"]
                 await log_analytics(user_id, "unknown_callback", {"data": data})
                 return STATES["main_menu"]
+
+async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отображение админ-панели."""
+    user_id = update.effective_user.id
+    async with (await ensure_db_pool()) as conn:
+        reminder = await conn.fetchrow("SELECT reminder_date FROM reminders WHERE reminder_type = 'db_update'")
+        reminder_text = reminder["reminder_date"].strftime("%Y-%m-%d") if reminder else "Не установлено"
+        text = await get_text(
+            "admin_panel",
+            reminder_date=reminder_text
+        )
+        keyboard = [
+            [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton("📝 Редактировать профиль", callback_data="admin_edit_profile")],
+            [InlineKeyboardButton("📋 Список пользователей", callback_data="all_users")],
+            [InlineKeyboardButton("📬 Рассылка", callback_data="broadcast_message")],
+            [InlineKeyboardButton("⚙️ Настройки бота", callback_data="bot_settings")],
+            [InlineKeyboardButton("📜 История транзакций", callback_data="transaction_history_0")],
+            [
+                InlineKeyboardButton(f"🔔 Напоминание о БД: {reminder_text}", callback_data="set_db_reminder" if not reminder else "view_db_reminder"),
+                InlineKeyboardButton("🗑️ Очистить", callback_data="clear_db_reminder")
+            ],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
+        ]
+        try:
+            await update.callback_query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+        except AttributeError:
+            await update.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+        context.user_data["state"] = STATES["admin_panel"]
+        await log_analytics(user_id, "view_admin_panel", {})
+        return STATES["admin_panel"]
                 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
