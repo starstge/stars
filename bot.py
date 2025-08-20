@@ -2309,14 +2309,20 @@ async def webhook_handler(request):
 
 async def main():
     """Main function to start the bot."""
-    wsgi_handler = WSGIHandler(app_flask)
-    app.router.add_route("*", "/{path:.*}", wsgi_handler)
-    logger.info("Flask routes integrated with aiohttp")
     global telegram_app
     try:
+        # Проверка переменных окружения и инициализация базы данных
         await check_environment()
         await init_db()
-        await load_settings()  # Load settings from database
+        await load_settings()
+
+        # Создание приложения aiohttp
+        app = web.Application()  # Создаём app в начале
+        wsgi_handler = WSGIHandler(app_flask)  # Инициализация WSGIHandler
+        app.router.add_route("*", "/{path:.*}", wsgi_handler)  # Добавляем маршрут для Flask
+        logger.info("Flask routes integrated with aiohttp")
+
+        # Настройка Telegram бота
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
@@ -2331,6 +2337,7 @@ async def main():
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
         telegram_app.add_error_handler(error_handler)
 
+        # Настройка планировщика
         scheduler = AsyncIOScheduler(timezone="UTC")
         scheduler.add_job(heartbeat_check, "interval", seconds=300, args=[telegram_app])
         scheduler.add_job(check_reminders, "interval", seconds=60)
@@ -2339,29 +2346,30 @@ async def main():
         scheduler.add_job(keep_alive, "interval", minutes=10, args=[telegram_app])
         scheduler.start()
 
+        # Инициализация Telegram бота
         await telegram_app.initialize()
         await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
         logger.info(f"Bot started with webhook: {WEBHOOK_URL}/webhook")
-        
-        app = web.Application()
+
+        # Добавление маршрута для вебхука
         app.router.add_post("/webhook", webhook_handler)
+        
+        # Запуск сервера
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", PORT)
         await site.start()
         logger.info(f"Webhook server started on port {PORT}")
 
-        # Start Prometheus metrics server
+        # Запуск Prometheus метрик
         start_http_server(9090)
         logger.info("Prometheus metrics server started on port 9090")
 
-        # Keep the bot running
+        # Поддержание работы бота
         while True:
             await asyncio.sleep(3600)
     except Exception as e:
         logger.error(f"Fatal error in main: {e}", exc_info=True)
-        # Do not close the pool to avoid breaking scheduled tasks
-        # await close_db_pool()
         raise
         
 if __name__ == "__main__":
