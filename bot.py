@@ -36,9 +36,8 @@ import bcrypt
 from aiohttp_wsgi import WSGIHandler
 
 
-# Flask app setup
 app_flask = Flask(__name__)
-app_flask.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key")  # Set in .env
+app_flask.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 # Настройка логирования с ротацией
@@ -143,48 +142,138 @@ async def debug_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 @app_flask.route("/login", methods=["GET", "POST"])
-async def login():
-    """Обработка входа администратора."""
+def login():
+    """Handle admin login."""
     if request.method == "POST":
         user_id = request.form.get("user_id")
         password = request.form.get("password")
-        logger.debug(f"Попытка входа: user_id={user_id}, password=***")
+        logger.debug(f"Login attempt: user_id={user_id}, password=***")
         try:
             user_id = int(user_id)
-            async with (await ensure_db_pool_flask()) as conn:
-                is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
-                logger.debug(f"Статус администратора для user_id={user_id}: is_admin={is_admin}")
-                if is_admin and password == ADMIN_PASSWORD:
-                    session["user_id"] = user_id
-                    session["is_admin"] = True
-                    logger.info(f"Успешный вход: user_id={user_id}")
-                    flash("Вход выполнен успешно!", "success")
-                    return redirect(url_for("transactions"))
-                else:
-                    logger.warning(f"Неудачный вход: user_id={user_id}, неверный пароль или не администратор")
-                    flash("Неверный ID пользователя или пароль.", "error")
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
+                    result = cur.fetchone()
+                    is_admin = result[0] if result else False
+                    logger.debug(f"Admin status for user_id={user_id}: is_admin={is_admin}")
+                    # Check password using bcrypt if stored hashed, otherwise plain comparison
+                    stored_password = os.getenv("ADMIN_PASSWORD")
+                    if is_admin and (
+                        (stored_password.startswith("$2b$") and bcrypt.checkpw(password.encode(), stored_password.encode())) or
+                        (password == stored_password)
+                    ):
+                        session["user_id"] = user_id
+                        session["is_admin"] = True
+                        logger.info(f"Successful login: user_id={user_id}")
+                        flash("Login successful!", "success")
+                        return redirect(url_for("transactions"))
+                    else:
+                        logger.warning(f"Failed login: user_id={user_id}, invalid password or not an admin")
+                        flash("Invalid user ID or password.", "error")
+            finally:
+                conn.close()
         except ValueError:
-            logger.error(f"Ошибка: ID пользователя должен быть числом, получено: {user_id}")
-            flash("ID пользователя должен быть числом.", "error")
+            logger.error(f"Error: User ID must be a number, received: {user_id}")
+            flash("User ID must be a number.", "error")
         except Exception as e:
-            logger.error(f"Ошибка при входе: {e}", exc_info=True)
-            flash(f"Ошибка при входе: {str(e)}", "error")
+            logger.error(f"Error during login: {e}", exc_info=True)
+            flash(f"Login error: {str(e)}", "error")
+    return render_template("login.html")
+
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(os.getenv("POSTGRES_URL"))
+        return conn
+    except Exception as e:
+        logger.error(f"Error connecting to database: {e}")
+        raise
+        
+@app_flask.route("/logout")
+def logout():
+    """Handle admin logout."""
+    session.pop("user_id", None)
+    session.pop("is_admin", None)
+    flash("You have logged out.", "success")
+    logger.info("User logged out")
+    return redirect(url_for("login"))
+
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+import psycopg2
+import os
+import logging
+
+# Flask app setup
+app_flask = Flask(__name__)
+app_flask.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
+
+# Synchronous database connection
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(os.getenv("POSTGRES_URL"))
+        return conn
+    except Exception as e:
+        logger.error(f"Error connecting to database: {e}")
+        raise
+
+@app_flask.route("/login", methods=["GET", "POST"])
+def login():
+    """Handle admin login."""
+    if request.method == "POST":
+        user_id = request.form.get("user_id")
+        password = request.form.get("password")
+        logger.debug(f"Login attempt: user_id={user_id}, password=***")
+        try:
+            user_id = int(user_id)
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
+                    result = cur.fetchone()
+                    is_admin = result[0] if result else False
+                    logger.debug(f"Admin status for user_id={user_id}: is_admin={is_admin}")
+                    # Check password using bcrypt if stored hashed, otherwise plain comparison
+                    stored_password = os.getenv("ADMIN_PASSWORD")
+                    if is_admin and (
+                        (stored_password.startswith("$2b$") and bcrypt.checkpw(password.encode(), stored_password.encode())) or
+                        (password == stored_password)
+                    ):
+                        session["user_id"] = user_id
+                        session["is_admin"] = True
+                        logger.info(f"Successful login: user_id={user_id}")
+                        flash("Login successful!", "success")
+                        return redirect(url_for("transactions"))
+                    else:
+                        logger.warning(f"Failed login: user_id={user_id}, invalid password or not an admin")
+                        flash("Invalid user ID or password.", "error")
+            finally:
+                conn.close()
+        except ValueError:
+            logger.error(f"Error: User ID must be a number, received: {user_id}")
+            flash("User ID must be a number.", "error")
+        except Exception as e:
+            logger.error(f"Error during login: {e}", exc_info=True)
+            flash(f"Login error: {str(e)}", "error")
     return render_template("login.html")
 
 @app_flask.route("/logout")
 def logout():
-    """Обработка выхода администратора."""
+    """Handle admin logout."""
     session.pop("user_id", None)
     session.pop("is_admin", None)
-    flash("Вы вышли из системы.", "success")
-    logger.info("Пользователь вышел из системы")
+    flash("You have logged out.", "success")
+    logger.info("User logged out")
     return redirect(url_for("login"))
 
 @app_flask.route("/", methods=["GET", "POST"])
-async def transactions():
-    """Отображение транзакций с поиском и фильтрацией."""
+def transactions():
+    """Display transactions with search and filtering."""
     if not session.get("is_admin"):
-        logger.warning("Попытка доступа к транзакциям без авторизации")
+        logger.warning("Unauthorized access attempt to transactions")
         return redirect(url_for("login"))
 
     user_id = request.args.get("user_id", "")
@@ -206,8 +295,8 @@ async def transactions():
             params.append(int(user_id))
             param_count += 1
         except ValueError:
-            flash("ID пользователя должен быть числом.", "error")
-            logger.error(f"Неверный формат user_id: {user_id}")
+            flash("User ID must be a number.", "error")
+            logger.error(f"Invalid user_id format: {user_id}")
 
     if date_from:
         try:
@@ -215,8 +304,8 @@ async def transactions():
             params.append(datetime.strptime(date_from, "%Y-%m-%d"))
             param_count += 1
         except ValueError:
-            flash("Неверный формат начальной даты (гггг-мм-дд).", "error")
-            logger.error(f"Неверный формат date_from: {date_from}")
+            flash("Invalid start date format (yyyy-mm-dd).", "error")
+            logger.error(f"Invalid date_from format: {date_from}")
 
     if date_to:
         try:
@@ -224,8 +313,8 @@ async def transactions():
             params.append(datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1))
             param_count += 1
         except ValueError:
-            flash("Неверный формат конечной даты (гггг-мм-дд).", "error")
-            logger.error(f"Неверный формат date_to: {date_to}")
+            flash("Invalid end date format (yyyy-mm-dd).", "error")
+            logger.error(f"Invalid date_to format: {date_to}")
 
     if stars_min:
         try:
@@ -233,8 +322,8 @@ async def transactions():
             params.append(int(stars_min))
             param_count += 1
         except ValueError:
-            flash("Минимальное количество звезд должно быть числом.", "error")
-            logger.error(f"Неверный формат stars_min: {stars_min}")
+            flash("Minimum stars must be a number.", "error")
+            logger.error(f"Invalid stars_min format: {stars_min}")
 
     if stars_max:
         try:
@@ -242,8 +331,8 @@ async def transactions():
             params.append(int(stars_max))
             param_count += 1
         except ValueError:
-            flash("Максимальное количество звезд должно быть числом.", "error")
-            logger.error(f"Неверный формат stars_max: {stars_max}")
+            flash("Maximum stars must be a number.", "error")
+            logger.error(f"Invalid stars_max format: {stars_max}")
 
     if recipient:
         query += f" AND recipient_username ILIKE ${param_count}"
@@ -255,42 +344,50 @@ async def transactions():
     params.extend([per_page, (page - 1) * per_page])
 
     try:
-        async with (await ensure_db_pool_flask()) as conn:
-            transactions = await conn.fetch(query, *params)
-            total = await conn.fetchval("SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("WHERE 1=1")[1].split("ORDER BY")[0], *params[:-2])
-            total_pages = (total + per_page - 1) // per_page
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                transactions = cur.fetchall()
+                count_query = "SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("WHERE 1=1")[1].split("ORDER BY")[0]
+                cur.execute(count_query, params[:-2])
+                total = cur.fetchone()[0]
+                total_pages = (total + per_page - 1) // per_page
 
-            # Конвертация purchase_time в EEST
-            eest = pytz.timezone("Europe/Tallinn")
-            transactions = [
-                {
-                    "id": t["id"],
-                    "user_id": t["user_id"],
-                    "recipient_username": t["recipient_username"],
-                    "stars_amount": t["stars_amount"],
-                    "price_ton": t["price_ton"],
-                    "purchase_time": t["purchase_time"].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST")
-                }
-                for t in transactions
-            ]
+                # Convert purchase_time to EEST
+                eest = pytz.timezone("Europe/Tallinn")
+                transactions = [
+                    {
+                        "id": t[0],
+                        "user_id": t[1],
+                        "recipient_username": t[2],
+                        "stars_amount": t[3],
+                        "price_ton": t[4],
+                        "purchase_time": t[5].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST")
+                    }
+                    for t in transactions
+                ]
 
-        logger.info(f"Отображено {len(transactions)} транзакций, страница {page} из {total_pages}")
-        return render_template(
-            "transactions.html",
-            transactions=transactions,
-            page=page,
-            total_pages=total_pages,
-            user_id=user_id,
-            date_from=date_from,
-            date_to=date_to,
-            stars_min=stars_min,
-            stars_max=stars_max,
-            recipient=recipient
-        )
+            logger.info(f"Displayed {len(transactions)} transactions, page {page} of {total_pages}")
+            return render_template(
+                "transactions.html",
+                transactions=transactions,
+                page=page,
+                total_pages=total_pages,
+                user_id=user_id,
+                date_from=date_from,
+                date_to=date_to,
+                stars_min=stars_min,
+                stars_max=stars_max,
+                recipient=recipient
+            )
+        finally:
+            conn.close()
     except Exception as e:
-        logger.error(f"Ошибка при загрузке транзакций: {e}", exc_info=True)
-        flash(f"Ошибка при загрузке транзакций: {str(e)}", "error")
+        logger.error(f"Error loading transactions: {e}", exc_info=True)
+        flash(f"Error loading transactions: {str(e)}", "error")
         return render_template("transactions.html", transactions=[], page=1, total_pages=1)
+
 async def ensure_db_pool():
     """Обеспечивает доступ к пулу соединений базы данных."""
     global db_pool
