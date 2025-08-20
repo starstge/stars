@@ -271,7 +271,6 @@ def logout():
 
 @app_flask.route("/", methods=["GET", "POST"])
 def transactions():
-    """Display transactions with search and filtering."""
     if not session.get("is_admin"):
         logger.warning("Unauthorized access attempt to transactions")
         return redirect(url_for("login"))
@@ -339,22 +338,22 @@ def transactions():
         params.append(f"%{recipient}%")
         param_count += 1
 
-    query += " ORDER BY purchase_time DESC"
-    query += f" LIMIT ${param_count} OFFSET ${param_count + 1}"
+    # Ensure LIMIT and OFFSET parameters are always added
+    query += f" ORDER BY purchase_time DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
     params.extend([per_page, (page - 1) * per_page])
 
     try:
         conn = get_db_connection()
         try:
             with conn.cursor() as cur:
+                logger.debug(f"Executing query: {query} with params: {params}")
                 cur.execute(query, params)
                 transactions = cur.fetchall()
                 count_query = "SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("WHERE 1=1")[1].split("ORDER BY")[0]
-                cur.execute(count_query, params[:-2])
+                cur.execute(count_query, params[:-2])  # Exclude LIMIT and OFFSET params
                 total = cur.fetchone()[0]
                 total_pages = (total + per_page - 1) // per_page
 
-                # Convert purchase_time to EEST
                 eest = pytz.timezone("Europe/Tallinn")
                 transactions = [
                     {
@@ -730,23 +729,14 @@ async def test_db_connection():
         raise
 
 async def check_webhook():
-    """Проверка доступности вебхука."""
-    try:
-        webhook_info = await telegram_app.bot.get_webhook_info()
-        logger.info(f"Webhook info: {webhook_info}")
-        if webhook_info.url != f"{WEBHOOK_URL}/webhook":
-            logger.warning(f"Webhook URL mismatch: expected {WEBHOOK_URL}/webhook, got {webhook_info.url}")
-            await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-            logger.info(f"Webhook reset to {WEBHOOK_URL}/webhook")
-        if webhook_info.pending_update_count > 0:
-            logger.warning(f"Pending updates: {webhook_info.pending_update_count}")
-            await telegram_app.bot.delete_webhook(drop_pending_updates=True)
-            await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-            logger.info("Pending updates cleared and webhook reset")
-    except Exception as e:
-        logger.error(f"Ошибка проверки вебхука: {e}", exc_info=True)
-        ERRORS.labels(type="webhook", endpoint="check_webhook").inc()
-
+    webhook_info = await telegram_app.bot.get_webhook_info()
+    logger.info(f"Webhook info: {webhook_info}")
+    expected_url = f"{WEBHOOK_URL}/webhook"
+    if webhook_info.url != expected_url:
+        logger.warning(f"Webhook URL mismatch: expected {expected_url}, got {webhook_info.url}")
+        await telegram_app.bot.set_webhook(expected_url)
+        logger.info(f"Webhook reset to {expected_url}")
+        
 async def heartbeat_check(app):
     """Проверка работоспособности DB и API."""
     try:
@@ -2394,11 +2384,18 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Failed to send error message: {e}")
 
 async def webhook_handler(request):
-    """Handle incoming webhook updates."""
+    logger.info("Webhook request received")
     try:
-        update = Update.de_json(await request.json(), telegram_app.bot)
-        await telegram_app.process_update(update)
-        return web.Response(status=200)
+        data = await request.json()
+        logger.debug(f"Webhook data: {data}")
+        update = Update.de_json(data, telegram_app.bot)
+        if update:
+            logger.info(f"Processing update: {update.update_id}")
+            await telegram_app.process_update(update)
+            return web.Response(status=200)
+        else:
+            logger.error("Failed to parse update")
+            return web.Response(status=400)
     except Exception as e:
         logger.error(f"Webhook error: {e}", exc_info=True)
         ERRORS.labels(type="webhook", endpoint="webhook_handler").inc()
