@@ -974,7 +974,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = STATES["main_menu"]
             await log_analytics(user_id, "start", {"referrer_id": referrer_id})
             return STATES["main_menu"]
-            
+
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback-запросов."""
     query = update.callback_query
@@ -1058,13 +1058,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     if not transactions:
                         text = "Транзакции отсутствуют."
                     else:
-                        text = f"Ваши транзакции (страница {page + 1}):\n"
-                        for t in transactions:
+                        text = f"Ваши транзакции (страница {page + 1}):\n\n"
+                        for idx, t in enumerate(transactions, start=1 + offset):
                             utc_time = t['purchase_time']
                             eest_time = utc_time.astimezone(pytz.timezone('Europe/Tallinn')).strftime('%Y-%m-%d %H:%M:%S EEST')
                             text += (
-                                f"Куплено {t['stars_amount']} звезд для {t['recipient_username']} "
-                                f"за {t['price_ton']:.2f} TON в {eest_time}\n"
+                                f"{idx}. Куплено {t['stars_amount']} звезд для {t['recipient_username']} "
+                                f"за {t['price_ton']:.2f} TON в {eest_time}\n\n"
                             )
                     keyboard = []
                     if total_transactions > (page + 1) * transactions_per_page:
@@ -1409,13 +1409,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     if not transactions:
                         text = "История транзакций пуста."
                     else:
-                        text = f"Последние транзакции (страница {page + 1}):\n"
-                        for t in transactions:
+                        text = f"Последние транзакции (страница {page + 1}):\n\n"
+                        for idx, t in enumerate(transactions, start=1 + offset):
                             utc_time = t['purchase_time']
                             eest_time = utc_time.astimezone(pytz.timezone('Europe/Tallinn')).strftime('%Y-%m-%d %H:%M:%S EEST')
                             text += (
-                                f"Пользователь ID {t['user_id']} купил {t['stars_amount']} звезд для {t['recipient_username']} "
-                                f"за {t['price_ton']:.2f} TON в {eest_time}\n"
+                                f"{idx}. Пользователь ID {t['user_id']} купил {t['stars_amount']} звезд для {t['recipient_username']} "
+                                f"за {t['price_ton']:.2f} TON в {eest_time}\n\n"
                             )
                     keyboard = []
                     if total_transactions > (page + 1) * transactions_per_page:
@@ -1712,6 +1712,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     context.user_data["state"] = STATES["main_menu"]
                     await log_analytics(user_id, "unknown_callback", {"data": data})
                     return STATES["main_menu"]
+
+        except asyncpg.exceptions.InterfaceError as e:
+            logger.error(f"Database pool error in callback_query_handler: {e}", exc_info=True)
+            await query.message.edit_text(
+                "Ошибка подключения к базе данных. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            )
+            await query.answer()
+            context.user_data["state"] = STATES["main_menu"]
+            await log_analytics(user_id, "callback_error", {"error": str(e)})
+            return STATES["main_menu"]
 
         except asyncpg.exceptions.InterfaceError as e:
             logger.error(f"Database pool error in callback_query_handler: {e}", exc_info=True)
