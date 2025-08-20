@@ -39,7 +39,7 @@ from aiohttp_wsgi import WSGIHandler
 # Flask app setup
 app_flask = Flask(__name__)
 app_flask.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key")  # Set in .env
-ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH").encode('utf-8')  # Bcrypt hash
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 # Настройка логирования с ротацией
 logging.basicConfig(
@@ -154,7 +154,7 @@ async def login():
             async with (await ensure_db_pool_flask()) as conn:
                 is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
                 logger.debug(f"Статус администратора для user_id={user_id}: is_admin={is_admin}")
-                if is_admin and bcrypt.checkpw(password.encode('utf-8'), ADMIN_PASSWORD_HASH):
+                if is_admin and password == ADMIN_PASSWORD:
                     session["user_id"] = user_id
                     session["is_admin"] = True
                     logger.info(f"Успешный вход: user_id={user_id}")
