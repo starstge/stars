@@ -286,8 +286,6 @@ def transactions():
 
     query = "SELECT id, user_id, recipient_username, stars_amount, price_ton, purchase_time FROM transactions WHERE 1=1"
     params = []
-
-    # Initialize param_count correctly
     param_count = 1
 
     if user_id:
@@ -2403,6 +2401,7 @@ async def webhook_handler(request):
         logger.error(f"Webhook error: {e}", exc_info=True)
         ERRORS.labels(type="webhook", endpoint="webhook_handler").inc()
         return web.Response(status=500)
+        
 async def main():
     global telegram_app
     try:
@@ -2410,10 +2409,10 @@ async def main():
         await init_db()
         await load_settings()
         app = web.Application()
-        # Add webhook route explicitly before Flask routes
+        # Register webhook route explicitly
         app.router.add_post("/webhook", webhook_handler)
         logger.info("Webhook route registered at /webhook")
-        # Add Flask routes
+        # Add Flask routes after webhook
         wsgi_handler = WSGIHandler(app_flask)
         app.router.add_route("*", "/{path_info:.*}", wsgi_handler)
         logger.info("Flask routes integrated with aiohttp")
