@@ -188,7 +188,24 @@ def get_db_connection():
     except Exception as e:
         logger.error(f"Error connecting to database: {e}")
         raise
-        
+
+@app_flask.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("is_admin"):
+        return redirect(url_for("transactions"))
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        # Replace with your authentication logic
+        if username == "admin" and password == "your_secure_password":  # Example; use proper auth
+            session["is_admin"] = True
+            logger.info(f"Admin logged in: {username}")
+            return redirect(url_for("transactions"))
+        else:
+            flash("Invalid credentials", "error")
+            logger.warning(f"Failed login attempt: {username}")
+    return render_template("login.html")
+    
 @app_flask.route("/logout")
 def logout():
     """Handle admin logout."""
@@ -233,7 +250,7 @@ def logout():
 def transactions():
     if not session.get("is_admin"):
         logger.warning("Unauthorized access attempt to transactions")
-        return redirect(url_for("login"))
+        return redirect(url_for("login"))  # Ensure "login" matches the route name
 
     user_id = request.args.get("user_id", "")
     date_from = request.args.get("date_from", "")
