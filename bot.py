@@ -117,6 +117,7 @@ STATES = {
 }
 
 # Глобальные переменные
+db_pool = None
 _db_pool = None
 _db_pool_lock = asyncio.Lock()
 telegram_app = None
@@ -148,6 +149,7 @@ async def ensure_db_pool():
     except Exception as e:
         logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
         raise
+        
 async def init_db():
     """Инициализация базы данных."""
     try:
