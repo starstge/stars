@@ -1567,13 +1567,29 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return STATES["main_menu"]
 
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-  async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отображение админ-панели."""
     user_id = update.effective_user.id
+    logger.debug(f"Entering show_admin_panel for user_id={user_id}")
     try:
         async with (await ensure_db_pool()) as conn:
+            logger.debug(f"Checking admin status for user_id={user_id}")
+            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+            if not is_admin:
+                logger.warning(f"User {user_id} is not an admin, redirecting to main menu")
+                text = "У вас нет доступа к админ-панели."
+                await update.callback_query.message.edit_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                    parse_mode="HTML"
+                )
+                context.user_data["state"] = STATES["main_menu"]
+                await log_analytics(user_id, "admin_panel_access_denied", {})
+                return STATES["main_menu"]
+
+            logger.debug("Fetching reminder date")
             reminder = await conn.fetchrow("SELECT reminder_date FROM reminders WHERE reminder_type = 'db_update'")
             reminder_text = reminder["reminder_date"].strftime("%Y-%m-%d") if reminder else "Не установлено"
+            logger.debug(f"Reminder text: {reminder_text}")
             text = await get_text(
                 "admin_panel",
                 reminder_date=reminder_text
@@ -1591,6 +1607,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
                 [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
             ]
+            logger.debug("Attempting to edit message with admin panel")
             try:
                 await update.callback_query.message.edit_text(
                     text,
@@ -1598,23 +1615,59 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML"
                 )
             except AttributeError:
+                logger.debug("Callback message not available, sending new message")
                 await update.message.reply_text(
                     text,
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode="HTML"
                 )
+            except BadRequest as e:
+                logger.error(f"Failed to edit message: {e}", exc_info=True)
+                await update.callback_query.message.edit_text(
+                    "Ошибка отображения админ-панели. Попробуйте позже.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+                )
+                context.user_data["state"] = STATES["main_menu"]
+                await log_analytics(user_id, "admin_panel_message_error", {"error": str(e)})
+                return STATES["main_menu"]
+
+            await update.callback_query.answer()
             context.user_data["state"] = STATES["admin_panel"]
             await log_analytics(user_id, "view_admin_panel", {})
+            logger.debug("Admin panel displayed successfully")
             return STATES["admin_panel"]
+
     except asyncpg.exceptions.InterfaceError as e:
         logger.error(f"Database pool error in show_admin_panel: {e}", exc_info=True)
-        await update.callback_query.message.edit_text(
-            "Ошибка подключения к базе данных. Попробуйте позже.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
-        )
+        try:
+            await update.callback_query.message.edit_text(
+                "Ошибка подключения к базе данных. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            )
+        except AttributeError:
+            await update.message.reply_text(
+                "Ошибка подключения к базе данных. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            )
         await update.callback_query.answer()
         context.user_data["state"] = STATES["main_menu"]
-        await log_analytics(user_id, "admin_panel_error", {"error": str(e)})
+        await log_analytics(user_id, "admin_panel_db_error", {"error": str(e)})
+        return STATES["main_menu"]
+    except Exception as e:
+        logger.error(f"Unexpected error in show_admin_panel: {e}", exc_info=True)
+        try:
+            await update.callback_query.message.edit_text(
+                f"Произошла ошибка: {str(e)}. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            )
+        except AttributeError:
+            await update.message.reply_text(
+                f"Произошла ошибка: {str(e)}. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            )
+        await update.callback_query.answer()
+        context.user_data["state"] = STATES["main_menu"]
+        await log_analytics(user_id, "admin_panel_unexpected_error", {"error": str(e)})
         return STATES["main_menu"]
                 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
