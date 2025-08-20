@@ -2311,18 +2311,18 @@ async def main():
     """Main function to start the bot."""
     global telegram_app
     try:
-        # Проверка переменных окружения и инициализация базы данных
+        # Check environment variables and initialize database
         await check_environment()
         await init_db()
         await load_settings()
 
-        # Создание приложения aiohttp
-        app = web.Application()  # Создаём app в начале
-        wsgi_handler = WSGIHandler(app_flask)  # Инициализация WSGIHandler
-        app.router.add_route("*", "/{path:.*}", wsgi_handler)  # Добавляем маршрут для Flask
+        # Create aiohttp application
+        app = web.Application()
+        wsgi_handler = WSGIHandler(app_flask)  # Initialize WSGIHandler for Flask
+        app.router.add_route("*", "/{path_info:.*}", wsgi_handler)  # Updated route
         logger.info("Flask routes integrated with aiohttp")
 
-        # Настройка Telegram бота
+        # Telegram bot setup
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
@@ -2337,7 +2337,7 @@ async def main():
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
         telegram_app.add_error_handler(error_handler)
 
-        # Настройка планировщика
+        # Scheduler setup
         scheduler = AsyncIOScheduler(timezone="UTC")
         scheduler.add_job(heartbeat_check, "interval", seconds=300, args=[telegram_app])
         scheduler.add_job(check_reminders, "interval", seconds=60)
@@ -2346,26 +2346,26 @@ async def main():
         scheduler.add_job(keep_alive, "interval", minutes=10, args=[telegram_app])
         scheduler.start()
 
-        # Инициализация Telegram бота
+        # Initialize Telegram bot
         await telegram_app.initialize()
         await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
         logger.info(f"Bot started with webhook: {WEBHOOK_URL}/webhook")
 
-        # Добавление маршрута для вебхука
+        # Add webhook route
         app.router.add_post("/webhook", webhook_handler)
-        
-        # Запуск сервера
+
+        # Start server
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", PORT)
         await site.start()
         logger.info(f"Webhook server started on port {PORT}")
 
-        # Запуск Prometheus метрик
+        # Start Prometheus metrics
         start_http_server(9090)
         logger.info("Prometheus metrics server started on port 9090")
 
-        # Поддержание работы бота
+        # Keep the bot running
         while True:
             await asyncio.sleep(3600)
     except Exception as e:
