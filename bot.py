@@ -220,46 +220,6 @@ def get_db_connection():
         logger.error(f"Error connecting to database: {e}")
         raise
 
-@app_flask.route("/login", methods=["GET", "POST"])
-def login():
-    """Handle admin login."""
-    if request.method == "POST":
-        user_id = request.form.get("user_id")
-        password = request.form.get("password")
-        logger.debug(f"Login attempt: user_id={user_id}, password=***")
-        try:
-            user_id = int(user_id)
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
-                    result = cur.fetchone()
-                    is_admin = result[0] if result else False
-                    logger.debug(f"Admin status for user_id={user_id}: is_admin={is_admin}")
-                    # Check password using bcrypt if stored hashed, otherwise plain comparison
-                    stored_password = os.getenv("ADMIN_PASSWORD")
-                    if is_admin and (
-                        (stored_password.startswith("$2b$") and bcrypt.checkpw(password.encode(), stored_password.encode())) or
-                        (password == stored_password)
-                    ):
-                        session["user_id"] = user_id
-                        session["is_admin"] = True
-                        logger.info(f"Successful login: user_id={user_id}")
-                        flash("Login successful!", "success")
-                        return redirect(url_for("transactions"))
-                    else:
-                        logger.warning(f"Failed login: user_id={user_id}, invalid password or not an admin")
-                        flash("Invalid user ID or password.", "error")
-            finally:
-                conn.close()
-        except ValueError:
-            logger.error(f"Error: User ID must be a number, received: {user_id}")
-            flash("User ID must be a number.", "error")
-        except Exception as e:
-            logger.error(f"Error during login: {e}", exc_info=True)
-            flash(f"Login error: {str(e)}", "error")
-    return render_template("login.html")
-
 @app_flask.route("/logout")
 def logout():
     """Handle admin logout."""
@@ -338,7 +298,7 @@ def transactions():
         params.append(f"%{recipient}%")
         param_count += 1
 
-    # Add LIMIT and OFFSET with correct parameter indices
+    # Add LIMIT and OFFSET
     query += f" ORDER BY purchase_time DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
     params.extend([per_page, (page - 1) * per_page])
 
@@ -1834,11 +1794,18 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin:
                 logger.warning(f"User {user_id} is not an admin, redirecting to main menu")
                 text = "У вас нет доступа к админ-панели."
-                await update.callback_query.message.edit_text(
-                    text,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                    parse_mode="HTML"
-                )
+                if update.callback_query:
+                    await update.callback_query.message.edit_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                        parse_mode="HTML"
+                    )
+                else:
+                    await update.message.reply_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                        parse_mode="HTML"
+                    )
                 context.user_data["state"] = STATES["main_menu"]
                 await log_analytics(user_id, "admin_panel_access_denied", {})
                 return STATES["main_menu"]
@@ -1864,31 +1831,40 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
                 [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
             ]
-            logger.debug("Attempting to edit message with admin panel")
+            logger.debug("Attempting to send/edit message with admin panel")
             try:
-                await update.callback_query.message.edit_text(
-                    text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML"
-                )
-            except AttributeError:
-                logger.debug("Callback message not available, sending new message")
-                await update.message.reply_text(
-                    text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML"
-                )
+                if update.callback_query:
+                    await update.callback_query.message.edit_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="HTML"
+                    )
+                    await update.callback_query.answer()
+                else:
+                    await update.message.reply_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="HTML"
+                    )
             except BadRequest as e:
                 logger.error(f"Failed to edit message: {e}", exc_info=True)
-                await update.callback_query.message.edit_text(
-                    "Ошибка отображения админ-панели. Попробуйте позже.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
-                )
+                if update.callback_query:
+                    await update.callback_query.message.edit_text(
+                        "Ошибка отображения админ-панели. Попробуйте позже.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                        parse_mode="HTML"
+                    )
+                    await update.callback_query.answer()
+                else:
+                    await update.message.reply_text(
+                        "Ошибка отображения админ-панели. Попробуйте позже.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                        parse_mode="HTML"
+                    )
                 context.user_data["state"] = STATES["main_menu"]
                 await log_analytics(user_id, "admin_panel_message_error", {"error": str(e)})
                 return STATES["main_menu"]
 
-            await update.callback_query.answer()
             context.user_data["state"] = STATES["admin_panel"]
             await log_analytics(user_id, "view_admin_panel", {})
             logger.debug("Admin panel displayed successfully")
@@ -1896,36 +1872,61 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except asyncpg.exceptions.InterfaceError as e:
         logger.error(f"Database pool error in show_admin_panel: {e}", exc_info=True)
-        try:
+        text = "Ошибка подключения к базе данных. Попробуйте позже."
+        if update.callback_query:
             await update.callback_query.message.edit_text(
-                "Ошибка подключения к базе данных. Попробуйте позже.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+                text,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                parse_mode="HTML"
             )
-        except AttributeError:
+            await update.callback_query.answer()
+        else:
             await update.message.reply_text(
-                "Ошибка подключения к базе данных. Попробуйте позже.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+                text,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                parse_mode="HTML"
             )
-        await update.callback_query.answer()
         context.user_data["state"] = STATES["main_menu"]
         await log_analytics(user_id, "admin_panel_db_error", {"error": str(e)})
         return STATES["main_menu"]
     except Exception as e:
         logger.error(f"Unexpected error in show_admin_panel: {e}", exc_info=True)
-        try:
+        text = f"Произошла ошибка: {str(e)}. Попробуйте позже."
+        if update.callback_query:
             await update.callback_query.message.edit_text(
-                f"Произошла ошибка: {str(e)}. Попробуйте позже.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+                text,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                parse_mode="HTML"
             )
-        except AttributeError:
+            await update.callback_query.answer()
+        else:
             await update.message.reply_text(
-                f"Произошла ошибка: {str(e)}. Попробуйте позже.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+                text,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                parse_mode="HTML"
             )
-        await update.callback_query.answer()
         context.user_data["state"] = STATES["main_menu"]
         await log_analytics(user_id, "admin_panel_unexpected_error", {"error": str(e)})
         return STATES["main_menu"]
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    logger.info(f"Received message from user {user_id}: {text}")
+
+    # Check if user is admin
+    async with (await ensure_db_pool()) as conn:
+        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+
+    # Handle admin-specific commands
+    if is_admin and text.lower() == "/admin":
+        return await show_admin_panel(update, context)
+    else:
+        # Handle other text messages
+        await update.message.reply_text(
+            "Пожалуйста, используйте команды бота или свяжитесь с поддержкой: @CheapStarsShop_support",
+            parse_mode="HTML"
+        )
                 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
