@@ -158,244 +158,258 @@ def get_db_connection():
         logger.error(f"Error connecting to database: {e}")
         raise
 
-@app_flask.route("/login", methods=["GET", "POST"])
-def login():
-    """Обработка входа администратора."""
-    if session.get("is_admin"):
-        logger.info("Пользователь уже авторизован, перенаправление на transactions")
-        return redirect(url_for("transactions"))
-    
-    if request.method == "POST":
-        user_id = request.form.get("user_id")
-        password = request.form.get("password")
-        logger.debug(f"Попытка входа: user_id={user_id}, password=***")
-        try:
-            user_id = int(user_id)
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
-                    result = cur.fetchone()
-                    is_admin = result[0] if result else False
-                    logger.debug(f"Статус администратора для user_id={user_id}: is_admin={is_admin}")
-                    stored_password = os.getenv("ADMIN_PASSWORD")
-                    if is_admin and (
-                        (stored_password.startswith("$2b$") and bcrypt.checkpw(password.encode(), stored_password.encode())) or
-                        (password == stored_password)
-                    ):
-                        session["user_id"] = user_id
-                        session["is_admin"] = True
-                        logger.info(f"Успешный вход: user_id={user_id}")
-                        flash("Вход выполнен успешно!", "success")
-                        return redirect(url_for("transactions"))
-                    else:
-                        logger.warning(f"Неуспешный вход: user_id={user_id}, неверный пароль или не администратор")
-                        flash("Неверный ID пользователя или пароль.", "error")
-            finally:
-                conn.close()
-        except ValueError:
-            logger.error(f"Ошибка: ID пользователя должен быть числом, получено: {user_id}")
-            flash("ID пользователя должен быть числом.", "error")
-        except Exception as e:
-            logger.error(f"Ошибка при входе: {e}", exc_info=True)
-            flash(f"Ошибка входа: {str(e)}", "error")
-    
-    return render_template("login.html")
 
-@app_flask.route("/logout")
-def logout():
+@app_flask.route('/login', methods=['GET', 'POST'])
+async def login():
+    """Handle admin login."""
+    if session.get('logged_in'):
+        logger.info("User already logged in, redirecting to transactions")
+        return redirect(url_for('transactions'))
+    
+    if request.method == 'POST':
+        password = request.form.get('password')
+        stored_password = os.getenv('ADMIN_PASSWORD')
+        if not stored_password:
+            logger.error("ADMIN_PASSWORD not set")
+            flash("Server configuration error.", "error")
+            return render_template('login.html')
+        
+        hashed = stored_password.encode('utf-8') if stored_password.startswith('$2b$') else None
+        if hashed and bcrypt.checkpw(password.encode('utf-8'), hashed):
+            session['logged_in'] = True
+            logger.info("Successful login")
+            flash("Login successful!", "success")
+            return redirect(url_for('transactions'))
+        elif password == stored_password:
+            session['logged_in'] = True
+            logger.info("Successful login (plain password)")
+            flash("Login successful!", "success")
+            return redirect(url_for('transactions'))
+        else:
+            logger.warning("Failed login attempt")
+            flash("Invalid password.", "error")
+    
+    return render_template('login.html')
+
+@app_flask.route('/logout')
+async def logout():
     """Handle admin logout."""
-    session.pop("user_id", None)
-    session.pop("is_admin", None)
-    flash("You have logged out.", "success")
+    session.pop('logged_in', None)
     logger.info("User logged out")
-    return redirect(url_for("login"))
+    flash("You have logged out.", "success")
+    return redirect(url_for('login'))
 
-@app_flask.route("/", methods=["GET", "POST", "HEAD"])
-def transactions():
+@app_flask.route('/')
+@login_required
+async def index():
+    """Redirect to transactions page."""
+    return redirect(url_for('transactions'))
+
+@app_flask.route('/transactions')
+@login_required
+async def transactions():
     """Handle transactions page."""
-    if request.method == "HEAD":
-        logger.debug("Received HEAD request to /, returning empty response")
-        return "", 200
-    
-    if not session.get("is_admin"):
-        logger.warning("Unauthorized access attempt to transactions")
-        return redirect(url_for("login"))
-    
-    user_id = request.args.get("user_id", "")
-    date_from = request.args.get("date_from", "")
-    date_to = request.args.get("date_to", "")
-    stars_min = request.args.get("stars_min", "")
-    stars_max = request.args.get("stars_max", "")
-    recipient = request.args.get("recipient", "")
-    page = int(request.args.get("page", 1))
+    page = int(request.args.get('page', 1))
     per_page = 10
+    user_id = request.args.get('user_id', '')
+    recipient = request.args.get('recipient', '')
+    start_date = request.args.get('start_date', '')
+    end_date = request.args.get('end_date', '')
+    min_stars = request.args.get('min_stars', '')
+    max_stars = request.args.get('max_stars', '')
 
-    query = "SELECT id, user_id, recipient_username, stars_amount, price_ton, purchase_time, checked_status FROM transactions WHERE 1=1"
+    query = """
+        SELECT id, user_id, recipient_username, stars_amount, price_ton, purchase_time, checked_status
+        FROM transactions WHERE 1=1
+    """
     params = []
+    param_index = 1
 
     if user_id:
         try:
-            query += " AND user_id = %s"
+            query += f" AND user_id = ${param_index}"
             params.append(int(user_id))
+            param_index += 1
         except ValueError:
             flash("User ID must be a number.", "error")
             logger.error(f"Invalid user_id format: {user_id}")
 
-    if date_from:
+    if recipient:
+        query += f" AND recipient_username ILIKE ${param_index}"
+        params.append(f'%{recipient}%')
+        param_index += 1
+
+    if start_date:
         try:
-            query += " AND purchase_time >= %s"
-            params.append(datetime.strptime(date_from, "%Y-%m-%d"))
+            query += f" AND purchase_time >= ${param_index}"
+            params.append(datetime.strptime(start_date, "%Y-%m-%d"))
+            param_index += 1
         except ValueError:
             flash("Invalid start date format (yyyy-mm-dd).", "error")
-            logger.error(f"Invalid date_from format: {date_from}")
+            logger.error(f"Invalid start_date format: {start_date}")
 
-    if date_to:
+    if end_date:
         try:
-            query += " AND purchase_time <= %s"
-            params.append(datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1))
+            query += f" AND purchase_time <= ${param_index}"
+            params.append(datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1))
+            param_index += 1
         except ValueError:
             flash("Invalid end date format (yyyy-mm-dd).", "error")
-            logger.error(f"Invalid date_to format: {date_to}")
+            logger.error(f"Invalid end_date format: {end_date}")
 
-    if stars_min:
+    if min_stars:
         try:
-            query += " AND stars_amount >= %s"
-            params.append(int(stars_min))
+            query += f" AND stars_amount >= ${param_index}"
+            params.append(int(min_stars))
+            param_index += 1
         except ValueError:
             flash("Minimum stars must be a number.", "error")
-            logger.error(f"Invalid stars_min format: {stars_min}")
+            logger.error(f"Invalid min_stars format: {min_stars}")
 
-    if stars_max:
+    if max_stars:
         try:
-            query += " AND stars_amount <= %s"
-            params.append(int(stars_max))
+            query += f" AND stars_amount <= ${param_index}"
+            params.append(int(max_stars))
+            param_index += 1
         except ValueError:
             flash("Maximum stars must be a number.", "error")
-            logger.error(f"Invalid stars_max format: {stars_max}")
+            logger.error(f"Invalid max_stars format: {max_stars}")
 
-    if recipient:
-        query += " AND recipient_username ILIKE %s"
-        params.append(f"%{recipient}%")
-
-    query += " ORDER BY purchase_time DESC LIMIT %s OFFSET %s"
+    query += f" ORDER BY purchase_time DESC LIMIT ${param_index} OFFSET ${param_index + 1}"
     params.extend([per_page, (page - 1) * per_page])
 
     try:
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                logger.debug(f"Executing query: {query} with params: {params}")
-                cur.execute(query, params)
-                transactions = cur.fetchall()
-                count_query = "SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("WHERE 1=1")[1].split("ORDER BY")[0]
-                cur.execute(count_query, params[:-2])
-                total = cur.fetchone()[0]
-                total_pages = (total + per_page - 1) // per_page
+        async with db_pool.acquire() as conn:
+            transactions = await conn.fetch(query, *params)
+            total = await conn.fetchval("SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("ORDER BY")[0].split("LIMIT")[0], *params[:-2])
+            total_pages = (total + per_page - 1) // per_page
 
-                eest = pytz.timezone("Europe/Tallinn")
-                transactions = [
-                    {
-                        "id": t[0],
-                        "user_id": t[1],
-                        "recipient_username": t[2],
-                        "stars_amount": t[3],
-                        "price_ton": t[4],
-                        "purchase_time": t[5].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST"),
-                        "checked_status": t[6]
-                    }
-                    for t in transactions
-                ]
+            eest = pytz.timezone("Europe/Tallinn")
+            transactions = [
+                {
+                    "id": t["id"],
+                    "user_id": t["user_id"],
+                    "recipient_username": t["recipient_username"],
+                    "stars_amount": t["stars_amount"],
+                    "price_ton": t["price_ton"],
+                    "purchase_time": t["purchase_time"].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST"),
+                    "checked_status": t["checked_status"]
+                }
+                for t in transactions
+            ]
 
-            logger.info(f"Displayed {len(transactions)} transactions, page {page} of {total_pages}")
-            return render_template(
-                "transactions.html",
-                transactions=transactions,
-                page=page,
-                total_pages=total_pages,
-                user_id=user_id,
-                date_from=date_from,
-                date_to=date_to,
-                stars_min=stars_min,
-                stars_max=stars_max,
-                recipient=recipient
-            )
-        finally:
-            conn.close()
+        logger.info(f"Displayed {len(transactions)} transactions, page {page} of {total_pages}")
+        return render_template(
+            'transactions.html',
+            transactions=transactions,
+            page=page,
+            total_pages=total_pages,
+            user_id=user_id,
+            start_date=start_date,
+            end_date=end_date,
+            min_stars=min_stars,
+            max_stars=max_stars,
+            recipient=recipient
+        )
     except Exception as e:
         logger.error(f"Error loading transactions: {e}", exc_info=True)
         flash(f"Error loading transactions: {str(e)}", "error")
         return render_template(
-            "transactions.html",
+            'transactions.html',
             transactions=[],
             page=1,
             total_pages=1,
             user_id=user_id,
-            date_from=date_from,
-            date_to=date_to,
-            stars_min=stars_min,
-            stars_max=stars_max,
+            start_date=start_date,
+            end_date=end_date,
+            min_stars=min_stars,
+            max_stars=max_stars,
             recipient=recipient
         )
 
-@app_flask.route("/update_status", methods=["GET", "POST"])
-def update_status():
-    """Handle transaction status updates."""
-    if not session.get("is_admin"):
-        logger.warning("Unauthorized access attempt to update_status")
-        return redirect(url_for("login"))
-    
-    if request.method == "POST":
-        transaction_id = request.form.get("transaction_id")
-        new_status = request.form.get("checked_status")
-        
-        if not transaction_id or new_status not in ["checked", "not_checked", "test"]:
-            logger.error(f"Invalid input: transaction_id={transaction_id}, new_status={new_status}")
-            flash("Invalid transaction ID or status.", "error")
-            return redirect(url_for("update_status"))
-        
+@app_flask.route('/users')
+@login_required
+async def users():
+    """Handle users page."""
+    page = int(request.args.get('page', 1))
+    per_page = 10
+    user_id = request.args.get('user_id', '')
+    username = request.args.get('username', '')
+    is_admin = request.args.get('is_admin', '')
+    is_banned = request.args.get('is_banned', '')
+
+    query = """
+        SELECT user_id, username, stars_bought, ref_bonus_ton, referrals, created_at, is_new, is_admin, is_banned, referrer_id
+        FROM users WHERE 1=1
+    """
+    params = []
+    param_index = 1
+
+    if user_id:
         try:
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE transactions SET checked_status = %s WHERE id = %s",
-                        (new_status, int(transaction_id))
-                    )
-                    conn.commit()
-                    logger.info(f"Updated status for transaction_id={transaction_id} to {new_status}")
-                    flash(f"Status updated to {new_status}.", "success")
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.error(f"Error updating transaction status: {e}", exc_info=True)
-            flash(f"Error updating status: {str(e)}", "error")
-        
-        return redirect(url_for("transactions"))
-    
-    # GET request: Show form to select transaction and status
+            query += f" AND user_id = ${param_index}"
+            params.append(int(user_id))
+            param_index += 1
+        except ValueError:
+            flash("User ID must be a number.", "error")
+            logger.error(f"Invalid user_id format: {user_id}")
+
+    if username:
+        query += f" AND username ILIKE ${param_index}"
+        params.append(f'%{username}%')
+        param_index += 1
+
+    if is_admin:
+        query += f" AND is_admin = ${param_index}"
+        params.append(is_admin == 'true')
+        param_index += 1
+
+    if is_banned:
+        query += f" AND is_banned = ${param_index}"
+        params.append(is_banned == 'true')
+        param_index += 1
+
+    query += f" ORDER BY created_at DESC LIMIT ${param_index} OFFSET ${param_index + 1}"
+    params.extend([per_page, (page - 1) * per_page])
+
     try:
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id, user_id, recipient_username, checked_status FROM transactions ORDER BY purchase_time DESC")
-                transactions = cur.fetchall()
-                transactions = [
-                    {
-                        "id": t[0],
-                        "user_id": t[1],
-                        "recipient_username": t[2],
-                        "checked_status": t[3]
-                    }
-                    for t in transactions
-                ]
-            return render_template("update_status.html", transactions=transactions)
-        finally:
-            conn.close()
+        async with db_pool.acquire() as conn:
+            users = await conn.fetch(query, *params)
+            total = await conn.fetchval("SELECT COUNT(*) FROM users WHERE 1=1" + query.split("ORDER BY")[0].split("LIMIT")[0], *params[:-2])
+            total_pages = (total + per_page - 1) // per_page
+
+        return render_template('users.html', users=users, page=page, total_pages=total_pages)
     except Exception as e:
-        logger.error(f"Error loading transactions for update: {e}", exc_info=True)
-        flash(f"Error loading transactions: {str(e)}", "error")
-        return render_template("update_status.html", transactions=[])
+        logger.error(f"Error loading users: {e}", exc_info=True)
+        flash(f"Error loading users: {str(e)}", "error")
+        return render_template('users.html', users=[], page=1, total_pages=1)
+
+@app_flask.route('/update_status', methods=['POST'])
+@login_required
+async def update_status():
+    """Handle status updates for users and transactions."""
+    data = request.get_json()
+    type_ = data.get('type')
+    field = data.get('field')
+    user_id = data.get('user_id')
+    value = data.get('value')
+
+    try:
+        async with db_pool.acquire() as conn:
+            if type_ == 'user' and field in ['is_admin', 'is_banned']:
+                await conn.execute(f"UPDATE users SET {field} = $1 WHERE user_id = $2", value == 'true', int(user_id))
+                logger.info(f"Updated {field} for user_id={user_id} to {value}")
+                return jsonify({'message': f'{field} updated for user {user_id}'})
+            elif type_ == 'transaction' and field == 'checked_status':
+                await conn.execute("UPDATE transactions SET checked_status = $1 WHERE id = $2", value, int(user_id))
+                logger.info(f"Updated checked_status for transaction_id={user_id} to {value}")
+                return jsonify({'message': f'Status updated for transaction {user_id}'})
+            else:
+                logger.error(f"Invalid type or field: type={type_}, field={field}")
+                return jsonify({'message': 'Invalid type or field'}), 400
+    except Exception as e:
+        logger.error(f"Error updating status: {e}", exc_info=True)
+        return jsonify({'message': f'Error updating status: {str(e)}'}), 500
         
 async def ensure_db_pool():
     """Обеспечивает доступ к пулу соединений базы данных."""
