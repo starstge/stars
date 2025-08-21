@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Users</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <h1 class="text-2xl font-bold mb-4">Users Management</h1>
+        <a href="{{ url_for('logout') }}" class="text-blue-600 hover:underline">Logout</a>
+
+        <!-- Filters -->
+        <form method="GET" action="{{ url_for('users') }}" class="mb-4">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                    <label for="user_id" class="block text-sm font-medium text-gray-700">User ID</label>
+                    <input type="number" name="user_id" id="user_id" value="{{ request.args.get('user_id', '') }}"
+                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                </div>
+                <div>
+                    <label for="username" class="block text-sm font-medium text-gray-700">Username</label>
+                    <input type="text" name="username" id="username" value="{{ request.args.get('username', '') }}"
+                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                </div>
+                <div>
+                    <label for="is_admin" class="block text-sm font-medium text-gray-700">Admin Status</label>
+                    <select name="is_admin" id="is_admin" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                        <option value="">All</option>
+                        <option value="true" {% if request.args.get('is_admin') == 'true' %}selected{% endif %}>Admin</option>
+                        <option value="false" {% if request.args.get('is_admin') == 'false' %}selected{% endif %}>Non-Admin</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="is_banned" class="block text-sm font-medium text-gray-700">Ban Status</label>
+                    <select name="is_banned" id="is_banned" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                        <option value="">All</option>
+                        <option value="true" {% if request.args.get('is_banned') == 'true' %}selected{% endif %}>Banned</option>
+                        <option value="false" {% if request.args.get('is_banned') == 'false' %}selected{% endif %}>Not Banned</option>
+                    </select>
+                </div>
+            </div>
+            <div class="mt-4">
+                <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600">Filter</button>
+                <a href="{{ url_for('users') }}" class="ml-2 text-blue-600 hover:underline">Clear Filters</a>
+            </div>
+        </form>
+
+        <!-- Users Table -->
+        <div class="overflow-x-auto">
+            <table class="min-w-full bg-white border border-gray-300">
+                <thead>
+                    <tr class="bg-gray-200">
+                        <th class="py-2 px-4 border-b">User ID</th>
+                        <th class="py-2 px-4 border-b">Username</th>
+                        <th class="py-2 px-4 border-b">Stars Bought</th>
+                        <th class="py-2 px-4 border-b">Ref Bonus TON</th>
+                        <th class="py-2 px-4 border-b">Referrals</th>
+                        <th class="py-2 px-4 border-b">Created At</th>
+                        <th class="py-2 px-4 border-b">Is New</th>
+                        <th class="py-2 px-4 border-b">Is Admin</th>
+                        <th class="py-2 px-4 border-b">Is Banned</th>
+                        <th class="py-2 px-4 border-b">Referrer ID</th>
+                        <th class="py-2 px-4 border-b">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td class="py-2 px-4 border-b">{{ user.user_id }}</td>
+                        <td class="py-2 px-4 border-b">{{ user.username or 'N/A' }}</td>
+                        <td class="py-2 px-4 border-b">{{ user.stars_bought }}</td>
+                        <td class="py-2 px-4 border-b">{{ user.ref_bonus_ton }}</td>
+                        <td class="py-2 px-4 border-b">{{ user.referrals }}</td>
+                        <td class="py-2 px-4 border-b">{{ user.created_at }}</td>
+                        <td class="py-2 px-4 border-b">{{ 'Yes' if user.is_new else 'No' }}</td>
+                        <td class="py-2 px-4 border-b">
+                            <select onchange="updateUserStatus('is_admin', {{ user.user_id }}, this.value)">
+                                <option value="true" {% if user.is_admin %}selected{% endif %}>Admin</option>
+                                <option value="false" {% if not user.is_admin %}selected{% endif %}>Non-Admin</option>
+                            </select>
+                        </td>
+                        <td class="py-2 px-4 border-b">
+                            <select onchange="updateUserStatus('is_banned', {{ user.user_id }}, this.value)">
+                                <option value="true" {% if user.is_banned %}selected{% endif %}>Banned</option>
+                                <option value="false" {% if not user.is_banned %}selected{% endif %}>Not Banned</option>
+                            </select>
+                        </td>
+                        <td class="py-2 px-4 border-b">{{ user.referrer_id or 'N/A' }}</td>
+                        <td class="py-2 px-4 border-b">
+                            <button onclick="openCommandModal({{ user.user_id }})" class="text-blue-600 hover:underline">Generate Command</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        <div class="mt-4 flex justify-between">
+            {% if page > 1 %}
+            <a href="{{ url_for('users', page=page-1, user_id=request.args.get('user_id', ''), username=request.args.get('username', ''), is_admin=request.args.get('is_admin', ''), is_banned=request.args.get('is_banned', '')) }}"
+               class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600">Previous</a>
+            {% else %}
+            <span class="bg-gray-300 text-gray-600 px-4 py-2 rounded-md cursor-not-allowed">Previous</span>
+            {% endif %}
+            <span>Page {{ page }} of {{ total_pages }}</span>
+            {% if page < total_pages %}
+            <a href="{{ url_for('users', page=page+1, user_id=request.args.get('user_id', ''), username=request.args.get('username', ''), is_admin=request.args.get('is_admin', ''), is_banned=request.args.get('is_banned', '')) }}"
+               class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600">Next</a>
+            {% else %}
+            <span class="bg-gray-300 text-gray-600 px-4 py-2 rounded-md cursor-not-allowed">Next</span>
+            {% endif %}
+        </div>
+
+        <!-- Command Generator Modal -->
+        <div id="commandModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden flex items-center justify-center">
+            <div class="bg-white p-6 rounded-lg shadow-lg w-full max-w-lg">
+                <h2 class="text-xl font-bold mb-4">Generate SQL Command</h2>
+                <div class="mb-4">
+                    <label for="commandTable" class="block text-sm font-medium text-gray-700">Table</label>
+                    <select id="commandTable" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                        <option value="users">users</option>
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <label for="commandAction" class="block text-sm font-medium text-gray-700">Action</label>
+                    <select id="commandAction" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                        <option value="find">Find User</option>
+                        <option value="update_admin">Update Admin Status</option>
+                        <option value="update_banned">Update Ban Status</option>
+                        <option value="update_details">Update User Details</option>
+                        <option value="delete">Delete User</option>
+                        <option value="sort_users_by_stars">Sort Users by Stars</option>
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <label for="commandId" class="block text-sm font-medium text-gray-700">User ID</label>
+                    <input type="number" id="commandId" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                </div>
+                <div id="extraFields" class="mb-4 hidden">
+                    <label for="username" class="block text-sm font-medium text-gray-700">Username</label>
+                    <input type="text" id="usernameField" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                    <label for="starsBought" class="block text-sm font-medium text-gray-700 mt-2">Stars Bought</label>
+                    <input type="number" id="starsBought" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                    <label for="refBonusTon" class="block text-sm font-medium text-gray-700 mt-2">Ref Bonus TON</label>
+                    <input type="number" step="0.01" id="refBonusTon" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                </div>
+                <div class="mb-4">
+                    <label for="commandOutput" class="block text-sm font-medium text-gray-700">Generated Command</label>
+                    <textarea id="commandOutput" rows="4" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm" readonly></textarea>
+                </div>
+                <div class="flex justify-end">
+                    <button onclick="closeCommandModal()" class="bg-gray-500 text-white px-4 py-2 rounded-md mr-2 hover:bg-gray-600">Close</button>
+                    <button onclick="generateCommand()" class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600">Generate</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function openCommandModal(userId) {
+            document.getElementById('commandModal').classList.remove('hidden');
+            document.getElementById('commandId').value = userId;
+            toggleExtraFields();
+        }
+
+        function closeCommandModal() {
+            document.getElementById('commandModal').classList.add('hidden');
+            document.getElementById('commandOutput').textContent = '';
+            document.getElementById('extraFields').classList.add('hidden');
+        }
+
+        function toggleExtraFields() {
+            const action = document.getElementById('commandAction').value;
+            const extraFields = document.getElementById('extraFields');
+            extraFields.classList.toggle('hidden', action !== 'update_details');
+        }
+
+        document.getElementById('commandAction').addEventListener('change', toggleExtraFields);
+
+        function generateCommand() {
+            const table = document.getElementById('commandTable').value;
+            const action = document.getElementById('commandAction').value;
+            const id = document.getElementById('commandId').value.trim();
+            const username = document.getElementById('usernameField')?.value.trim();
+            const starsBought = document.getElementById('starsBought')?.value.trim();
+            const refBonusTon = document.getElementById('refBonusTon')?.value.trim();
+            const output = document.getElementById('commandOutput');
+            let command = '';
+
+            if (action !== 'sort_users_by_stars' && (!id || isNaN(id))) {
+                output.textContent = 'Please enter a valid numeric User ID.';
+                return;
+            }
+
+            const queryTemplates = {
+                users: {
+                    find: 'SELECT * FROM users WHERE user_id = $1;',
+                    update_admin: 'UPDATE users SET is_admin = $2 WHERE user_id = $1;',
+                    update_banned: 'UPDATE users SET is_banned = $2 WHERE user_id = $1;',
+                    update_details: 'UPDATE users SET {updates} WHERE user_id = $1;',
+                    delete: 'DELETE FROM users WHERE user_id = $1;',
+                    sort_users_by_stars: `SELECT u.user_id, u.username, u.is_admin, COALESCE(SUM(t.stars_amount), 0) as total_stars
+                        FROM users u
+                        LEFT JOIN transactions t ON u.user_id = t.user_id
+                        GROUP BY u.user_id, u.username, u.is_admin
+                        ORDER BY total_stars DESC;`
+                }
+            };
+
+            if (!queryTemplates[table][action]) {
+                output.textContent = 'Invalid table or action.';
+                return;
+            }
+
+            if (action === 'update_details') {
+                let updates = [];
+                let params = [id];
+                let paramIndex = 2;
+
+                if (username) {
+                    updates.push(`username = $${paramIndex}`);
+                    params.push(username.replace(/'/g, "''"));
+                    paramIndex++;
+                }
+                if (starsBought && !isNaN(starsBought)) {
+                    updates.push(`stars_bought = $${paramIndex}`);
+                    params.push(parseInt(starsBought));
+                    paramIndex++;
+                }
+                if (refBonusTon && !isNaN(refBonusTon)) {
+                    updates.push(`ref_bonus_ton = $${paramIndex}`);
+                    params.push(parseFloat(refBonusTon).toFixed(2));
+                    paramIndex++;
+                }
+
+                if (updates.length === 0) {
+                    output.textContent = 'Please enter at least one value to update.';
+                    return;
+                }
+
+                command = queryTemplates[table][action].replace('{updates}', updates.join(', '));
+            } else if (action === 'update_admin' || action === 'update_banned') {
+                const status = action === 'update_admin' ? 'is_admin' : 'is_banned';
+                command = queryTemplates[table][action].replace('$2', `true`); // Example: Set to true
+            } else {
+                command = queryTemplates[table][action];
+            }
+
+            output.textContent = command;
+        }
+
+        async function updateUserStatus(field, userId, value) {
+            const response = await fetch('/update_status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'user', field, user_id: userId, value })
+            });
+            const result = await response.json();
+            alert(result.message);
+            if (!response.ok) location.reload();
+        }
+    </script>
+</body>
+</html>
