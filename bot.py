@@ -141,6 +141,14 @@ async def debug_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"update": update.to_dict()}
     )
 
+app_flask = Flask(__name__)
+app_flask.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
+
+# Synchronous database connection
 def get_db_connection():
     try:
         conn = psycopg2.connect(os.getenv("POSTGRES_URL"))
@@ -192,37 +200,6 @@ def login():
             flash(f"Ошибка входа: {str(e)}", "error")
     
     return render_template("login.html")
-    
-@app_flask.route("/logout")
-def logout():
-    """Handle admin logout."""
-    session.pop("user_id", None)
-    session.pop("is_admin", None)
-    flash("You have logged out.", "success")
-    logger.info("User logged out")
-    return redirect(url_for("login"))
-
-from flask import Flask, render_template, request, redirect, url_for, flash, session
-import psycopg2
-import os
-import logging
-
-# Flask app setup
-app_flask = Flask(__name__)
-app_flask.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-
-# Настройка логирования
-logger = logging.getLogger(__name__)
-
-# Synchronous database connection
-def get_db_connection():
-    try:
-        conn = psycopg2.connect(os.getenv("POSTGRES_URL"))
-        return conn
-    except Exception as e:
-        logger.error(f"Error connecting to database: {e}")
-        raise
 
 @app_flask.route("/logout")
 def logout():
@@ -354,7 +331,6 @@ def transactions():
         logger.error(f"Ошибка загрузки транзакций: {e}", exc_info=True)
         flash(f"Ошибка загрузки транзакций: {str(e)}", "error")
         return render_template("transactions.html", transactions=[], page=1, total_pages=1)
-
 async def ensure_db_pool():
     """Обеспечивает доступ к пулу соединений базы данных."""
     global db_pool
@@ -2411,19 +2387,37 @@ async def webhook_handler(request):
         return web.Response(status=500)
         
 async def main():
-    global telegram_app
+    global telegram_app, db_pool
     try:
+        # Check environment variables
         await check_environment()
+        logger.info("Environment variables checked successfully")
+
+        # Initialize database pool
         await init_db()
+        logger.info("Database initialized successfully")
+
+        # Load bot settings
         await load_settings()
+        logger.info("Settings loaded successfully")
+
+        # Set up aiohttp application
         app = web.Application()
-        # Register webhook route explicitly
         app.router.add_post("/webhook", webhook_handler)
         logger.info("Webhook route registered at /webhook")
-        # Add Flask routes after webhook
+
+        # Integrate Flask routes
         wsgi_handler = WSGIHandler(app_flask)
         app.router.add_route("*", "/{path_info:.*}", wsgi_handler)
         logger.info("Flask routes integrated with aiohttp")
+
+        # Debug: Log all registered Flask routes
+        with app_flask.app_context():
+            logger.info("Registered Flask routes:")
+            for rule in app_flask.url_map.iter_rules():
+                logger.info(f"Endpoint: {rule.endpoint}, Path: {rule}, Methods: {rule.methods}")
+
+        # Initialize Telegram bot
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
@@ -2431,12 +2425,18 @@ async def main():
             .http_version("1.1")
             .build()
         )
+        logger.info("Telegram application initialized")
+
+        # Add handlers
         telegram_app.add_handler(CommandHandler("start", start))
         telegram_app.add_handler(CommandHandler("tonprice", ton_price_command))
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
         telegram_app.add_error_handler(error_handler)
+        logger.info("Telegram handlers registered")
+
+        # Set up scheduler
         scheduler = AsyncIOScheduler(timezone="UTC")
         scheduler.add_job(heartbeat_check, "interval", seconds=300, args=[telegram_app])
         scheduler.add_job(check_reminders, "interval", seconds=60)
@@ -2444,13 +2444,40 @@ async def main():
         scheduler.add_job(update_ton_price, "interval", minutes=30)
         scheduler.add_job(keep_alive, "interval", minutes=10, args=[telegram_app])
         scheduler.start()
+        logger.info("Scheduler started with periodic tasks")
+
+        # Initialize Telegram bot
         await telegram_app.initialize()
-        await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        logger.info(f"Bot started with webhook: {WEBHOOK_URL}/webhook")
+        logger.info("Telegram bot initialized")
+
+        # Set webhook
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await telegram_app.bot.set_webhook(webhook_url)
+        logger.info(f"Bot started with webhook: {webhook_url}")
+
+        # Run aiohttp server
         await web._run_app(app, host="0.0.0.0", port=8080)
+
     except Exception as e:
         logger.error(f"Fatal error in main: {e}", exc_info=True)
+        # Notify admin of fatal error
+        if telegram_app and telegram_app.bot:
+            try:
+                await telegram_app.bot.send_message(
+                    chat_id=ADMIN_BACKUP_ID,
+                    text=f"⚠️ Bot: Fatal error in main: {str(e)}"
+                )
+            except Exception as notify_error:
+                logger.error(f"Failed to send fatal error notification: {notify_error}", exc_info=True)
         raise
+    finally:
+        # Ensure scheduler and database pool are closed
+        if 'scheduler' in locals():
+            scheduler.shutdown()
+            logger.info("Scheduler shut down")
+        if db_pool is not None:
+            await close_db_pool()
+            logger.info("Database pool closed")
         
 if __name__ == "__main__":
     asyncio.run(main())
