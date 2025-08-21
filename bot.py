@@ -2479,57 +2479,102 @@ async def webhook_handler(request):
         
 async def main():
     """Main function to start the bot and Flask server."""
-    global telegram_app
+    global telegram_app, db_pool
     try:
+        # Check environment variables
         await check_environment()
+        logger.info("Environment variables checked successfully")
+
+        # Initialize database pool
         await init_db()
-        await test_db_connection()
+        logger.info("Database initialized successfully")
+
+        # Load bot settings
+        await load_settings()
+        logger.info("Settings loaded successfully")
+
+        # Set up aiohttp application
+        app = web.Application()
+        app.router.add_post("/webhook", webhook_handler)
+        logger.info("Webhook route registered at /webhook")
+
+        # Integrate Flask routes
+        wsgi_handler = WSGIHandler(app_flask)
+        app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle_request)
+        logger.info("Flask routes integrated with aiohttp")
+
+        # Debug: Log all registered Flask routes
+        with app_flask.app_context():
+            logger.info("Registered Flask routes:")
+            for rule in app_flask.url_map.iter_rules():
+                logger.info(f"Endpoint: {rule.endpoint}, Path: {rule}, Methods: {rule.methods}")
+
+        # Debug: Log all aiohttp routes
+        logger.debug("Registered aiohttp routes: %s", app.router.routes())
 
         # Initialize Telegram bot
-        telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
+        telegram_app = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .concurrent_updates(True)
+            .http_version("1.1")
+            .build()
+        )
+        logger.info("Telegram application initialized")
 
         # Add handlers
         telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CommandHandler("tonprice", ton_price_command))
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
-        # ... (add other handlers as in your original code) ...
-
-        # Start Prometheus metrics server
-        start_http_server(8000)
-        logger.info("Prometheus metrics server started on port 8000")
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
+        telegram_app.add_error_handler(error_handler)
+        logger.info("Telegram handlers registered")
 
         # Set up scheduler
-        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
-        scheduler.add_job(heartbeat_check, 'interval', minutes=30, args=[telegram_app])
-        scheduler.add_job(check_reminders, 'interval', minutes=60)
-        scheduler.add_job(update_ton_price, 'interval', minutes=60)
-        scheduler.add_job(backup_db, 'interval', days=1)
-        scheduler.add_job(keep_alive, 'interval', minutes=5, args=[telegram_app])
+        scheduler = AsyncIOScheduler(timezone="UTC")
+        scheduler.add_job(heartbeat_check, "interval", seconds=300, args=[telegram_app])
+        scheduler.add_job(check_reminders, "interval", seconds=60)
+        scheduler.add_job(backup_db, "interval", hours=24)
+        scheduler.add_job(update_ton_price, "interval", minutes=30)
+        scheduler.add_job(keep_alive, "interval", minutes=10, args=[telegram_app])
         scheduler.start()
-        logger.info("Scheduler started")
+        logger.info("Scheduler started with periodic tasks")
 
-        # Set up aiohttp server with Flask
-        aiohttp_app = web.Application()
-        wsgi = WSGIHandler(app_flask)
-        aiohttp_app.router.add_route('*', '/{path:.*}', wsgi.handle_request)
-        aiohttp_app.router.add_post('/webhook', webhook_handler)
-        runner = web.AppRunner(aiohttp_app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', PORT)
-        await site.start()
-        logger.info(f"aiohttp server started on port {PORT}")
+        # Initialize Telegram bot
+        await telegram_app.initialize()
+        logger.info("Telegram bot initialized")
 
         # Set webhook
-        await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        logger.info(f"Webhook set to {WEBHOOK_URL}/webhook")
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await telegram_app.bot.set_webhook(webhook_url)
+        logger.info(f"Bot started with webhook: {webhook_url}")
 
-        # Keep the bot running
-        await asyncio.Event().wait()
+        # Run aiohttp server
+        port = int(os.getenv("PORT", 8080))  # Use PORT from env, fallback to 8080
+        await web._run_app(app, host="0.0.0.0", port=port)
+        logger.info(f"aiohttp server started on port {port}")
 
     except Exception as e:
-        logger.error(f"Error in main: {e}", exc_info=True)
+        logger.error(f"Fatal error in main: {e}", exc_info=True)
+        # Notify admin of fatal error
+        if telegram_app and telegram_app.bot:
+            try:
+                await telegram_app.bot.send_message(
+                    chat_id=ADMIN_BACKUP_ID,
+                    text=f"⚠️ Bot: Fatal error in main: {str(e)}"
+                )
+            except Exception as notify_error:
+                logger.error(f"Failed to send fatal error notification: {notify_error}", exc_info=True)
         raise
     finally:
-        await close_db_pool()
+        # Ensure scheduler and database pool are closed
+        if 'scheduler' in locals():
+            scheduler.shutdown()
+            logger.info("Scheduler shut down")
+        if db_pool is not None:
+            await close_db_pool()
+            logger.info("Database pool closed")
         
 if __name__ == "__main__":
     asyncio.run(main())
