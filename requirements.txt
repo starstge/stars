@@ -12,4 +12,3 @@ flask>=2.3.0
 bcrypt>=4.0.0
 aiohttp-wsgi>=0.10.0
 psycopg2-binary==2.9.9
-asgiref==3.8.1
