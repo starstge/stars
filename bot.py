@@ -231,7 +231,7 @@ def transactions():
     page = int(request.args.get("page", 1))
     per_page = 10
 
-    query = "SELECT id, user_id, recipient_username, stars_amount, price_ton, purchase_time FROM transactions WHERE 1=1"
+    query = "SELECT id, user_id, recipient_username, stars_amount, price_ton, purchase_time, checked_status FROM transactions WHERE 1=1"
     params = []
 
     if user_id:
@@ -278,7 +278,6 @@ def transactions():
         query += " AND recipient_username ILIKE %s"
         params.append(f"%{recipient}%")
 
-    # Use %s for LIMIT and OFFSET
     query += " ORDER BY purchase_time DESC LIMIT %s OFFSET %s"
     params.extend([per_page, (page - 1) * per_page])
 
@@ -290,7 +289,7 @@ def transactions():
                 cur.execute(query, params)
                 transactions = cur.fetchall()
                 count_query = "SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("WHERE 1=1")[1].split("ORDER BY")[0]
-                cur.execute(count_query, params[:-2])  # Exclude LIMIT and OFFSET params
+                cur.execute(count_query, params[:-2])
                 total = cur.fetchone()[0]
                 total_pages = (total + per_page - 1) // per_page
 
@@ -302,7 +301,8 @@ def transactions():
                         "recipient_username": t[2],
                         "stars_amount": t[3],
                         "price_ton": t[4],
-                        "purchase_time": t[5].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST")
+                        "purchase_time": t[5].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST"),
+                        "checked_status": t[6]
                     }
                     for t in transactions
                 ]
@@ -337,6 +337,65 @@ def transactions():
             stars_max=stars_max,
             recipient=recipient
         )
+
+@app_flask.route("/update_status", methods=["GET", "POST"])
+def update_status():
+    """Handle transaction status updates."""
+    if not session.get("is_admin"):
+        logger.warning("Unauthorized access attempt to update_status")
+        return redirect(url_for("login"))
+    
+    if request.method == "POST":
+        transaction_id = request.form.get("transaction_id")
+        new_status = request.form.get("checked_status")
+        
+        if not transaction_id or new_status not in ["checked", "not_checked", "test"]:
+            logger.error(f"Invalid input: transaction_id={transaction_id}, new_status={new_status}")
+            flash("Invalid transaction ID or status.", "error")
+            return redirect(url_for("update_status"))
+        
+        try:
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE transactions SET checked_status = %s WHERE id = %s",
+                        (new_status, int(transaction_id))
+                    )
+                    conn.commit()
+                    logger.info(f"Updated status for transaction_id={transaction_id} to {new_status}")
+                    flash(f"Status updated to {new_status}.", "success")
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error(f"Error updating transaction status: {e}", exc_info=True)
+            flash(f"Error updating status: {str(e)}", "error")
+        
+        return redirect(url_for("transactions"))
+    
+    # GET request: Show form to select transaction and status
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, user_id, recipient_username, checked_status FROM transactions ORDER BY purchase_time DESC")
+                transactions = cur.fetchall()
+                transactions = [
+                    {
+                        "id": t[0],
+                        "user_id": t[1],
+                        "recipient_username": t[2],
+                        "checked_status": t[3]
+                    }
+                    for t in transactions
+                ]
+            return render_template("update_status.html", transactions=transactions)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error loading transactions for update: {e}", exc_info=True)
+        flash(f"Error loading transactions: {str(e)}", "error")
+        return render_template("update_status.html", transactions=[])
         
 async def ensure_db_pool():
     """Обеспечивает доступ к пулу соединений базы данных."""
