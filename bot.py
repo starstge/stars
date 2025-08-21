@@ -3,6 +3,7 @@ import json
 import logging
 import asyncio
 import aiohttp
+import psycopg2
 from aiohttp import ClientTimeout, web
 from urllib.parse import urlparse
 from dotenv import load_dotenv
