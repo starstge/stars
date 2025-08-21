@@ -36,6 +36,7 @@ import telegram
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 import bcrypt
 from aiohttp_wsgi import WSGIHandler
+from asgiref.wsgi import WsgiToAsgi
 
 
 app_flask = Flask(__name__)
@@ -2499,7 +2500,7 @@ async def main():
         logger.info("Webhook route registered at /webhook")
 
         # Integrate Flask routes
-        wsgi_handler = WSGIHandler(app_flask)
+        wsgi_handler = WSGIHandler(WsgiToAsgi(app_flask))
         app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle_request)
         logger.info("Flask routes integrated with aiohttp")
 
