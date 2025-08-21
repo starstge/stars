@@ -4,6 +4,7 @@ import logging
 import asyncio
 import aiohttp
 import psycopg2
+from functools import wraps
 from aiohttp import ClientTimeout, web
 from urllib.parse import urlparse
 from dotenv import load_dotenv
