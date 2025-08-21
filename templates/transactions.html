@@ -12,107 +12,197 @@
         function submitStatusForm(transactionId) {
             document.getElementById(`statusForm-${transactionId}`).submit();
         }
+        function generateCommand() {
+            const table = document.getElementById("commandTable").value;
+            const action = document.getElementById("commandAction").value;
+            const id = document.getElementById("commandId").value.trim();
+            const output = document.getElementById("commandOutput");
+            let command = "";
+
+            if (!id) {
+                output.textContent = "Please enter an ID.";
+                return;
+            }
+
+            if (table === "users") {
+                if (action === "find") {
+                    command = `SELECT * FROM users WHERE user_id = ${id};`;
+                } else if (action === "update_admin") {
+                    command = `UPDATE users SET is_admin = true WHERE user_id = ${id};`;
+                } else if (action === "delete") {
+                    command = `DELETE FROM users WHERE user_id = ${id};`;
+                }
+            } else if (table === "transactions") {
+                if (action === "find") {
+                    command = `SELECT id, user_id, recipient_username, stars_amount, price_ton, purchase_time, checked_status FROM transactions WHERE id = ${id};`;
+                } else if (action === "update_status_checked") {
+                    command = `UPDATE transactions SET checked_status = 'checked' WHERE id = ${id};`;
+                } else if (action === "update_status_not_checked") {
+                    command = `UPDATE transactions SET checked_status = 'not_checked' WHERE id = ${id};`;
+                } else if (action === "update_status_test") {
+                    command = `UPDATE transactions SET checked_status = 'test' WHERE id = ${id};`;
+                } else if (action === "delete") {
+                    command = `DELETE FROM transactions WHERE id = ${id};`;
+                }
+            }
+
+            output.textContent = command || "Select a valid table and action.";
+        }
     </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
-    <div class="container mx-auto p-4">
-        <div class="flex justify-between items-center mb-4">
-            <h1 class="text-2xl font-bold">Transactions</h1>
-            <a href="{{ url_for('logout') }}" class="bg-red-600 text-white py-2 px-4 rounded-md hover:bg-red-700">Logout</a>
-        </div>
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="mb-4 p-2 text-center {% if category == 'error' %}text-red-700 bg-red-100{% else %}text-green-700 bg-green-100{% endif %}">
-                        {{ message }}
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        <form id="filterForm" method="GET" action="{{ url_for('transactions') }}" class="mb-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-                <label for="user_id" class="block text-sm font-medium text-gray-700">User ID</label>
-                <input type="text" id="user_id" name="user_id" value="{{ user_id }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
+    <div class="container mx-auto p-4 flex flex-col md:flex-row gap-4">
+        <!-- Main Content -->
+        <div class="flex-1">
+            <div class="flex justify-between items-center mb-4">
+                <h1 class="text-2xl font-bold">Transactions</h1>
+                <a href="{{ url_for('logout') }}" class="bg-red-600 text-white py-2 px-4 rounded-md hover:bg-red-700">Logout</a>
             </div>
-            <div>
-                <label for="recipient" class="block text-sm font-medium text-gray-700">Recipient Username</label>
-                <input type="text" id="recipient" name="recipient" value="{{ recipient }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
-            </div>
-            <div>
-                <label for="date_from" class="block text-sm font-medium text-gray-700">Date From</label>
-                <input type="date" id="date_from" name="date_from" value="{{ date_from }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" onchange="submitForm()">
-            </div>
-            <div>
-                <label for="date_to" class="block text-sm font-medium text-gray-700">Date To</label>
-                <input type="date" id="date_to" name="date_to" value="{{ date_to }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" onchange="submitForm()">
-            </div>
-            <div>
-                <label for="stars_min" class="block text-sm font-medium text-gray-700">Min Stars</label>
-                <input type="number" id="stars_min" name="stars_min" value="{{ stars_min }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
-            </div>
-            <div>
-                <label for="stars_max" class="block text-sm font-medium text-gray-700">Max Stars</label>
-                <input type="number" id="stars_max" name="stars_max" value="{{ stars_max }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
-            </div>
-        </form>
-        <div class="overflow-x-auto">
-            <table class="min-w-full bg-white border">
-                <thead>
-                    <tr>
-                        <th class="py-2 px-4 border">ID</th>
-                        <th class="py-2 px-4 border">User ID</th>
-                        <th class="py-2 px-4 border">Recipient</th>
-                        <th class="py-2 px-4 border">Stars</th>
-                        <th class="py-2 px-4 border">Price (TON)</th>
-                        <th class="py-2 px-4 border">Purchase Time (EEST)</th>
-                        <th class="py-2 px-4 border">Checked Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% if transactions %}
-                        {% for t in transactions %}
-                            <tr class="{% if t.checked_status == 'checked' %}bg-green-100{% elif t.checked_status == 'not_checked' %}bg-red-100{% else %}bg-yellow-100{% endif %}">
-                                <td class="py-2 px-4 border">{{ t.id }}</td>
-                                <td class="py-2 px-4 border">{{ t.user_id }}</td>
-                                <td class="py-2 px-4 border">{{ t.recipient_username }}</td>
-                                <td class="py-2 px-4 border">{{ t.stars_amount }}</td>
-                                <td class="py-2 px-4 border">{{ t.price_ton | round(2) }}</td>
-                                <td class="py-2 px-4 border">{{ t.purchase_time }}</td>
-                                <td class="py-2 px-4 border">
-                                    <form id="statusForm-{{ t.id }}" method="POST" action="{{ url_for('update_status') }}">
-                                        <input type="hidden" name="transaction_id" value="{{ t.id }}">
-                                        <select name="checked_status" onchange="submitStatusForm({{ t.id }})" class="border-gray-300 rounded-md shadow-sm">
-                                            <option value="checked" {% if t.checked_status == 'checked' %}selected{% endif %}>Checked</option>
-                                            <option value="not_checked" {% if t.checked_status == 'not_checked' %}selected{% endif %}>Not Checked</option>
-                                            <option value="test" {% if t.checked_status == 'test' %}selected{% endif %}>Test</option>
-                                        </select>
-                                    </form>
-                                </td>
-                            </tr>
-                        {% endfor %}
-                    {% else %}
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="mb-4 p-2 text-center {% if category == 'error' %}text-red-700 bg-red-100{% else %}text-green-700 bg-green-100{% endif %}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <form id="filterForm" method="GET" action="{{ url_for('transactions') }}" class="mb-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <label for="user_id" class="block text-sm font-medium text-gray-700">User ID</label>
+                    <input type="text" id="user_id" name="user_id" value="{{ user_id }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
+                </div>
+                <div>
+                    <label for="recipient" class="block text-sm font-medium text-gray-700">Recipient Username</label>
+                    <input type="text" id="recipient" name="recipient" value="{{ recipient }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
+                </div>
+                <div>
+                    <label for="date_from" class="block text-sm font-medium text-gray-700">Date From</label>
+                    <input type="date" id="date_from" name="date_from" value="{{ date_from }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" onchange="submitForm()">
+                </div>
+                <div>
+                    <label for="date_to" class="block text-sm font-medium text-gray-700">Date To</label>
+                    <input type="date" id="date_to" name="date_to" value="{{ date_to }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" onchange="submitForm()">
+                </div>
+                <div>
+                    <label for="stars_min" class="block text-sm font-medium text-gray-700">Min Stars</label>
+                    <input type="number" id="stars_min" name="stars_min" value="{{ stars_min }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
+                </div>
+                <div>
+                    <label for="stars_max" class="block text-sm font-medium text-gray-700">Max Stars</label>
+                    <input type="number" id="stars_max" name="stars_max" value="{{ stars_max }}" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" oninput="submitForm()">
+                </div>
+            </form>
+            <div class="overflow-x-auto">
+                <table class="min-w-full bg-white border">
+                    <thead>
                         <tr>
-                            <td colspan="7" class="py-2 px-4 border text-center">No transactions found.</td>
+                            <th class="py-2 px-4 border">ID</th>
+                            <th class="py-2 px-4 border">User ID</th>
+                            <th class="py-2 px-4 border">Recipient</th>
+                            <th class="py-2 px-4 border">Stars</th>
+                            <th class="py-2 px-4 border">Price (TON)</th>
+                            <th class="py-2 px-4 border">Purchase Time (EEST)</th>
+                            <th class="py-2 px-4 border">Checked Status</th>
                         </tr>
-                    {% endif %}
-                </tbody>
-            </table>
-        </div>
-        {% if total_pages > 1 %}
-            <div class="mt-4 flex justify-between">
-                {% if page > 1 %}
-                    <a href="{{ url_for('transactions', page=page-1, user_id=user_id, date_from=date_from, date_to=date_to, stars_min=stars_min, stars_max=stars_max, recipient=recipient) }}" class="bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700">Previous</a>
-                {% else %}
-                    <span></span>
-                {% endif %}
-                <span>Page {{ page }} of {{ total_pages }}</span>
-                {% if page < total_pages %}
-                    <a href="{{ url_for('transactions', page=page+1, user_id=user_id, date_from=date_from, date_to=date_to, stars_min=stars_min, stars_max=stars_max, recipient=recipient) }}" class="bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700">Next</a>
-                {% else %}
-                    <span></span>
-                {% endif %}
+                    </thead>
+                    <tbody>
+                        {% if transactions %}
+                            {% for t in transactions %}
+                                <tr class="{% if t.checked_status == 'checked' %}bg-green-100{% elif t.checked_status == 'not_checked' %}bg-red-100{% else %}bg-yellow-100{% endif %}">
+                                    <td class="py-2 px-4 border">{{ t.id }}</td>
+                                    <td class="py-2 px-4 border">{{ t.user_id }}</td>
+                                    <td class="py-2 px-4 border">{{ t.recipient_username }}</td>
+                                    <td class="py-2 px-4 border">{{ t.stars_amount }}</td>
+                                    <td class="py-2 px-4 border">{{ t.price_ton | round(2) }}</td>
+                                    <td class="py-2 px-4 border">{{ t.purchase_time }}</td>
+                                    <td class="py-2 px-4 border">
+                                        <form id="statusForm-{{ t.id }}" method="POST" action="{{ url_for('update_status') }}">
+                                            <input type="hidden" name="transaction_id" value="{{ t.id }}">
+                                            <select name="checked_status" onchange="submitStatusForm({{ t.id }})" class="border-gray-300 rounded-md shadow-sm">
+                                                <option value="checked" {% if t.checked_status == 'checked' %}selected{% endif %}>Checked</option>
+                                                <option value="not_checked" {% if t.checked_status == 'not_checked' %}selected{% endif %}>Not Checked</option>
+                                                <option value="test" {% if t.checked_status == 'test' %}selected{% endif %}>Test</option>
+                                            </select>
+                                        </form>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="7" class="py-2 px-4 border text-center">No transactions found.</td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
             </div>
-        {% endif %}
+            {% if total_pages > 1 %}
+                <div class="mt-4 flex justify-between">
+                    {% if page > 1 %}
+                        <a href="{{ url_for('transactions', page=page-1, user_id=user_id, date_from=date_from, date_to=date_to, stars_min=stars_min, stars_max=stars_max, recipient=recipient) }}" class="bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700">Previous</a>
+                    {% else %}
+                        <span></span>
+                    {% endif %}
+                    <span>Page {{ page }} of {{ total_pages }}</span>
+                    {% if page < total_pages %}
+                        <a href="{{ url_for('transactions', page=page+1, user_id=user_id, date_from=date_from, date_to=date_to, stars_min=stars_min, stars_max=stars_max, recipient=recipient) }}" class="bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700">Next</a>
+                    {% else %}
+                        <span></span>
+                    {% endif %}
+                </div>
+            {% endif %}
+        </div>
+        <!-- PostgreSQL Commands Menu -->
+        <div class="w-full md:w-1/3 bg-white p-4 rounded-md shadow-md">
+            <h2 class="text-xl font-bold mb-4">PostgreSQL Commands Menu</h2>
+            <div class="mb-4">
+                <h3 class="text-lg font-semibold">Connect to Database</h3>
+                <pre class="bg-gray-100 p-2 rounded-md text-sm">
+$env:PGPASSWORD="K3OwgY5JWTrdQprZsc11SkRcDy3d0VV5"
+PS C:\Program Files\PostgreSQL\17\bin> .\psql "postgresql://db_bkoq_user@dpg-d2do47juibrs738n229g-a.oregon-postgres.render.com/db_bkoq?sslmode=require"
+                </pre>
+            </div>
+            <div class="mb-4">
+                <h3 class="text-lg font-semibold">Generate Command</h3>
+                <div class="grid gap-2">
+                    <div>
+                        <label for="commandTable" class="block text-sm font-medium text-gray-700">Table</label>
+                        <select id="commandTable" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm">
+                            <option value="users">Users</option>
+                            <option value="transactions">Transactions</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="commandAction" class="block text-sm font-medium text-gray-700">Action</label>
+                        <select id="commandAction" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm">
+                            <option value="find">Find</option>
+                            <option value="update_admin" data-table="users">Update Admin Status (Users)</option>
+                            <option value="update_status_checked" data-table="transactions">Update Status to Checked (Transactions)</option>
+                            <option value="update_status_not_checked" data-table="transactions">Update Status to Not Checked (Transactions)</option>
+                            <option value="update_status_test" data-table="transactions">Update Status to Test (Transactions)</option>
+                            <option value="delete">Delete</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="commandId" class="block text-sm font-medium text-gray-700">ID (User ID or Transaction ID)</label>
+                        <input type="text" id="commandId" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm" placeholder="Enter ID">
+                    </div>
+                    <button onclick="generateCommand()" class="bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700">Generate Command</button>
+                </div>
+                <div class="mt-4">
+                    <label class="block text-sm font-medium text-gray-700">Generated Command</label>
+                    <pre id="commandOutput" class="bg-gray-100 p-2 rounded-md text-sm">Enter ID and select action to generate command.</pre>
+                </div>
+            </div>
+            <div>
+                <h3 class="text-lg font-semibold">Notes</h3>
+                <ul class="list-disc pl-5 text-sm text-gray-600">
+                    <li>Use sslmode=require for secure connections.</li>
+                    <li>Replace password if different.</li>
+                    <li>Copy commands to psql after connecting.</li>
+                </ul>
+            </div>
+        </div>
     </div>
 </body>
 </html>
