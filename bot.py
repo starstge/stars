@@ -2536,7 +2536,7 @@ async def main():
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
-        telegram_app.add_handler(ErrorHandler(error_handler))
+        telegram_app.add_error_handler(error_handler)  # Use add_error_handler directly
         logger.info("Telegram handlers registered")
 
         # Set up scheduler
