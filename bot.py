@@ -133,6 +133,16 @@ telegram_app = None
 transaction_cache = TTLCache(maxsize=1000, ttl=3600)
 tech_break_info = {}  # Хранит информацию о техническом перерыве: {"end_time": datetime, "reason": str}
 
+def login_required(f):
+    @wraps(f)
+    async def decorated(*args, **kwargs):
+        if 'logged_in' not in session:
+            logger.warning("Unauthorized access attempt to protected route")
+            return redirect(url_for('login'))
+        return await f(*args, **kwargs)
+    return decorated
+
+
 async def debug_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Debug handler to log all incoming updates."""
     logger.info(f"Received update: {update.to_dict()}")
