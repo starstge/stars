@@ -71,7 +71,7 @@
                 <tbody>
                     {% if transactions %}
                         {% for t in transactions %}
-                            <tr>
+                            <tr class="{% if t.checked_status == 'checked' %}bg-green-100{% elif t.checked_status == 'not_checked' %}bg-red-100{% else %}bg-yellow-100{% endif %}">
                                 <td class="py-2 px-4 border">{{ t.id }}</td>
                                 <td class="py-2 px-4 border">{{ t.user_id }}</td>
                                 <td class="py-2 px-4 border">{{ t.recipient_username }}</td>
