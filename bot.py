@@ -213,13 +213,13 @@ def logout():
 
 @app_flask.route("/", methods=["GET", "POST", "HEAD"])
 def transactions():
-    """Обработка страницы транзакций."""
+    """Handle transactions page."""
     if request.method == "HEAD":
-        logger.debug("Получен HEAD-запрос к /, возвращается пустой ответ")
+        logger.debug("Received HEAD request to /, returning empty response")
         return "", 200
     
     if not session.get("is_admin"):
-        logger.warning("Попытка несанкционированного доступа к транзакциям")
+        logger.warning("Unauthorized access attempt to transactions")
         return redirect(url_for("login"))
     
     user_id = request.args.get("user_id", "")
@@ -233,70 +233,64 @@ def transactions():
 
     query = "SELECT id, user_id, recipient_username, stars_amount, price_ton, purchase_time FROM transactions WHERE 1=1"
     params = []
-    param_count = 1
 
     if user_id:
         try:
-            query += f" AND user_id = ${param_count}"
+            query += " AND user_id = %s"
             params.append(int(user_id))
-            param_count += 1
         except ValueError:
-            flash("ID пользователя должен быть числом.", "error")
-            logger.error(f"Неверный формат user_id: {user_id}")
+            flash("User ID must be a number.", "error")
+            logger.error(f"Invalid user_id format: {user_id}")
 
     if date_from:
         try:
-            query += f" AND purchase_time >= ${param_count}"
+            query += " AND purchase_time >= %s"
             params.append(datetime.strptime(date_from, "%Y-%m-%d"))
-            param_count += 1
         except ValueError:
-            flash("Неверный формат начальной даты (гггг-мм-дд).", "error")
-            logger.error(f"Неверный формат date_from: {date_from}")
+            flash("Invalid start date format (yyyy-mm-dd).", "error")
+            logger.error(f"Invalid date_from format: {date_from}")
 
     if date_to:
         try:
-            query += f" AND purchase_time <= ${param_count}"
+            query += " AND purchase_time <= %s"
             params.append(datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1))
-            param_count += 1
         except ValueError:
-            flash("Неверный формат конечной даты (гггг-мм-дд).", "error")
-            logger.error(f"Неверный формат date_to: {date_to}")
+            flash("Invalid end date format (yyyy-mm-dd).", "error")
+            logger.error(f"Invalid date_to format: {date_to}")
 
     if stars_min:
         try:
-            query += f" AND stars_amount >= ${param_count}"
+            query += " AND stars_amount >= %s"
             params.append(int(stars_min))
-            param_count += 1
         except ValueError:
-            flash("Минимальное количество звезд должно быть числом.", "error")
-            logger.error(f"Неверный формат stars_min: {stars_min}")
+            flash("Minimum stars must be a number.", "error")
+            logger.error(f"Invalid stars_min format: {stars_min}")
 
     if stars_max:
         try:
-            query += f" AND stars_amount <= ${param_count}"
+            query += " AND stars_amount <= %s"
             params.append(int(stars_max))
-            param_count += 1
         except ValueError:
-            flash("Максимальное количество звезд должно быть числом.", "error")
-            logger.error(f"Неверный формат stars_max: {stars_max}")
+            flash("Maximum stars must be a number.", "error")
+            logger.error(f"Invalid stars_max format: {stars_max}")
 
     if recipient:
-        query += f" AND recipient_username ILIKE ${param_count}"
+        query += " AND recipient_username ILIKE %s"
         params.append(f"%{recipient}%")
-        param_count += 1
 
-    query += f" ORDER BY purchase_time DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
+    # Use %s for LIMIT and OFFSET
+    query += " ORDER BY purchase_time DESC LIMIT %s OFFSET %s"
     params.extend([per_page, (page - 1) * per_page])
 
     try:
         conn = get_db_connection()
         try:
             with conn.cursor() as cur:
-                logger.debug(f"Выполняется запрос: {query} с параметрами: {params}")
+                logger.debug(f"Executing query: {query} with params: {params}")
                 cur.execute(query, params)
                 transactions = cur.fetchall()
                 count_query = "SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("WHERE 1=1")[1].split("ORDER BY")[0]
-                cur.execute(count_query, params[:-2])
+                cur.execute(count_query, params[:-2])  # Exclude LIMIT and OFFSET params
                 total = cur.fetchone()[0]
                 total_pages = (total + per_page - 1) // per_page
 
@@ -313,7 +307,7 @@ def transactions():
                     for t in transactions
                 ]
 
-            logger.info(f"Отображено {len(transactions)} транзакций, страница {page} из {total_pages}")
+            logger.info(f"Displayed {len(transactions)} transactions, page {page} of {total_pages}")
             return render_template(
                 "transactions.html",
                 transactions=transactions,
@@ -329,9 +323,21 @@ def transactions():
         finally:
             conn.close()
     except Exception as e:
-        logger.error(f"Ошибка загрузки транзакций: {e}", exc_info=True)
-        flash(f"Ошибка загрузки транзакций: {str(e)}", "error")
-        return render_template("transactions.html", transactions=[], page=1, total_pages=1)
+        logger.error(f"Error loading transactions: {e}", exc_info=True)
+        flash(f"Error loading transactions: {str(e)}", "error")
+        return render_template(
+            "transactions.html",
+            transactions=[],
+            page=1,
+            total_pages=1,
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            stars_min=stars_min,
+            stars_max=stars_max,
+            recipient=recipient
+        )
+        
 async def ensure_db_pool():
     """Обеспечивает доступ к пулу соединений базы данных."""
     global db_pool
