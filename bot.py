@@ -141,46 +141,6 @@ async def debug_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"update": update.to_dict()}
     )
 
-@app_flask.route("/login", methods=["GET", "POST"])
-def login():
-    """Handle admin login."""
-    if request.method == "POST":
-        user_id = request.form.get("user_id")
-        password = request.form.get("password")
-        logger.debug(f"Login attempt: user_id={user_id}, password=***")
-        try:
-            user_id = int(user_id)
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
-                    result = cur.fetchone()
-                    is_admin = result[0] if result else False
-                    logger.debug(f"Admin status for user_id={user_id}: is_admin={is_admin}")
-                    # Check password using bcrypt if stored hashed, otherwise plain comparison
-                    stored_password = os.getenv("ADMIN_PASSWORD")
-                    if is_admin and (
-                        (stored_password.startswith("$2b$") and bcrypt.checkpw(password.encode(), stored_password.encode())) or
-                        (password == stored_password)
-                    ):
-                        session["user_id"] = user_id
-                        session["is_admin"] = True
-                        logger.info(f"Successful login: user_id={user_id}")
-                        flash("Login successful!", "success")
-                        return redirect(url_for("transactions"))
-                    else:
-                        logger.warning(f"Failed login: user_id={user_id}, invalid password or not an admin")
-                        flash("Invalid user ID or password.", "error")
-            finally:
-                conn.close()
-        except ValueError:
-            logger.error(f"Error: User ID must be a number, received: {user_id}")
-            flash("User ID must be a number.", "error")
-        except Exception as e:
-            logger.error(f"Error during login: {e}", exc_info=True)
-            flash(f"Login error: {str(e)}", "error")
-    return render_template("login.html")
-
 def get_db_connection():
     try:
         conn = psycopg2.connect(os.getenv("POSTGRES_URL"))
@@ -191,19 +151,46 @@ def get_db_connection():
 
 @app_flask.route("/login", methods=["GET", "POST"])
 def login():
+    """Обработка входа администратора."""
     if session.get("is_admin"):
+        logger.info("Пользователь уже авторизован, перенаправление на transactions")
         return redirect(url_for("transactions"))
+    
     if request.method == "POST":
-        username = request.form.get("username")
+        user_id = request.form.get("user_id")
         password = request.form.get("password")
-        # Replace with your authentication logic
-        if username == "admin" and password == "your_secure_password":  # Example; use proper auth
-            session["is_admin"] = True
-            logger.info(f"Admin logged in: {username}")
-            return redirect(url_for("transactions"))
-        else:
-            flash("Invalid credentials", "error")
-            logger.warning(f"Failed login attempt: {username}")
+        logger.debug(f"Попытка входа: user_id={user_id}, password=***")
+        try:
+            user_id = int(user_id)
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
+                    result = cur.fetchone()
+                    is_admin = result[0] if result else False
+                    logger.debug(f"Статус администратора для user_id={user_id}: is_admin={is_admin}")
+                    stored_password = os.getenv("ADMIN_PASSWORD")
+                    if is_admin and (
+                        (stored_password.startswith("$2b$") and bcrypt.checkpw(password.encode(), stored_password.encode())) or
+                        (password == stored_password)
+                    ):
+                        session["user_id"] = user_id
+                        session["is_admin"] = True
+                        logger.info(f"Успешный вход: user_id={user_id}")
+                        flash("Вход выполнен успешно!", "success")
+                        return redirect(url_for("transactions"))
+                    else:
+                        logger.warning(f"Неуспешный вход: user_id={user_id}, неверный пароль или не администратор")
+                        flash("Неверный ID пользователя или пароль.", "error")
+            finally:
+                conn.close()
+        except ValueError:
+            logger.error(f"Ошибка: ID пользователя должен быть числом, получено: {user_id}")
+            flash("ID пользователя должен быть числом.", "error")
+        except Exception as e:
+            logger.error(f"Ошибка при входе: {e}", exc_info=True)
+            flash(f"Ошибка входа: {str(e)}", "error")
+    
     return render_template("login.html")
     
 @app_flask.route("/logout")
@@ -246,12 +233,17 @@ def logout():
     logger.info("User logged out")
     return redirect(url_for("login"))
 
-@app_flask.route("/", methods=["GET", "POST"])
+@app_flask.route("/", methods=["GET", "POST", "HEAD"])
 def transactions():
+    """Обработка страницы транзакций."""
+    if request.method == "HEAD":
+        logger.debug("Получен HEAD-запрос к /, возвращается пустой ответ")
+        return "", 200
+    
     if not session.get("is_admin"):
-        logger.warning("Unauthorized access attempt to transactions")
-        return redirect(url_for("login"))  # Ensure "login" matches the route name
-
+        logger.warning("Попытка несанкционированного доступа к транзакциям")
+        return redirect(url_for("login"))
+    
     user_id = request.args.get("user_id", "")
     date_from = request.args.get("date_from", "")
     date_to = request.args.get("date_to", "")
@@ -271,8 +263,8 @@ def transactions():
             params.append(int(user_id))
             param_count += 1
         except ValueError:
-            flash("User ID must be a number.", "error")
-            logger.error(f"Invalid user_id format: {user_id}")
+            flash("ID пользователя должен быть числом.", "error")
+            logger.error(f"Неверный формат user_id: {user_id}")
 
     if date_from:
         try:
@@ -280,8 +272,8 @@ def transactions():
             params.append(datetime.strptime(date_from, "%Y-%m-%d"))
             param_count += 1
         except ValueError:
-            flash("Invalid start date format (yyyy-mm-dd).", "error")
-            logger.error(f"Invalid date_from format: {date_from}")
+            flash("Неверный формат начальной даты (гггг-мм-дд).", "error")
+            logger.error(f"Неверный формат date_from: {date_from}")
 
     if date_to:
         try:
@@ -289,8 +281,8 @@ def transactions():
             params.append(datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1))
             param_count += 1
         except ValueError:
-            flash("Invalid end date format (yyyy-mm-dd).", "error")
-            logger.error(f"Invalid date_to format: {date_to}")
+            flash("Неверный формат конечной даты (гггг-мм-дд).", "error")
+            logger.error(f"Неверный формат date_to: {date_to}")
 
     if stars_min:
         try:
@@ -298,8 +290,8 @@ def transactions():
             params.append(int(stars_min))
             param_count += 1
         except ValueError:
-            flash("Minimum stars must be a number.", "error")
-            logger.error(f"Invalid stars_min format: {stars_min}")
+            flash("Минимальное количество звезд должно быть числом.", "error")
+            logger.error(f"Неверный формат stars_min: {stars_min}")
 
     if stars_max:
         try:
@@ -307,15 +299,14 @@ def transactions():
             params.append(int(stars_max))
             param_count += 1
         except ValueError:
-            flash("Maximum stars must be a number.", "error")
-            logger.error(f"Invalid stars_max format: {stars_max}")
+            flash("Максимальное количество звезд должно быть числом.", "error")
+            logger.error(f"Неверный формат stars_max: {stars_max}")
 
     if recipient:
         query += f" AND recipient_username ILIKE ${param_count}"
         params.append(f"%{recipient}%")
         param_count += 1
 
-    # Add LIMIT and OFFSET
     query += f" ORDER BY purchase_time DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
     params.extend([per_page, (page - 1) * per_page])
 
@@ -323,12 +314,11 @@ def transactions():
         conn = get_db_connection()
         try:
             with conn.cursor() as cur:
-                logger.debug(f"Executing query: {query} with params: {params}")
+                logger.debug(f"Выполняется запрос: {query} с параметрами: {params}")
                 cur.execute(query, params)
                 transactions = cur.fetchall()
-                # Construct count query without LIMIT and OFFSET
                 count_query = "SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("WHERE 1=1")[1].split("ORDER BY")[0]
-                cur.execute(count_query, params[:-2])  # Exclude LIMIT and OFFSET params
+                cur.execute(count_query, params[:-2])
                 total = cur.fetchone()[0]
                 total_pages = (total + per_page - 1) // per_page
 
@@ -345,7 +335,7 @@ def transactions():
                     for t in transactions
                 ]
 
-            logger.info(f"Displayed {len(transactions)} transactions, page {page} of {total_pages}")
+            logger.info(f"Отображено {len(transactions)} транзакций, страница {page} из {total_pages}")
             return render_template(
                 "transactions.html",
                 transactions=transactions,
@@ -361,8 +351,8 @@ def transactions():
         finally:
             conn.close()
     except Exception as e:
-        logger.error(f"Error loading transactions: {e}", exc_info=True)
-        flash(f"Error loading transactions: {str(e)}", "error")
+        logger.error(f"Ошибка загрузки транзакций: {e}", exc_info=True)
+        flash(f"Ошибка загрузки транзакций: {str(e)}", "error")
         return render_template("transactions.html", transactions=[], page=1, total_pages=1)
 
 async def ensure_db_pool():
