@@ -2479,7 +2479,7 @@ async def webhook_handler(request):
         
 async def main():
     """Main function to start the bot and Flask server."""
-    global telegram_app, db_pool
+    global telegram_app, _db_pool
     try:
         # Check environment variables
         await check_environment()
@@ -2496,12 +2496,20 @@ async def main():
         # Set up aiohttp application
         app = web.Application()
         app.router.add_post("/webhook", webhook_handler)
+        async def webhook_get_handler(request):
+            return web.Response(status=405, text="Method Not Allowed")
+        app.router.add_get("/webhook", webhook_get_handler)
         logger.info("Webhook route registered at /webhook")
 
         # Integrate Flask routes
         wsgi_handler = WSGIHandler(app_flask)
         app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle_request)
         logger.info("Flask routes integrated with aiohttp")
+
+        # Register cleanup callback for _db_pool
+        async def cleanup(app):
+            await close_db_pool()
+        app.on_cleanup.append(cleanup)
 
         # Debug: Log all registered Flask routes
         with app_flask.app_context():
@@ -2528,7 +2536,7 @@ async def main():
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
-        telegram_app.add_error_handler(error_handler)
+        telegram_app.add_handler(ErrorHandler(error_handler))
         logger.info("Telegram handlers registered")
 
         # Set up scheduler
@@ -2568,13 +2576,10 @@ async def main():
                 logger.error(f"Failed to send fatal error notification: {notify_error}", exc_info=True)
         raise
     finally:
-        # Ensure scheduler and database pool are closed
+        # Ensure scheduler is closed
         if 'scheduler' in locals():
             scheduler.shutdown()
             logger.info("Scheduler shut down")
-        if db_pool is not None:
-            await close_db_pool()
-            logger.info("Database pool closed")
         
 if __name__ == "__main__":
     asyncio.run(main())
