@@ -2500,7 +2500,7 @@ async def main():
 
         # Integrate Flask routes
         wsgi_handler = WSGIHandler(app_flask)
-        app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle)
+        app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle_request)
         logger.info("Flask routes integrated with aiohttp")
 
         # Debug: Log all registered Flask routes
