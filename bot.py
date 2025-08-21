@@ -220,6 +220,7 @@ async def index():
 @login_required
 async def transactions():
     """Handle transactions page."""
+    await ensure_db_pool()  # Ensure pool is open
     page = int(request.args.get('page', 1))
     per_page = 10
     user_id = request.args.get('user_id', '')
@@ -342,6 +343,7 @@ async def transactions():
 @login_required
 async def users():
     """Handle users page."""
+    await ensure_db_pool()  # Ensure pool is open
     page = int(request.args.get('page', 1))
     per_page = 10
     user_id = request.args.get('user_id', '')
@@ -425,19 +427,20 @@ async def update_status():
 async def ensure_db_pool():
     """Обеспечивает доступ к пулу соединений базы данных."""
     global db_pool
-    try:
+    async with _db_pool_lock:
         if db_pool is None or db_pool._closed:
-            db_pool = await asyncpg.create_pool(
-                POSTGRES_URL,
-                min_size=1,
-                max_size=10,
-                max_inactive_connection_lifetime=300
-            )
-            logger.info("Database pool initialized or reinitialized")
+            try:
+                db_pool = await asyncpg.create_pool(
+                    POSTGRES_URL,
+                    min_size=1,
+                    max_size=10,
+                    max_inactive_connection_lifetime=300
+                )
+                logger.info("Database pool initialized or reinitialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
+                raise
         return db_pool
-    except Exception as e:
-        logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
-        raise
         
 async def init_db():
     """Инициализация базы данных."""
@@ -530,12 +533,12 @@ async def init_db():
         raise
     
 async def close_db_pool():
-    global _db_pool
+    global db_pool
     async with _db_pool_lock:
-        if _db_pool is not None and not _db_pool._closed:
-            await _db_pool.close()
+        if db_pool is not None and not db_pool._closed:
+            await db_pool.close()
             logger.info("Пул DB закрыт")
-            _db_pool = None
+            db_pool = None
 
 async def get_text(key: str, **kwargs) -> str:
     """Получение текста сообщения с подстановкой параметров."""
@@ -2479,14 +2482,14 @@ async def webhook_handler(request):
         
 async def main():
     """Main function to start the bot and Flask server."""
-    global telegram_app, _db_pool
+    global telegram_app, db_pool
     try:
         # Check environment variables
         await check_environment()
         logger.info("Environment variables checked successfully")
 
         # Initialize database pool
-        await init_db()
+        db_pool = await ensure_db_pool()  # Initialize db_pool explicitly
         logger.info("Database initialized successfully")
 
         # Load bot settings
@@ -2506,7 +2509,7 @@ async def main():
         app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle_request)
         logger.info("Flask routes integrated with aiohttp")
 
-        # Register cleanup callback for _db_pool
+        # Register cleanup callback for db_pool
         async def cleanup(app):
             await close_db_pool()
         app.on_cleanup.append(cleanup)
@@ -2536,7 +2539,7 @@ async def main():
         telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
-        telegram_app.add_error_handler(error_handler)  # Use add_error_handler directly
+        telegram_app.add_error_handler(error_handler)
         logger.info("Telegram handlers registered")
 
         # Set up scheduler
@@ -2559,13 +2562,12 @@ async def main():
         logger.info(f"Bot started with webhook: {webhook_url}")
 
         # Run aiohttp server
-        port = int(os.getenv("PORT", 8080))  # Use PORT from env, fallback to 8080
+        port = int(os.getenv("PORT", 8080))
         await web._run_app(app, host="0.0.0.0", port=port)
         logger.info(f"aiohttp server started on port {port}")
 
     except Exception as e:
         logger.error(f"Fatal error in main: {e}", exc_info=True)
-        # Notify admin of fatal error
         if telegram_app and telegram_app.bot:
             try:
                 await telegram_app.bot.send_message(
@@ -2576,7 +2578,6 @@ async def main():
                 logger.error(f"Failed to send fatal error notification: {notify_error}", exc_info=True)
         raise
     finally:
-        # Ensure scheduler is closed
         if 'scheduler' in locals():
             scheduler.shutdown()
             logger.info("Scheduler shut down")
