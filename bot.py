@@ -2243,7 +2243,7 @@ def create_aiohttp_app():
     app.router.add_post("/webhook", webhook_handler)
     app.router.add_get("/health", health_check)
     wsgi_handler = WSGIHandler(app_flask)
-    app.router.add_route("*", "/{path:.*}", wsgi_handler.handle_request)
+    app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle_request)  # Changed 'path' to 'path_info'
     return app
 
 if __name__ == "__main__":
