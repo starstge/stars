@@ -4,6 +4,7 @@ import logging
 import asyncio
 import aiohttp
 import psycopg2
+import signal
 from functools import wraps
 from aiohttp import ClientTimeout, web
 from urllib.parse import urlparse
@@ -828,29 +829,6 @@ async def check_environment():
             logger.debug(f"Переменная окружения {var} установлена")
     if missing_vars:
         raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
-async def startup(app: web.Application):
-    """Initialize application resources before starting."""
-    global telegram_app
-    try:
-        await check_environment()
-        await ensure_db_pool()
-        await init_db()  # Initialize database schema
-        await load_settings()
-
-        # Initialize Telegram bot
-        telegram_app = (
-            ApplicationBuilder()
-            .token(BOT_TOKEN)
-            .concurrent_updates(True)
-            .http_version("1.1")
-            .build()
-        )
-        setup_handlers(telegram_app)  # Register handlers
-        await telegram_app.initialize()
-        logger.info("Application startup complete")
-    except Exception as e:
-        logger.error(f"Startup failed: {e}", exc_info=True)
-        raise
 
 def setup_handlers(app: Application):
     """Register Telegram bot handlers."""
@@ -2637,13 +2615,34 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to send error message: {e}")
 
-async def shutdown(app: web.Application):
-    """Handle application shutdown."""
-    global telegram_app, scheduler
+async def startup(app: web.Application):
+    """Initialize application resources before starting."""
+    global telegram_app
     try:
-        if 'scheduler' in globals():
-            scheduler.shutdown()
-            logger.info("Scheduler shut down")
+        await check_environment()
+        await ensure_db_pool()
+        await init_db()  # Initialize database schema
+        await load_settings()
+
+        # Initialize Telegram bot
+        telegram_app = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .concurrent_updates(True)
+            .http_version("1.1")
+            .build()
+        )
+        setup_handlers(telegram_app)  # Register handlers
+        await telegram_app.initialize()
+        logger.info("Application startup complete")
+    except Exception as e:
+        logger.error(f"Startup failed: {e}", exc_info=True)
+        raise
+
+async def shutdown(app: web.Application):
+    """Clean up resources on application shutdown."""
+    global telegram_app
+    try:
         if telegram_app:
             await telegram_app.updater.stop()
             await telegram_app.shutdown()
@@ -2696,19 +2695,5 @@ async def main():
         await shutdown(app)
         await runner.cleanup()
 
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Application terminated by user")
-    except Exception as e:
-        logger.error(f"Fatal error in main: {e}", exc_info=True)
-        try:
-            if telegram_app and telegram_app.bot:
-                asyncio.run(telegram_app.bot.send_message(
-                    chat_id=ADMIN_BACKUP_ID,
-                    text=f"⚠️ Bot: Fatal error in main: {str(e)}"
-                ))
-        except Exception as notify_error:
-            logger.error(f"Failed to send fatal error notification: {notify_error}", exc_info=True)
-        raise
+if __name__ == "__main__":
+    asyncio.run(main())
