@@ -2188,13 +2188,10 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def lifespan(app: web.Application):
     global telegram_app
     try:
-        # Startup: Check environment and initialize resources
         await check_environment()
         await ensure_db_pool()
         await init_db()
         await load_settings()
-
-        # Initialize Telegram application
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
@@ -2203,17 +2200,15 @@ async def lifespan(app: web.Application):
             .build()
         )
         setup_handlers(telegram_app)
-        logger.info("Telegram application initialized")
-
-        # Start scheduler for TON price updates
+        # Set Telegram webhook
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await telegram_app.bot.set_webhook(webhook_url)
+        logger.info(f"Telegram webhook set to {webhook_url}")
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
         scheduler.add_job(update_ton_price, "interval", minutes=5, id="update_ton_price", replace_existing=True)
         scheduler.start()
         logger.info("Scheduler started for TON price updates")
-
-        yield  # Yield control to the running application
-
-        # Cleanup: Shut down resources
+        yield
         if telegram_app is not None:
             await telegram_app.shutdown()
             logger.info("Telegram application shut down")
@@ -2243,7 +2238,7 @@ def create_aiohttp_app():
     app.router.add_post("/webhook", webhook_handler)
     app.router.add_get("/health", health_check)
     wsgi_handler = WSGIHandler(app_flask)
-    app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle_request)  # Changed 'path' to 'path_info'
+    app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle_request)
     return app
 
 if __name__ == "__main__":
