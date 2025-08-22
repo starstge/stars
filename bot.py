@@ -353,6 +353,7 @@ async def transactions():
 async def users():
     """Handle users page."""
     await ensure_db_pool()  # Ensure pool is open
+    loop = asyncio.get_running_loop()  # Get the current event loop
     page = int(request.args.get('page', 1))
     per_page = 10
     user_id = request.args.get('user_id', '')
@@ -364,12 +365,16 @@ async def users():
         SELECT user_id, username, stars_bought, ref_bonus_ton, referrals, created_at, is_new, is_admin, is_banned, referrer_id
         FROM users WHERE 1=1
     """
+    count_query = """
+        SELECT COUNT(*) FROM users WHERE 1=1
+    """
     params = []
     param_index = 1
 
     if user_id:
         try:
             query += f" AND user_id = ${param_index}"
+            count_query += f" AND user_id = ${param_index}"
             params.append(int(user_id))
             param_index += 1
         except ValueError:
@@ -378,16 +383,19 @@ async def users():
 
     if username:
         query += f" AND username ILIKE ${param_index}"
+        count_query += f" AND username ILIKE ${param_index}"
         params.append(f'%{username}%')
         param_index += 1
 
     if is_admin:
         query += f" AND is_admin = ${param_index}"
+        count_query += f" AND is_admin = ${param_index}"
         params.append(is_admin == 'true')
         param_index += 1
 
     if is_banned:
         query += f" AND is_banned = ${param_index}"
+        count_query += f" AND is_banned = ${param_index}"
         params.append(is_banned == 'true')
         param_index += 1
 
@@ -396,8 +404,9 @@ async def users():
 
     try:
         async with db_pool.acquire() as conn:
+            # Ensure database operations run in the correct loop
             users = await conn.fetch(query, *params)
-            total = await conn.fetchval("SELECT COUNT(*) FROM users WHERE 1=1" + query.split("ORDER BY")[0].split("LIMIT")[0], *params[:-2])
+            total = await conn.fetchval(count_query, *params[:-2])
             total_pages = (total + per_page - 1) // per_page
 
         return render_template('users.html', users=users, page=page, total_pages=total_pages)
