@@ -7,6 +7,7 @@ import psycopg2
 from functools import wraps
 from aiohttp import ClientTimeout, web
 from urllib.parse import urlparse
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
