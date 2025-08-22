@@ -828,6 +828,39 @@ async def check_environment():
             logger.debug(f"Переменная окружения {var} установлена")
     if missing_vars:
         raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
+async def startup(app: web.Application):
+    """Initialize application resources before starting."""
+    global telegram_app
+    try:
+        await check_environment()
+        await ensure_db_pool()
+        await init_db()  # Initialize database schema
+        await load_settings()
+
+        # Initialize Telegram bot
+        telegram_app = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .concurrent_updates(True)
+            .http_version("1.1")
+            .build()
+        )
+        setup_handlers(telegram_app)  # Register handlers
+        await telegram_app.initialize()
+        logger.info("Application startup complete")
+    except Exception as e:
+        logger.error(f"Startup failed: {e}", exc_info=True)
+        raise
+
+def setup_handlers(app: Application):
+    """Register Telegram bot handlers."""
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("tonprice", ton_price_command))
+    app.add_handler(CallbackQueryHandler(callback_query_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_error_handler(error_handler)
+    logger.info("Telegram bot handlers registered")
+
 
 @asynccontextmanager
 async def lifespan(app: web.Application):
@@ -857,8 +890,8 @@ async def lifespan(app: web.Application):
             port=8443,
             url_path="/webhook",
             webhook_url=webhook_url,
-            cert=SSL_CERT_PATH,
-            key=SSL_KEY_PATH
+            cert=None,
+            key=None
         )
         logger.info(f"Telegram webhook started at {webhook_url}")
 
@@ -885,17 +918,6 @@ async def lifespan(app: web.Application):
             logger.info("Telegram bot shut down")
         await close_db_pool()
         logger.info("Application shutdown complete")
-
-
-async def test_db_connection():
-    """Тестирование подключения к базе данных."""
-    try:
-        async with (await ensure_db_pool()) as conn:
-            version = await conn.fetchval("SELECT version();")
-            logger.info(f"DB connected: {version}")
-    except Exception as e:
-        logger.error(f"Ошибка подключения к базе данных: {e}", exc_info=True)
-        raise
 
 async def check_webhook():
     webhook_info = await telegram_app.bot.get_webhook_info()
@@ -2643,15 +2665,6 @@ async def main():
     app.router.add_post("/webhook", webhook_handler)
     app.router.add_get("/webhook", lambda request: web.Response(status=405, text="Method Not Allowed"))
 
-    # Configure SSL
-    ssl_context = None
-    if SSL_CERT_PATH and SSL_KEY_PATH:
-        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ssl_context.load_cert_chain(SSL_CERT_PATH, SSL_KEY_PATH)
-        logger.info("SSL context configured")
-    else:
-        logger.warning("SSL certificate or key not provided; running without HTTPS")
-
     # Set up signal handlers
     def handle_shutdown():
         logger.info("Received shutdown signal")
@@ -2669,7 +2682,7 @@ async def main():
             runner,
             host='0.0.0.0',
             port=int(os.getenv("PORT", 8443)),
-            ssl_context=ssl_context
+            ssl_context=None
         )
         logger.info(f"Starting aiohttp server on port {int(os.getenv('PORT', 8443))}")
         await site.start()
