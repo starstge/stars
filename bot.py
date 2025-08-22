@@ -121,7 +121,7 @@ db_pool = None
 _db_pool_lock = asyncio.Lock()
 telegram_app = None
 transaction_cache = TTLCache(maxsize=1000, ttl=3600)
-tech_break_info = {}  # Stores tech break info: {"end_time": datetime, "reason": str}
+tech_break_info = None
 
 # Flask login decorator
 def login_required(f):
@@ -827,7 +827,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return STATES["main_menu"]
 
 async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global tech_break_info
     user_id = update.effective_user.id
     async with (await ensure_db_pool()) as conn:
         is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
@@ -838,7 +837,7 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = STATES["main_menu"]
             await log_analytics(user_id, "ton_price_banned", {})
             return STATES["main_menu"]
-        if not is_admin and tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
+        if tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC) and not is_admin:
             time_remaining = await format_time_remaining(tech_break_info["end_time"])
             text = await get_text(
                 "tech_break_active",
@@ -850,6 +849,32 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = STATES["main_menu"]
             await log_analytics(user_id, "ton_price_tech_break", {})
             return STATES["main_menu"]
+    
+    REQUESTS.labels(endpoint="tonprice").inc()
+    with RESPONSE_TIME.labels(endpoint="tonprice").time():
+        try:
+            if "ton_price_info" not in telegram_app.bot_data or telegram_app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
+                await update_ton_price()
+            if "ton_price_info" not in telegram_app.bot_data or telegram_app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
+                await update.message.reply_text("Ошибка получения цены TON. Попробуйте позже.")
+                context.user_data["state"] = STATES["main_menu"]
+                await log_analytics(user_id, "ton_price_error", {})
+                return STATES["main_menu"]
+            price = telegram_app.bot_data["ton_price_info"]["price"]
+            diff_24h = telegram_app.bot_data["ton_price_info"]["diff_24h"]
+            change_text = f"📈 +{diff_24h:.2f}%" if diff_24h >= 0 else f"📉 {diff_24h:.2f}%"
+            text = f"💰 Цена TON: ${price:.2f}\nИзменение за 24ч: {change_text}"
+            await update.message.reply_text(text)
+            context.user_data["state"] = STATES["main_menu"]
+            await log_analytics(user_id, "ton_price", {})
+            logger.info(f"/tonprice выполнен для user_id={user_id}")
+        except Exception as e:
+            logger.error(f"Ошибка в /tonprice для user_id={user_id}: {e}", exc_info=True)
+            ERRORS.labels(type="tonprice", endpoint="tonprice").inc()
+            await update.message.reply_text("Ошибка при получении цены TON. Попробуйте позже.")
+            context.user_data["state"] = STATES["main_menu"]
+            await log_analytics(user_id, "ton_price_error", {"error": str(e)})
+        return STATES["main_menu"]
     
     REQUESTS.labels(endpoint="tonprice").inc()
     with RESPONSE_TIME.labels(endpoint="tonprice").time():
