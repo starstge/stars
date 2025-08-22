@@ -375,7 +375,7 @@ def users():
                     "username": u[1],
                     "stars_bought": u[2],
                     "ref_bonus_ton": u[3],
-                    "referrals": json.loads(u[4]) if u[4] else [],
+                    "referrals": u[4] if u[4] is not None else [],  # Use jsonb field directly
                     "created_at": u[5].strftime("%Y-%m-%d %H:%M:%S"),
                     "is_new": u[6],
                     "is_admin": u[7],
