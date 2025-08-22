@@ -1738,6 +1738,9 @@ async def main():
     await site.start()
     logger.info(f"Server started on port {PORT}")
 
+    # Keep the application running
+    await asyncio.Event().wait()
+
 async def shutdown(app: web.Application):
     logger.info("Shutting down application")
     await app.shutdown()
