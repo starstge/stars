@@ -2117,6 +2117,28 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await log_analytics(user_id, "admin_panel_unexpected_error", {"error": str(e)})
         return STATES["main_menu"]
 
+async def webhook_handler(request: web.Request) -> web.Response:
+    """Handle incoming Telegram webhook updates."""
+    global telegram_app
+    try:
+        if not telegram_app:
+            logger.error("Telegram application not initialized")
+            return web.Response(status=500, text="Internal Server Error: Telegram app not initialized")
+
+        # Read and parse the webhook request
+        update = await request.json()
+        if not update:
+            logger.warning("Received empty webhook update")
+            return web.Response(status=400, text="Bad Request: Empty update")
+
+        # Process the update using python-telegram-bot
+        await telegram_app.update_queue.put(update)
+        return web.Response(status=200, text="OK")
+
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}", exc_info=True)
+        return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
+        
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -2593,6 +2615,162 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to send error message: {e}")
 
+import asyncio
+import logging
+import os
+import signal
+import ssl
+from aiohttp import web
+from aiohttp_wsgi import WSGIHandler
+from telegram.ext import ApplicationBuilder
+import asyncpg
+
+from config import POSTGRES_URL, WEBHOOK_URL, BOT_TOKEN, SSL_CERT_PATH, SSL_KEY_PATH
+from routes import app_flask  # Your Flask app with routes
+from handlers import setup_handlers  # Function to set up Telegram handlers
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.handlers.RotatingFileHandler("bot.log", maxBytes=10_000_000, backupCount=5, encoding="utf-8")
+    ]
+)
+
+# Global variables
+db_pool = None
+_db_pool_lock = asyncio.Lock()
+telegram_app = None
+
+async def webhook_handler(request: web.Request) -> web.Response:
+    """Handle incoming Telegram webhook updates."""
+    global telegram_app
+    try:
+        if not telegram_app:
+            logger.error("Telegram application not initialized")
+            return web.Response(status=500, text="Internal Server Error: Telegram app not initialized")
+
+        # Read and parse the webhook request
+        update = await request.json()
+        if not update:
+            logger.warning("Received empty webhook update")
+            return web.Response(status=400, text="Bad Request: Empty update")
+
+        # Process the update using python-telegram-bot
+        await telegram_app.update_queue.put(update)
+        return web.Response(status=200, text="OK")
+
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}", exc_info=True)
+        return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
+
+async def ensure_db_pool():
+    """Initialize or reinitialize the database connection pool."""
+    global db_pool
+    async with _db_pool_lock:
+        if db_pool is None or db_pool._closed:
+            try:
+                loop = asyncio.get_event_loop()
+                db_pool = await asyncpg.create_pool(
+                    POSTGRES_URL,
+                    min_size=10,
+                    max_size=50,
+                    max_inactive_connection_lifetime=300,
+                    loop=loop
+                )
+                logger.info("Database pool initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
+                raise
+    return db_pool
+
+async def close_db_pool():
+    """Close the database pool."""
+    global db_pool
+    async with _db_pool_lock:
+        if db_pool and not db_pool._closed:
+            await db_pool.close()
+            logger.info("Database pool closed")
+            db_pool = None
+
+async def check_environment():
+    """Validate required environment variables."""
+    required_vars = ['BOT_TOKEN', 'POSTGRES_URL', 'WEBHOOK_URL']
+    missing = [var for var in required_vars if not os.getenv(var)]
+    if missing:
+        logger.error(f"Missing environment variables: {missing}")
+        raise EnvironmentError(f"Missing environment variables: {missing}")
+
+async def startup(app: web.Application):
+    """Handle application startup."""
+    global telegram_app
+    try:
+        # Validate environment
+        await check_environment()
+        logger.info("Environment variables validated")
+
+        # Initialize database
+        await ensure_db_pool()
+        await init_db()  # Initialize database schema
+        await load_settings()
+        logger.info("Database and settings initialized")
+
+        # Initialize Telegram bot
+        telegram_app = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .concurrent_updates(True)
+            .http_version("1.1")
+            .build()
+        )
+        setup_handlers(telegram_app)  # Register handlers
+        await telegram_app.initialize()
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await telegram_app.bot.set_webhook(webhook_url)
+        await telegram_app.updater.start_webhook(
+            listen="0.0.0.0",
+            port=int(os.getenv("PORT", 8443)),
+            url_path="/webhook",
+            webhook_url=webhook_url,
+            cert=SSL_CERT_PATH,
+            key=SSL_KEY_PATH
+        )
+        logger.info(f"Telegram webhook started at {webhook_url}")
+
+        # Start scheduler
+        global scheduler
+        scheduler = AsyncIOScheduler(timezone="UTC")
+        scheduler.add_job(heartbeat_check, "interval", seconds=300, args=[telegram_app])
+        scheduler.add_job(check_reminders, "interval", seconds=60)
+        scheduler.add_job(backup_db, "interval", hours=24)
+        scheduler.add_job(update_ton_price, "interval", minutes=30)
+        scheduler.add_job(keep_alive, "interval", minutes=10, args=[telegram_app])
+        scheduler.start()
+        logger.info("Scheduler started")
+
+    except Exception as e:
+        logger.error(f"Startup failed: {e}", exc_info=True)
+        raise
+
+async def shutdown(app: web.Application):
+    """Handle application shutdown."""
+    global telegram_app, scheduler
+    try:
+        if 'scheduler' in globals():
+            scheduler.shutdown()
+            logger.info("Scheduler shut down")
+        if telegram_app:
+            await telegram_app.updater.stop()
+            await telegram_app.shutdown()
+            logger.info("Telegram bot shut down")
+        await close_db_pool()
+        logger.info("Application shutdown complete")
+    except Exception as e:
+        logger.error(f"Shutdown failed: {e}", exc_info=True)
+
 async def main():
     """Main entry point for the application."""
     loop = asyncio.get_event_loop()
@@ -2611,34 +2789,39 @@ async def main():
         ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ssl_context.load_cert_chain(SSL_CERT_PATH, SSL_KEY_PATH)
         logger.info("SSL context configured")
+    else:
+        logger.warning("SSL certificate or key not provided; running without HTTPS")
 
     # Set up signal handlers
     def handle_shutdown():
         logger.info("Received shutdown signal")
-        asyncio.create_task(app.cleanup())
+        asyncio.create_task(shutdown(app))
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, handle_shutdown)
 
-    # Run application with lifespan
-    async with lifespan(app):
+    # Start application
+    try:
+        await startup(app)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(
             runner,
             host='0.0.0.0',
-            port=8443,  # Standard port for Telegram webhooks
+            port=int(os.getenv("PORT", 8443)),
             ssl_context=ssl_context
         )
-        logger.info("Starting aiohttp server on port 8443")
+        logger.info(f"Starting aiohttp server on port {int(os.getenv('PORT', 8443))}")
         await site.start()
 
         # Keep the application running
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            logger.info("Application shutdown initiated")
-            await runner.cleanup()
+        await asyncio.Event().wait()
+    except Exception as e:
+        logger.error(f"Fatal error in main: {e}", exc_info=True)
+        raise
+    finally:
+        await shutdown(app)
+        await runner.cleanup()
 
 if __name__ == '__main__':
     try:
@@ -2647,4 +2830,12 @@ if __name__ == '__main__':
         logger.info("Application terminated by user")
     except Exception as e:
         logger.error(f"Fatal error in main: {e}", exc_info=True)
+        try:
+            if telegram_app and telegram_app.bot:
+                asyncio.run(telegram_app.bot.send_message(
+                    chat_id=ADMIN_BACKUP_ID,
+                    text=f"⚠️ Bot: Fatal error in main: {str(e)}"
+                ))
+        except Exception as notify_error:
+            logger.error(f"Failed to send fatal error notification: {notify_error}", exc_info=True)
         raise
