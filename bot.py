@@ -2212,10 +2212,15 @@ async def lifespan(app: web.Application):
             .build()
         )
         setup_handlers(telegram_app)
-        # Set Telegram webhook
+        await telegram_app.initialize()
+        await telegram_app.start()
+        logger.info("Telegram application initialized and started")
         webhook_url = f"{WEBHOOK_URL}/webhook"
-        await telegram_app.bot.set_webhook(webhook_url)
+        await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
         logger.info(f"Telegram webhook set to {webhook_url}")
+        # Start processing updates from the queue
+        asyncio.create_task(telegram_app.process_updates())
+        logger.info("Telegram application processing update queue")
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
         scheduler.add_job(update_ton_price, "interval", minutes=5, id="update_ton_price", replace_existing=True)
         scheduler.start()
@@ -2234,12 +2239,18 @@ async def lifespan(app: web.Application):
 async def webhook_handler(request: web.Request):
     try:
         update = await request.json()
-        await telegram_app.update_queue.put(Update.de_json(update, telegram_app.bot))
+        logger.info(f"Received webhook update: {json.dumps(update, indent=2)}")
+        update_obj = Update.de_json(update, telegram_app.bot)
+        if update_obj is None:
+            logger.error("Failed to parse update into Update object")
+            return web.json_response({"status": "error", "message": "Invalid update format"}, status=400)
+        await telegram_app.update_queue.put(update_obj)
+        logger.info("Update added to telegram_app.update_queue")
         return web.json_response({"status": "ok"})
     except Exception as e:
         logger.error(f"Webhook error: {e}", exc_info=True)
         ERRORS.labels(type="webhook", endpoint="webhook").inc()
-        return web.json_response({"status": "error"}, status=500)
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 async def health_check(request: web.Request):
     return web.json_response({"status": "healthy"})
