@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 from telegram.error import BadRequest, TelegramError
 import asyncpg
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytz
 import random
 import string
@@ -506,10 +506,6 @@ import json
 # Configure logging
 logger = logging.getLogger(__name__)
 
-import asyncpg
-import logging
-from datetime import datetime
-import pytz
 
 async def init_db():
     """Initialize the database schema and set up default values."""
@@ -2668,6 +2664,7 @@ async def main():
     """Main entry point for the application."""
     loop = asyncio.get_event_loop()
     asyncio.set_event_loop(loop)  # Ensure consistent event loop
+    runner = None  # Initialize runner to None to avoid UnboundLocalError
 
     # Create aiohttp application
     app = web.Application()
@@ -2705,7 +2702,9 @@ async def main():
         raise
     finally:
         await shutdown(app)
-        await runner.cleanup()
+        if runner is not None:  # Check if runner was initialized
+            await runner.cleanup()
+            logger.info("AppRunner cleaned up")
 
 if __name__ == "__main__":
     asyncio.run(main())
