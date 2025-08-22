@@ -1600,8 +1600,7 @@ def setup_handlers(app: Application):
 
 # Continuation of bot.py
 
-@asynccontextmanager
-async def lifespan(app: web.Application):
+async def startup(app: web.Application):
     global telegram_app
     try:
         await check_environment()
@@ -1645,21 +1644,32 @@ async def lifespan(app: web.Application):
         )
         logger.info(f"Webhook set to {WEBHOOK_URL}")
 
-        yield  # Application runs here
+        # Store telegram_app in aiohttp app for cleanup
+        app["telegram_app"] = telegram_app
+        logger.info("Application startup completed")
 
     except Exception as e:
         logger.error(f"Error during application startup: {e}", exc_info=True)
         raise
-    finally:
-        # Cleanup
-        if telegram_app is not None:
-            await telegram_app.shutdown()
+
+async def cleanup(app: web.Application):
+    try:
+        # Cleanup Telegram application
+        if app.get("telegram_app"):
+            await app["telegram_app"].shutdown()
             logger.info("Telegram application shut down")
-        if "scheduler" in telegram_app.bot_data:
-            telegram_app.bot_data["scheduler"].shutdown()
+
+        # Cleanup scheduler
+        if app.get("telegram_app") and "scheduler" in app["telegram_app"].bot_data:
+            app["telegram_app"].bot_data["scheduler"].shutdown()
             logger.info("Scheduler shut down")
+
+        # Cleanup database pool
         await close_db_pool()
         logger.info("Application cleanup completed")
+
+    except Exception as e:
+        logger.error(f"Error during application cleanup: {e}", exc_info=True)
 
 async def check_reminders():
     try:
@@ -1709,7 +1719,10 @@ async def main():
     wsgi_handler = WSGIHandler(app_flask)
     app.router.add_route("*", "/admin{path:.*}", wsgi_handler.handle_request)
     app.router.add_post("/webhook", webhook)
-    app.cleanup_ctx.append(lifespan)
+
+    # Register startup and cleanup handlers
+    app.on_startup.append(startup)
+    app.on_cleanup.append(cleanup)
 
     # Setup signal handlers
     loop = asyncio.get_running_loop()
