@@ -128,7 +128,6 @@ STATES = {
 
 # Глобальные переменные
 db_pool = None
-_db_pool = None
 _db_pool_lock = asyncio.Lock()
 telegram_app = None
 transaction_cache = TTLCache(maxsize=1000, ttl=3600)
@@ -477,24 +476,24 @@ async def update_status():
         return jsonify({'message': f'Error updating status: {str(e)}'}), 500
         
 async def ensure_db_pool():
-    """Ensure the database connection pool is initialized in the correct event loop."""
+    """Initialize or reinitialize the database connection pool."""
     global db_pool
-    async with _db_pool_lock:  # Use async context manager
+    async with _db_pool_lock:
         if db_pool is None or db_pool._closed:
             try:
-                loop = asyncio.get_running_loop()
+                loop = asyncio.get_event_loop()
                 db_pool = await asyncpg.create_pool(
                     POSTGRES_URL,
-                    min_size=5,  # Increased to handle concurrent connections
-                    max_size=20,
+                    min_size=10,  # Adjusted for concurrency
+                    max_size=50,
                     max_inactive_connection_lifetime=300,
                     loop=loop
                 )
-                logger.info("Database pool initialized or reinitialized")
+                logger.info("Database pool initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
                 raise
-    return db_pool 
+    return db_pool
         
 import asyncpg
 import logging
@@ -605,11 +604,12 @@ async def init_db():
         raise
     
 async def close_db_pool():
+    """Close the database pool."""
     global db_pool
     async with _db_pool_lock:
-        if db_pool is not None and not db_pool._closed:
+        if db_pool and not db_pool._closed:
             await db_pool.close()
-            logger.info("Пул DB закрыт")
+            logger.info("Database pool closed")
             db_pool = None
 
 async def get_text(key: str, **kwargs) -> str:
@@ -827,6 +827,64 @@ async def check_environment():
             logger.debug(f"Переменная окружения {var} установлена")
     if missing_vars:
         raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
+
+@asynccontextmanager
+async def lifespan(app: web.Application):
+    """Manage application startup and shutdown."""
+    global telegram_app
+    try:
+        # Startup
+        await check_environment()
+        await ensure_db_pool()
+        await init_db()  # Initialize database schema
+        await load_settings()
+
+        # Initialize Telegram bot
+        telegram_app = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .concurrent_updates(True)
+            .http_version("1.1")
+            .build()
+        )
+        setup_handlers(telegram_app)  # Register handlers
+        await telegram_app.initialize()
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await telegram_app.bot.set_webhook(webhook_url)
+        await telegram_app.updater.start_webhook(
+            listen="0.0.0.0",
+            port=8443,
+            url_path="/webhook",
+            webhook_url=webhook_url,
+            cert=SSL_CERT_PATH,
+            key=SSL_KEY_PATH
+        )
+        logger.info(f"Telegram webhook started at {webhook_url}")
+
+        # Start scheduler
+        scheduler = AsyncIOScheduler(timezone="UTC")
+        scheduler.add_job(heartbeat_check, "interval", seconds=300, args=[telegram_app])
+        scheduler.add_job(check_reminders, "interval", seconds=60)
+        scheduler.add_job(backup_db, "interval", hours=24)
+        scheduler.add_job(update_ton_price, "interval", minutes=30)
+        scheduler.add_job(keep_alive, "interval", minutes=10, args=[telegram_app])
+        scheduler.start()
+        logger.info("Scheduler started")
+
+        yield  # Application runs here
+
+    finally:
+        # Shutdown
+        if 'scheduler' in locals():
+            scheduler.shutdown()
+            logger.info("Scheduler shut down")
+        if telegram_app:
+            await telegram_app.updater.stop()
+            await telegram_app.shutdown()
+            logger.info("Telegram bot shut down")
+        await close_db_pool()
+        logger.info("Application shutdown complete")
+
 
 async def test_db_connection():
     """Тестирование подключения к базе данных."""
@@ -2534,125 +2592,58 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to send error message: {e}")
 
-async def webhook_handler(request):
-    logger.info("Webhook request received")
-    try:
-        data = await request.json()
-        logger.debug(f"Webhook data: {data}")
-        update = Update.de_json(data, telegram_app.bot)
-        if update:
-            logger.info(f"Processing update: {update.update_id}")
-            await telegram_app.process_update(update)
-            return web.Response(status=200)
-        else:
-            logger.error("Failed to parse update")
-            return web.Response(status=400)
-    except Exception as e:
-        logger.error(f"Webhook error: {e}", exc_info=True)
-        ERRORS.labels(type="webhook", endpoint="webhook_handler").inc()
-        return web.Response(status=500)
-        
 async def main():
-    """Main function to start the bot and Flask server."""
-    global telegram_app, db_pool
-    try:
-        # Check environment variables
-        await check_environment()
-        logger.info("Environment variables checked successfully")
+    """Main entry point for the application."""
+    loop = asyncio.get_event_loop()
+    asyncio.set_event_loop(loop)  # Ensure consistent event loop
 
-        # Initialize database pool
-        db_pool = await ensure_db_pool()  # Initialize db_pool explicitly
-        logger.info("Database initialized successfully")
+    # Create aiohttp application
+    app = web.Application()
+    wsgi_handler = WSGIHandler(app_flask)
+    app.router.add_route('*', '/{path:.*}', wsgi_handler.handle_request)
+    app.router.add_post("/webhook", webhook_handler)
+    app.router.add_get("/webhook", lambda request: web.Response(status=405, text="Method Not Allowed"))
 
-        # Load bot settings
-        await load_settings()
-        logger.info("Settings loaded successfully")
+    # Configure SSL
+    ssl_context = None
+    if SSL_CERT_PATH and SSL_KEY_PATH:
+        ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_context.load_cert_chain(SSL_CERT_PATH, SSL_KEY_PATH)
+        logger.info("SSL context configured")
 
-        # Set up aiohttp application
-        app = web.Application()
-        app.router.add_post("/webhook", webhook_handler)
-        async def webhook_get_handler(request):
-            return web.Response(status=405, text="Method Not Allowed")
-        app.router.add_get("/webhook", webhook_get_handler)
-        logger.info("Webhook route registered at /webhook")
+    # Set up signal handlers
+    def handle_shutdown():
+        logger.info("Received shutdown signal")
+        asyncio.create_task(app.cleanup())
 
-        # Integrate Flask routes
-        wsgi_handler = WSGIHandler(app_flask)
-        app.router.add_route("*", "/{path_info:.*}", wsgi_handler.handle_request)
-        logger.info("Flask routes integrated with aiohttp")
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, handle_shutdown)
 
-        # Register cleanup callback for db_pool
-        async def cleanup(app):
-            await close_db_pool()
-        app.on_cleanup.append(cleanup)
-
-        # Debug: Log all registered Flask routes
-        with app_flask.app_context():
-            logger.info("Registered Flask routes:")
-            for rule in app_flask.url_map.iter_rules():
-                logger.info(f"Endpoint: {rule.endpoint}, Path: {rule}, Methods: {rule.methods}")
-
-        # Debug: Log all aiohttp routes
-        logger.debug("Registered aiohttp routes: %s", app.router.routes())
-
-        # Initialize Telegram bot
-        telegram_app = (
-            ApplicationBuilder()
-            .token(BOT_TOKEN)
-            .concurrent_updates(True)
-            .http_version("1.1")
-            .build()
+    # Run application with lifespan
+    async with lifespan(app):
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(
+            runner,
+            host='0.0.0.0',
+            port=8443,  # Standard port for Telegram webhooks
+            ssl_context=ssl_context
         )
-        logger.info("Telegram application initialized")
+        logger.info("Starting aiohttp server on port 8443")
+        await site.start()
 
-        # Add handlers
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CommandHandler("tonprice", ton_price_command))
-        telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
-        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-        telegram_app.add_handler(MessageHandler(filters.ALL, debug_update))
-        telegram_app.add_error_handler(error_handler)
-        logger.info("Telegram handlers registered")
+        # Keep the application running
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            logger.info("Application shutdown initiated")
+            await runner.cleanup()
 
-        # Set up scheduler
-        scheduler = AsyncIOScheduler(timezone="UTC")
-        scheduler.add_job(heartbeat_check, "interval", seconds=300, args=[telegram_app])
-        scheduler.add_job(check_reminders, "interval", seconds=60)
-        scheduler.add_job(backup_db, "interval", hours=24)
-        scheduler.add_job(update_ton_price, "interval", minutes=30)
-        scheduler.add_job(keep_alive, "interval", minutes=10, args=[telegram_app])
-        scheduler.start()
-        logger.info("Scheduler started with periodic tasks")
-
-        # Initialize Telegram bot
-        await telegram_app.initialize()
-        logger.info("Telegram bot initialized")
-
-        # Set webhook
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        await telegram_app.bot.set_webhook(webhook_url)
-        logger.info(f"Bot started with webhook: {webhook_url}")
-
-        # Run aiohttp server
-        port = int(os.getenv("PORT", 8080))
-        await web._run_app(app, host="0.0.0.0", port=port)
-        logger.info(f"aiohttp server started on port {port}")
-
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Application terminated by user")
     except Exception as e:
         logger.error(f"Fatal error in main: {e}", exc_info=True)
-        if telegram_app and telegram_app.bot:
-            try:
-                await telegram_app.bot.send_message(
-                    chat_id=ADMIN_BACKUP_ID,
-                    text=f"⚠️ Bot: Fatal error in main: {str(e)}"
-                )
-            except Exception as notify_error:
-                logger.error(f"Failed to send fatal error notification: {notify_error}", exc_info=True)
         raise
-    finally:
-        if 'scheduler' in locals():
-            scheduler.shutdown()
-            logger.info("Scheduler shut down")
-        
-if __name__ == "__main__":
-    asyncio.run(main())
