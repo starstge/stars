@@ -299,70 +299,71 @@ async def transactions():
     query += f" ORDER BY purchase_time DESC LIMIT ${param_index} OFFSET ${param_index + 1}"
     params.extend([per_page, (page - 1) * per_page])
 
-    try:
-        async with db_pool.acquire() as conn:
-            transactions = await conn.fetch(query, *params)
-            total = await conn.fetchval(count_query, *params[:-2])
-            total_pages = (total + per_page - 1) // per_page
+    for attempt in range(3):  # Retry logic
+        try:
+            async with db_pool.acquire() as conn:
+                transactions = await conn.fetch(query, *params)
+                total = await conn.fetchval(count_query, *params[:-2])
+                total_pages = (total + per_page - 1) // per_page
 
-            eest = pytz.timezone("Europe/Tallinn")
-            transactions = [
-                {
-                    "id": t["id"],
-                    "user_id": t["user_id"],
-                    "recipient_username": t["recipient_username"],
-                    "stars_amount": t["stars_amount"],
-                    "price_ton": t["price_ton"],
-                    "purchase_time": t["purchase_time"].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST"),
-                    "checked_status": t["checked_status"]
-                }
-                for t in transactions
-            ]
+                eest = pytz.timezone("Europe/Tallinn")
+                transactions = [
+                    {
+                        "id": t["id"],
+                        "user_id": t["user_id"],
+                        "recipient_username": t["recipient_username"],
+                        "stars_amount": t["stars_amount"],
+                        "price_ton": t["price_ton"],
+                        "purchase_time": t["purchase_time"].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST"),
+                        "checked_status": t["checked_status"]
+                    }
+                    for t in transactions
+                ]
 
-        logger.info(f"Displayed {len(transactions)} transactions, page {page} of {total_pages}")
-        return render_template(
-            'transactions.html',
-            transactions=transactions,
-            page=page,
-            total_pages=total_pages,
-            user_id=user_id,
-            start_date=start_date,
-            end_date=end_date,
-            min_stars=min_stars,
-            max_stars=max_stars,
-            recipient=recipient
-        )
-    except Exception as e:
-        logger.error(f"Error loading transactions: {e}", exc_info=True)
-        flash(f"Error loading transactions: {str(e)}", "error")
-        return render_template(
-            'transactions.html',
-            transactions=[],
-            page=1,
-            total_pages=1,
-            user_id=user_id,
-            start_date=start_date,
-            end_date=end_date,
-            min_stars=min_stars,
-            max_stars=max_stars,
-            recipient=recipient
-        )
-
+            logger.info(f"Displayed {len(transactions)} transactions, page {page} of {total_pages}")
+            return render_template(
+                'transactions.html',
+                transactions=transactions,
+                page=page,
+                total_pages=total_pages,
+                user_id=user_id,
+                start_date=start_date,
+                end_date=end_date,
+                min_stars=min_stars,
+                max_stars=max_stars,
+                recipient=recipient
+            )
+        except (asyncpg.InterfaceError, RuntimeError) as e:
+            logger.error(f"Error loading transactions (attempt {attempt+1}): {e}", exc_info=True)
+            if attempt < 2:
+                await asyncio.sleep(1)  # Wait before retry
+                continue
+            flash(f"Error loading transactions: {str(e)}", "error")
+            return render_template(
+                'transactions.html',
+                transactions=[],
+                page=1,
+                total_pages=1,
+                user_id=user_id,
+                start_date=start_date,
+                end_date=end_date,
+                min_stars=min_stars,
+                max_stars=max_stars,
+                recipient=recipient
+            )
 @app_flask.route('/users')
 @login_required
 async def users():
     """Handle users page."""
     await ensure_db_pool()  # Ensure pool is open
-    loop = asyncio.get_running_loop()  # Get the current event loop
     page = int(request.args.get('page', 1))
     per_page = 10
     user_id = request.args.get('user_id', '')
     username = request.args.get('username', '')
     is_admin = request.args.get('is_admin', '')
-    is_banned = request.args.get('is_banned', '')
 
     query = """
-        SELECT user_id, username, stars_bought, ref_bonus_ton, referrals, created_at, is_new, is_admin, is_banned, referrer_id
+        SELECT user_id, username, stars_bought, ref_bonus_ton, referrals, created_at, is_new, is_admin, prefix
         FROM users WHERE 1=1
     """
     count_query = """
@@ -393,27 +394,57 @@ async def users():
         params.append(is_admin == 'true')
         param_index += 1
 
-    if is_banned:
-        query += f" AND is_banned = ${param_index}"
-        count_query += f" AND is_banned = ${param_index}"
-        params.append(is_banned == 'true')
-        param_index += 1
-
     query += f" ORDER BY created_at DESC LIMIT ${param_index} OFFSET ${param_index + 1}"
     params.extend([per_page, (page - 1) * per_page])
 
-    try:
-        async with db_pool.acquire() as conn:
-            # Ensure database operations run in the correct loop
-            users = await conn.fetch(query, *params)
-            total = await conn.fetchval(count_query, *params[:-2])
-            total_pages = (total + per_page - 1) // per_page
+    for attempt in range(3):  # Retry logic
+        try:
+            async with db_pool.acquire() as conn:
+                users = await conn.fetch(query, *params)
+                total = await conn.fetchval(count_query, *params[:-2])
+                total_pages = (total + per_page - 1) // per_page
 
-        return render_template('users.html', users=users, page=page, total_pages=total_pages)
-    except Exception as e:
-        logger.error(f"Error loading users: {e}", exc_info=True)
-        flash(f"Error loading users: {str(e)}", "error")
-        return render_template('users.html', users=[], page=1, total_pages=1)
+                # Convert referrals JSON to length for display
+                users = [
+                    {
+                        "user_id": u["user_id"],
+                        "username": u["username"],
+                        "stars_bought": u["stars_bought"],
+                        "ref_bonus_ton": u["ref_bonus_ton"],
+                        "referrals": json.loads(u["referrals"]) if u["referrals"] else [],
+                        "created_at": u["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
+                        "is_new": u["is_new"],
+                        "is_admin": u["is_admin"],
+                        "prefix": u["prefix"]
+                    }
+                    for u in users
+                ]
+
+            logger.info(f"Displayed {len(users)} users, page {page} of {total_pages}")
+            return render_template(
+                'users.html',
+                users=users,
+                page=page,
+                total_pages=total_pages,
+                user_id=user_id,
+                username=username,
+                is_admin=is_admin
+            )
+        except (asyncpg.InterfaceError, RuntimeError) as e:
+            logger.error(f"Error loading users (attempt {attempt+1}): {e}", exc_info=True)
+            if attempt < 2:
+                await asyncio.sleep(1)  # Wait before retry
+                continue
+            flash(f"Error loading users: {str(e)}", "error")
+            return render_template(
+                'users.html',
+                users=[],
+                page=1,
+                total_pages=1,
+                user_id=user_id,
+                username=username,
+                is_admin=is_admin
+            )
 
 @app_flask.route('/update_status', methods=['POST'])
 @login_required
@@ -427,8 +458,11 @@ async def update_status():
 
     try:
         async with db_pool.acquire() as conn:
-            if type_ == 'user' and field in ['is_admin', 'is_banned']:
-                await conn.execute(f"UPDATE users SET {field} = $1 WHERE user_id = $2", value == 'true', int(user_id))
+            if type_ == 'user' and field in ['is_admin', 'prefix']:
+                if field == 'prefix' and value not in ['Новичок', 'Новенький', 'Покупатель', 'Постоянный Покупатель', 'Проверенный']:
+                    logger.error(f"Invalid prefix value: {value}")
+                    return jsonify({'message': 'Invalid prefix value'}), 400
+                await conn.execute(f"UPDATE users SET {field} = $1 WHERE user_id = $2", value if field == 'prefix' else value == 'true', int(user_id))
                 logger.info(f"Updated {field} for user_id={user_id} to {value}")
                 return jsonify({'message': f'{field} updated for user {user_id}'})
             elif type_ == 'transaction' and field == 'checked_status':
@@ -448,11 +482,13 @@ async def ensure_db_pool():
     async with _db_pool_lock:
         if db_pool is None or db_pool._closed:
             try:
+                loop = asyncio.get_running_loop()
                 db_pool = await asyncpg.create_pool(
                     POSTGRES_URL,
-                    min_size=1,
-                    max_size=10,
-                    max_inactive_connection_lifetime=300
+                    min_size=2,  # Increase min_size to handle concurrent requests
+                    max_size=20,  # Increase max_size for better concurrency
+                    max_inactive_connection_lifetime=300,
+                    loop=loop  # Explicitly pass the current event loop
                 )
                 logger.info("Database pool initialized or reinitialized")
             except Exception as e:
