@@ -2185,15 +2185,16 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Failed to send error message: {e}", exc_info=True)
 
 # Aiohttp application setup for webhook and Flask integration
-@asynccontextmanager
 async def lifespan(app: web.Application):
     global telegram_app
     try:
+        # Startup: Check environment and initialize resources
         await check_environment()
         await ensure_db_pool()
         await init_db()
         await load_settings()
 
+        # Initialize Telegram application
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
@@ -2202,18 +2203,23 @@ async def lifespan(app: web.Application):
             .build()
         )
         setup_handlers(telegram_app)
+        logger.info("Telegram application initialized")
 
+        # Start scheduler for TON price updates
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
         scheduler.add_job(update_ton_price, "interval", minutes=5, id="update_ton_price", replace_existing=True)
         scheduler.start()
         logger.info("Scheduler started for TON price updates")
 
-        yield
+        yield  # Yield control to the running application
 
-        await telegram_app.shutdown()
+        # Cleanup: Shut down resources
+        if telegram_app is not None:
+            await telegram_app.shutdown()
+            logger.info("Telegram application shut down")
         await close_db_pool()
         scheduler.shutdown()
-        logger.info("Application shutdown completed")
+        logger.info("Scheduler shut down")
     except Exception as e:
         logger.error(f"Error during application lifespan: {e}", exc_info=True)
         raise
