@@ -506,6 +506,11 @@ import json
 # Configure logging
 logger = logging.getLogger(__name__)
 
+import asyncpg
+import logging
+from datetime import datetime
+import pytz
+
 async def init_db():
     """Initialize the database schema and set up default values."""
     try:
@@ -530,6 +535,13 @@ async def init_db():
                 )
             """)
             logger.info("Users table created or verified")
+
+            # Add prefix column if it doesn't exist
+            await conn.execute("""
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS prefix TEXT DEFAULT 'Beginner'
+            """)
+            logger.info("Ensured prefix column exists in users table")
 
             # Create transactions table
             await conn.execute("""
