@@ -99,7 +99,8 @@
                         <td class="py-2 px-4 border-b">{{ transaction.price_ton }}</td>
                         <td class="py-2 px-4 border-b">{{ transaction.purchase_time }}</td>
                         <td class="py-2 px-4 border-b">
-                            <select onchange="updateTransactionStatus({{ transaction.id }}, this.value)">
+                            <select onchange="updateTransactionStatus({{ transaction.id }}, this.value)"
+                                    class="{% if transaction.checked_status == 'checked' %}bg-green-100{% elif transaction.checked_status == 'not_checked' %}bg-red-100{% elif transaction.checked_status == 'test' %}bg-yellow-100{% endif %} rounded-md">
                                 <option value="checked" {% if transaction.checked_status == 'checked' %}selected{% endif %}>Checked</option>
                                 <option value="not_checked" {% if transaction.checked_status == 'not_checked' %}selected{% endif %}>Not Checked</option>
                                 <option value="test" {% if transaction.checked_status == 'test' %}selected{% endif %}>Test</option>
