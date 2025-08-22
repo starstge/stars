@@ -7,11 +7,11 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* Custom background colors for statuses */
-        .status-novichok { background-color: #ffffff; } /* White */
-        .status-novenkiy { background-color: #add8e6; } /* Light Blue */
-        .status-pokupatel { background-color: #90ee90; } /* Light Green */
-        .status-postoyanniy { background-color: #ffd700; } /* Light Orange */
-        .status-proverenniy { background-color: #ffffe0; } /* Light Yellow */
+        .status-beginner { background-color: #ffffff; } /* White */
+        .status-newbie { background-color: #add8e6; } /* Light Blue */
+        .status-buyer { background-color: #90ee90; } /* Light Green */
+        .status-regular-buyer { background-color: #ffd700; } /* Light Orange */
+        .status-verified { background-color: #ffffe0; } /* Light Yellow */
         .status-table tr td { background-color: inherit !important; }
     </style>
 </head>
@@ -48,11 +48,11 @@
                     <label for="prefix" class="block text-sm font-medium text-gray-700">Prefix</label>
                     <select name="prefix" id="prefix" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
                         <option value="">All</option>
-                        <option value="Новичок" {% if request.args.get('prefix') == 'Новичок' %}selected{% endif %}>Новичок</option>
-                        <option value="Новенький" {% if request.args.get('prefix') == 'Новенький' %}selected{% endif %}>Новенький</option>
-                        <option value="Покупатель" {% if request.args.get('prefix') == 'Покупатель' %}selected{% endif %}>Покупатель</option>
-                        <option value="Постоянный Покупатель" {% if request.args.get('prefix') == 'Постоянный Покупатель' %}selected{% endif %}>Постоянный Покупатель</option>
-                        <option value="Проверенный" {% if request.args.get('prefix') == 'Проверенный' %}selected{% endif %}>Проверенный</option>
+                        <option value="Beginner" {% if request.args.get('prefix') == 'Beginner' %}selected{% endif %}>Beginner</option>
+                        <option value="Newbie" {% if request.args.get('prefix') == 'Newbie' %}selected{% endif %}>Newbie</option>
+                        <option value="Buyer" {% if request.args.get('prefix') == 'Buyer' %}selected{% endif %}>Buyer</option>
+                        <option value="Regular Buyer" {% if request.args.get('prefix') == 'Regular Buyer' %}selected{% endif %}>Regular Buyer</option>
+                        <option value="Verified" {% if request.args.get('prefix') == 'Verified' %}selected{% endif %}>Verified</option>
                     </select>
                 </div>
             </div>
@@ -93,7 +93,7 @@
                 </thead>
                 <tbody>
                     {% for user in users %}
-                    <tr class="{% if user.is_admin %}status-proverenniy{% elif user.prefix == 'Проверенный' %}status-proverenniy{% elif user.prefix == 'Постоянный Покупатель' %}status-postoyanniy{% elif user.prefix == 'Покупатель' %}status-pokupatel{% elif user.prefix == 'Новенький' %}status-novenkiy{% else %}status-novichok{% endif %}">
+                    <tr class="{% if user.is_admin %}status-verified{% elif user.prefix == 'Verified' %}status-verified{% elif user.prefix == 'Regular Buyer' %}status-regular-buyer{% elif user.prefix == 'Buyer' %}status-buyer{% elif user.prefix == 'Newbie' %}status-newbie{% else %}status-beginner{% endif %}">
                         <td class="py-2 px-4 border-b">{{ user.user_id }}</td>
                         <td class="py-2 px-4 border-b">{{ user.username or 'N/A' }}</td>
                         <td class="py-2 px-4 border-b">{{ user.stars_bought }}</td>
@@ -109,11 +109,11 @@
                         </td>
                         <td class="py-2 px-4 border-b">
                             <select onchange="updateUserStatus('prefix', {{ user.user_id }}, this.value)">
-                                <option value="Новичок" {% if user.prefix == 'Новичок' %}selected{% endif %}>Новичок</option>
-                                <option value="Новенький" {% if user.prefix == 'Новенький' %}selected{% endif %}>Новенький</option>
-                                <option value="Покупатель" {% if user.prefix == 'Покупатель' %}selected{% endif %}>Покупатель</option>
-                                <option value="Постоянный Покупатель" {% if user.prefix == 'Постоянный Покупатель' %}selected{% endif %}>Постоянный Покупатель</option>
-                                <option value="Проверенный" {% if user.prefix == 'Проверенный' %}selected{% endif %}>Проверенный</option>
+                                <option value="Beginner" {% if user.prefix == 'Beginner' %}selected{% endif %}>Beginner</option>
+                                <option value="Newbie" {% if user.prefix == 'Newbie' %}selected{% endif %}>Newbie</option>
+                                <option value="Buyer" {% if user.prefix == 'Buyer' %}selected{% endif %}>Buyer</option>
+                                <option value="Regular Buyer" {% if user.prefix == 'Regular Buyer' %}selected{% endif %}>Regular Buyer</option>
+                                <option value="Verified" {% if user.prefix == 'Verified' %}selected{% endif %}>Verified</option>
                             </select>
                         </td>
                         <td class="py-2 px-4 border-b">{{ user.referrer_id or 'N/A' }}</td>
@@ -155,29 +155,29 @@
                     </tr>
                 </thead>
                 <tbody>
-                    <tr class="status-novichok">
-                        <td class="py-2 px-4 border-b">Новичок</td>
+                    <tr class="status-beginner">
+                        <td class="py-2 px-4 border-b">Beginner</td>
                         <td class="py-2 px-4 border-b">0 stars</td>
                         <td class="py-2 px-4 border-b">White</td>
                     </tr>
-                    <tr class="status-novenkiy">
-                        <td class="py-2 px-4 border-b">Новенький</td>
+                    <tr class="status-newbie">
+                        <td class="py-2 px-4 border-b">Newbie</td>
                         <td class="py-2 px-4 border-b">≥1000 stars</td>
                         <td class="py-2 px-4 border-b">Light Blue</td>
                     </tr>
-                    <tr class="status-pokupatel">
-                        <td class="py-2 px-4 border-b">Покупатель</td>
+                    <tr class="status-buyer">
+                        <td class="py-2 px-4 border-b">Buyer</td>
                         <td class="py-2 px-4 border-b">≥5000 stars</td>
                         <td class="py-2 px-4 border-b">Light Green</td>
                     </tr>
-                    <tr class="status-postoyanniy">
-                        <td class="py-2 px-4 border-b">Постоянный Покупатель</td>
+                    <tr class="status-regular-buyer">
+                        <td class="py-2 px-4 border-b">Regular Buyer</td>
                         <td class="py-2 px-4 border-b">≥10000 stars</td>
                         <td class="py-2 px-4 border-b">Light Orange</td>
                     </tr>
-                    <tr class="status-proverenniy">
-                        <td class="py-2 px-4 border-b">Проверенный</td>
-                        <td class="py-2 px-4 border-b">≥50000 stars or Admin/Tester</td>
+                    <tr class="status-verified">
+                        <td class="py-2 px-4 border-b">Verified</td>
+                        <td class="py-2 px-4 border-b">≥50000 stars or Admin</td>
                         <td class="py-2 px-4 border-b">Light Yellow</td>
                     </tr>
                 </tbody>
@@ -218,11 +218,11 @@
                     <input type="number" step="0.01" id="refBonusTon" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
                     <label for="prefix" class="block text-sm font-medium text-gray-700 mt-2">Prefix</label>
                     <select id="prefixField" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
-                        <option value="Новичок">Новичок</option>
-                        <option value="Новенький">Новенький</option>
-                        <option value="Покупатель">Покупатель</option>
-                        <option value="Постоянный Покупатель">Постоянный Покупатель</option>
-                        <option value="Проверенный">Проверенный</option>
+                        <option value="Beginner">Beginner</option>
+                        <option value="Newbie">Newbie</option>
+                        <option value="Buyer">Buyer</option>
+                        <option value="Regular Buyer">Regular Buyer</option>
+                        <option value="Verified">Verified</option>
                     </select>
                 </div>
                 <div class="mb-4">
@@ -329,8 +329,8 @@
             } else if (action === 'update_admin') {
                 command = queryTemplates[table][action].replace('$2', `true`);
             } else if (action === 'update_prefix') {
-                const prefixValue = prompt('Enter prefix (Новичок, Новенький, Покупатель, Постоянный Покупатель, Проверенный):');
-                if (!['Новичок', 'Новенький', 'Покупатель', 'Постоянный Покупатель', 'Проверенный'].includes(prefixValue)) {
+                const prefixValue = prompt('Enter prefix (Beginner, Newbie, Buyer, Regular Buyer, Verified):');
+                if (!['Beginner', 'Newbie', 'Buyer', 'Regular Buyer', 'Verified'].includes(prefixValue)) {
                     output.textContent = 'Invalid prefix value.';
                     return;
                 }
