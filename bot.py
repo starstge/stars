@@ -34,17 +34,16 @@ import hashlib
 import requests
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from io import BytesIO
-import telegram
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 import bcrypt
 from aiohttp_wsgi import WSGIHandler
 
-
+# Flask application setup
 app_flask = Flask(__name__)
 app_flask.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
-# Настройка логирования с ротацией
+# Logging setup with rotation
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.DEBUG,
@@ -55,15 +54,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Метрики Prometheus
+# Prometheus metrics
 REQUESTS = Counter("bot_requests_total", "Total number of requests", ["endpoint"])
 ERRORS = Counter("bot_errors_total", "Total number of errors", ["type", "endpoint"])
 RESPONSE_TIME = Histogram("bot_response_time_seconds", "Response time of handlers", ["endpoint"])
 
-# Загрузка .env
+# Load environment variables
 load_dotenv()
 
-# Константы
+# Constants
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 SPLIT_API_TOKEN = os.getenv("SPLIT_API_TOKEN")
@@ -86,18 +85,7 @@ PORT = int(os.getenv("PORT", 8080))
 MARKUP_PERCENTAGE = float(os.getenv("MARKUP_PERCENTAGE", 10))
 REFERRAL_BONUS_PERCENTAGE = float(os.getenv("REFERRAL_BONUS_PERCENTAGE", 30))
 
-# Новые константы для дополнительных функций
-FEEDBACK = "feedback"
-TRANSACTION_HISTORY = "transaction_history"
-REFERRAL_LEADERBOARD = "referral_leaderboard"
-BAN_USER = "ban_user"
-UNBAN_USER = "unban_user"
-SUPPORT_TICKET = "support_ticket"
-STATE_FEEDBACK = "feedback"
-STATE_SUPPORT_TICKET = "support_ticket"
-STATE_BAN_USER = "ban_user"
-STATE_UNBAN_USER = "unban_user"
-
+# State constants
 STATES = {
     "main_menu": 0,
     "profile": 1,
@@ -117,51 +105,35 @@ STATES = {
     "all_users": 15,
     "tech_break": 16,
     "bot_settings": 17,
-    "STATE_FEEDBACK": 18,
-    "STATE_SUPPORT_TICKET": 19,
-    "STATE_BAN_USER": 20,
-    "STATE_UNBAN_USER": 21,
+    "feedback": 18,
+    "support_ticket": 19,
+    "ban_user": 20,
+    "unban_user": 21,
     "select_stars_menu": 22,
     "buy_stars_custom": 23,
     "transaction_history": 24,
     "buy_stars_payment": 25,
-    "profile_transactions": 26  # Added for user transaction history
+    "profile_transactions": 26
 }
 
-# Глобальные переменные
+# Global variables
 db_pool = None
 _db_pool_lock = asyncio.Lock()
 telegram_app = None
 transaction_cache = TTLCache(maxsize=1000, ttl=3600)
-tech_break_info = {}  # Хранит информацию о техническом перерыве: {"end_time": datetime, "reason": str}
+tech_break_info = {}  # Stores tech break info: {"end_time": datetime, "reason": str}
 
+# Flask login decorator
 def login_required(f):
     @wraps(f)
-    async def decorated(*args, **kwargs):
+    def decorated(*args, **kwargs):
         if 'logged_in' not in session:
             logger.warning("Unauthorized access attempt to protected route")
             return redirect(url_for('login'))
-        return await f(*args, **kwargs)
+        return f(*args, **kwargs)
     return decorated
 
-
-async def debug_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Debug handler to log all incoming updates."""
-    logger.info(f"Received update: {update.to_dict()}")
-    await log_analytics(
-        update.effective_user.id if update.effective_user else 0,
-        "debug_update",
-        {"update": update.to_dict()}
-    )
-
-app_flask = Flask(__name__)
-app_flask.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-
-# Настройка логирования
-logger = logging.getLogger(__name__)
-
-# Synchronous database connection
+# Database connection (synchronous for Flask)
 def get_db_connection():
     try:
         conn = psycopg2.connect(os.getenv("POSTGRES_URL"))
@@ -170,10 +142,9 @@ def get_db_connection():
         logger.error(f"Error connecting to database: {e}")
         raise
 
-
+# Flask routes
 @app_flask.route('/login', methods=['GET', 'POST'])
-async def login():
-    """Handle admin login."""
+def login():
     if session.get('logged_in'):
         logger.info("User already logged in, redirecting to transactions")
         return redirect(url_for('transactions'))
@@ -204,8 +175,7 @@ async def login():
     return render_template('login.html')
 
 @app_flask.route('/logout')
-async def logout():
-    """Handle admin logout."""
+def logout():
     session.pop('logged_in', None)
     logger.info("User logged out")
     flash("You have logged out.", "success")
@@ -213,15 +183,13 @@ async def logout():
 
 @app_flask.route('/')
 @login_required
-async def index():
-    """Redirect to transactions page."""
+def index():
     return redirect(url_for('transactions'))
 
 @app_flask.route('/transactions')
 @login_required
 async def transactions():
-    """Handle transactions page."""
-    await ensure_db_pool()  # Ensure pool is open
+    await ensure_db_pool()
     page = int(request.args.get('page', 1))
     per_page = 10
     user_id = request.args.get('user_id', '')
@@ -300,7 +268,7 @@ async def transactions():
     query += f" ORDER BY purchase_time DESC LIMIT ${param_index} OFFSET ${param_index + 1}"
     params.extend([per_page, (page - 1) * per_page])
 
-    for attempt in range(3):  # Retry logic
+    for attempt in range(3):
         try:
             async with db_pool.acquire() as conn:
                 transactions = await conn.fetch(query, *params)
@@ -337,7 +305,7 @@ async def transactions():
         except (asyncpg.InterfaceError, RuntimeError) as e:
             logger.error(f"Error loading transactions (attempt {attempt+1}): {e}", exc_info=True)
             if attempt < 2:
-                await asyncio.sleep(1)  # Wait before retry
+                await asyncio.sleep(1)
                 continue
             flash(f"Error loading transactions: {str(e)}", "error")
             return render_template(
@@ -352,11 +320,11 @@ async def transactions():
                 max_stars=max_stars,
                 recipient=recipient
             )
+
 @app_flask.route('/users')
 @login_required
 async def users():
-    """Handle users page."""
-    await ensure_db_pool()  # Ensure pool is open
+    await ensure_db_pool()
     page = int(request.args.get('page', 1))
     per_page = 10
     user_id = request.args.get('user_id', '')
@@ -398,14 +366,13 @@ async def users():
     query += f" ORDER BY created_at DESC LIMIT ${param_index} OFFSET ${param_index + 1}"
     params.extend([per_page, (page - 1) * per_page])
 
-    for attempt in range(3):  # Retry logic
+    for attempt in range(3):
         try:
             async with db_pool.acquire() as conn:
                 users = await conn.fetch(query, *params)
                 total = await conn.fetchval(count_query, *params[:-2])
                 total_pages = (total + per_page - 1) // per_page
 
-                # Convert referrals JSON to length for display
                 users = [
                     {
                         "user_id": u["user_id"],
@@ -434,7 +401,7 @@ async def users():
         except (asyncpg.InterfaceError, RuntimeError) as e:
             logger.error(f"Error loading users (attempt {attempt+1}): {e}", exc_info=True)
             if attempt < 2:
-                await asyncio.sleep(1)  # Wait before retry
+                await asyncio.sleep(1)
                 continue
             flash(f"Error loading users: {str(e)}", "error")
             return render_template(
@@ -450,7 +417,6 @@ async def users():
 @app_flask.route('/update_status', methods=['POST'])
 @login_required
 async def update_status():
-    """Handle status updates for users and transactions."""
     data = request.get_json()
     type_ = data.get('type')
     field = data.get('field')
@@ -460,25 +426,25 @@ async def update_status():
     try:
         async with db_pool.acquire() as conn:
             if type_ == 'user' and field in ['is_admin', 'prefix']:
-                if field == 'prefix' and value not in ['Новичок', 'Новенький', 'Покупатель', 'Постоянный Покупатель', 'Проверенный']:
+                if field == 'prefix' and value not in ['Beginner', 'Newbie', 'Buyer', 'Regular Buyer', 'Verified']:
                     logger.error(f"Invalid prefix value: {value}")
-                    return jsonify({'message': 'Invalid prefix value'}), 400
+                    return web.json_response({'message': 'Invalid prefix value'}, status=400)
                 await conn.execute(f"UPDATE users SET {field} = $1 WHERE user_id = $2", value if field == 'prefix' else value == 'true', int(user_id))
                 logger.info(f"Updated {field} for user_id={user_id} to {value}")
-                return jsonify({'message': f'{field} updated for user {user_id}'})
+                return web.json_response({'message': f'{field} updated for user {user_id}'})
             elif type_ == 'transaction' and field == 'checked_status':
                 await conn.execute("UPDATE transactions SET checked_status = $1 WHERE id = $2", value, int(user_id))
                 logger.info(f"Updated checked_status for transaction_id={user_id} to {value}")
-                return jsonify({'message': f'Status updated for transaction {user_id}'})
+                return web.json_response({'message': f'Status updated for transaction {user_id}'})
             else:
                 logger.error(f"Invalid type or field: type={type_}, field={field}")
-                return jsonify({'message': 'Invalid type or field'}), 400
+                return web.json_response({'message': 'Invalid type or field'}, status=400)
     except Exception as e:
         logger.error(f"Error updating status: {e}", exc_info=True)
-        return jsonify({'message': f'Error updating status: {str(e)}'}), 500
-        
+        return web.json_response({'message': f'Error updating status: {str(e)}'}, status=500)
+
+# Database initialization
 async def ensure_db_pool():
-    """Initialize or reinitialize the database connection pool."""
     global db_pool
     async with _db_pool_lock:
         if db_pool is None or db_pool._closed:
@@ -486,7 +452,7 @@ async def ensure_db_pool():
                 loop = asyncio.get_event_loop()
                 db_pool = await asyncpg.create_pool(
                     POSTGRES_URL,
-                    min_size=10,  # Adjusted for concurrency
+                    min_size=10,
                     max_size=50,
                     max_inactive_connection_lifetime=300,
                     loop=loop
@@ -496,16 +462,11 @@ async def ensure_db_pool():
                 logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
                 raise
     return db_pool
-        
+
 async def init_db():
-    """Initialize the database schema and set up default values."""
     try:
         async with (await ensure_db_pool()) as conn:
-            # Drop is_banned column if it exists
-            await conn.execute("ALTER TABLE users DROP COLUMN IF EXISTS is_banned")
-            logger.info("Dropped is_banned column if it existed")
-
-            # Create users table with English prefixes
+            # Create users table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -517,17 +478,11 @@ async def init_db():
                     is_admin BOOLEAN DEFAULT FALSE,
                     prefix TEXT DEFAULT 'Beginner',
                     referrer_id BIGINT,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    is_banned BOOLEAN DEFAULT FALSE
                 )
             """)
             logger.info("Users table created or verified")
-
-            # Add prefix column if it doesn't exist
-            await conn.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS prefix TEXT DEFAULT 'Beginner'
-            """)
-            logger.info("Ensured prefix column exists in users table")
 
             # Create transactions table
             await conn.execute("""
@@ -553,11 +508,35 @@ async def init_db():
             """)
             logger.info("Settings table created or verified")
 
-            # Insert default settings if they don't exist
+            # Create analytics table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS analytics (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    action TEXT,
+                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    data JSONB
+                )
+            """)
+            logger.info("Analytics table created or verified")
+
+            # Create reminders table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    reminder_date DATE,
+                    reminder_type TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            logger.info("Reminders table created or verified")
+
+            # Insert default settings
             default_settings = [
-                ("price_usd", 2.5),  # Default price per 50 stars in USD
-                ("markup", 10.0),    # Default markup percentage
-                ("ref_bonus", 5.0)   # Default referral bonus percentage
+                ("price_usd", 0.81),
+                ("markup", 10.0),
+                ("ref_bonus", 30.0)
             ]
             for key, value in default_settings:
                 await conn.execute(
@@ -570,7 +549,7 @@ async def init_db():
                 )
             logger.info("Default settings inserted or verified")
 
-            # Update prefixes to English based on stars_bought
+            # Update prefixes based on stars_bought
             await conn.execute("""
                 UPDATE users SET prefix = CASE
                     WHEN is_admin THEN 'Verified'
@@ -581,10 +560,10 @@ async def init_db():
                     ELSE 'Beginner'
                 END
             """)
-            logger.info("User prefixes updated to English based on stars_bought")
+            logger.info("User prefixes updated based on stars_bought")
 
-            # Ensure admin user exists
-            admin_user_id = 6956377285  # Replace with your admin user ID
+            # Ensure admin user
+            admin_user_id = 6956377285
             await conn.execute(
                 """
                 INSERT INTO users (user_id, username, is_admin, prefix, created_at)
@@ -596,15 +575,11 @@ async def init_db():
             )
             logger.info(f"Admin user {admin_user_id} ensured")
 
-    except asyncpg.InterfaceError as e:
-        logger.error(f"Database connection error during initialization: {e}", exc_info=True)
-        raise
     except Exception as e:
         logger.error(f"Error initializing database: {e}", exc_info=True)
         raise
-    
+
 async def close_db_pool():
-    """Close the database pool."""
     global db_pool
     async with _db_pool_lock:
         if db_pool and not db_pool._closed:
@@ -612,8 +587,8 @@ async def close_db_pool():
             logger.info("Database pool closed")
             db_pool = None
 
+# Utility functions
 async def get_text(key: str, **kwargs) -> str:
-    """Получение текста сообщения с подстановкой параметров."""
     texts = {
         "welcome": "Добро пожаловать! 🌟\nВсего продано звезд: {total_stars}\nВаши звезды: {stars_bought}",
         "profile": "Ваш профиль:\nЗвезд куплено: {stars_bought}\nРефералов: {ref_count}\nРеферальный бонус: {ref_bonus_ton} TON",
@@ -628,15 +603,14 @@ async def get_text(key: str, **kwargs) -> str:
         "db_reminder_exists": "Напоминание о БД уже установлено на {reminder_date}. Очистите текущее напоминание, чтобы установить новое.",
         "mention_set": "Упоминание установлено на {mention_date}",
         "tech_break_active": "Технический перерыв до {end_time} ({minutes_left} мин).\nПричина: {reason}",
-        "user_banned": "Вы забанены. Обратитесь в поддержку: https://t.me/CheapStarsShop_support",
+        "user_banned": "Вы забанены. Обратитесь в поддержку: {support_channel}",
         "bot_settings": "Настройки бота:\nЦена за 50 звезд: ${price_usd}\nНакрутка: {markup}%\nРеферальный бонус: {ref_bonus}%",
-        "tech_support": "📞 Поддержка: https://t.me/CheapStarsShop_support",
-        "reviews": "📝 Отзывы: https://t.me/CheapStarsShop_support"
+        "tech_support": "📞 Поддержка: {support_channel}",
+        "reviews": "📝 Отзывы: {support_channel}"
     }
     return texts.get(key, "Неизвестный текст").format(**kwargs)
-    
+
 async def log_analytics(user_id: int, action: str, data: dict = None):
-    """Логирование аналитики."""
     try:
         async with (await ensure_db_pool()) as conn:
             await conn.execute(
@@ -647,7 +621,6 @@ async def log_analytics(user_id: int, action: str, data: dict = None):
         logger.error(f"Ошибка логирования аналитики: {e}", exc_info=True)
 
 async def update_ton_price():
-    """Обновление цены TON с использованием TonAPI."""
     if not TON_API_KEY:
         logger.error("TON_API_KEY не задан, пропуск обновления цены TON")
         telegram_app.bot_data["ton_price_info"] = {"price": 0.0, "diff_24h": 0.0}
@@ -656,29 +629,29 @@ async def update_ton_price():
         headers = {"Authorization": f"Bearer {TON_API_KEY}"}
         url = "https://tonapi.io/v2/rates?tokens=ton&currencies=usd"
         logger.debug(f"Запрос к TonAPI: {url}")
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        ton_price = data["rates"]["TON"]["prices"]["USD"]
-        diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
-        try:
-            diff_24h = diff_24h.replace("−", "-")
-            diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
-        except (ValueError, TypeError) as e:
-            logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0, ошибка: {e}")
-            diff_24h = 0.0
-        telegram_app.bot_data["ton_price_info"] = {
-            "price": ton_price,
-            "diff_24h": diff_24h
-        }
-        logger.info(f"Цена TON обновлена: ${ton_price:.2f}, изменение за 24ч: {diff_24h:.2f}%")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=10) as response:
+                response.raise_for_status()
+                data = await response.json()
+                ton_price = data["rates"]["TON"]["prices"]["USD"]
+                diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
+                try:
+                    diff_24h = diff_24h.replace("−", "-")
+                    diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0, ошибка: {e}")
+                    diff_24h = 0.0
+                telegram_app.bot_data["ton_price_info"] = {
+                    "price": ton_price,
+                    "diff_24h": diff_24h
+                }
+                logger.info(f"Цена TON обновлена: ${ton_price:.2f}, изменение за 24ч: {diff_24h:.2f}%")
     except Exception as e:
         logger.error(f"Ошибка получения цены TON: {e}", exc_info=True)
         ERRORS.labels(type="api", endpoint="update_ton_price").inc()
         telegram_app.bot_data["ton_price_info"] = {"price": 0.0, "diff_24h": 0.0}
 
 async def load_settings():
-    """Load bot settings from the database."""
     global PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE
     async with (await ensure_db_pool()) as conn:
         settings = await conn.fetch("SELECT key, value FROM settings")
@@ -691,14 +664,174 @@ async def load_settings():
                 REFERRAL_BONUS_PERCENTAGE = float(setting["value"])
         logger.info("Settings loaded from database")
 
+async def generate_payload(user_id):
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+    payload = f"{user_id}_{timestamp}_{random_str}"
+    secret = os.getenv("BOT_TOKEN").encode()
+    signature = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{signature}"
+
+async def verify_payload(payload, signature):
+    secret = os.getenv("BOT_TOKEN").encode()
+    expected_signature = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected_signature)
+
+async def create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipient, payload):
+    if not CRYPTOBOT_API_TOKEN:
+        logger.error("CRYPTOBOT_API_TOKEN не задан")
+        return None, None
+    async with aiohttp.ClientSession(timeout=ClientTimeout(total=30)) as session:
+        for attempt in range(3):
+            try:
+                headers = {"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN}
+                data = {
+                    "amount": str(amount_usd),
+                    "currency": currency,
+                    "description": f"Покупка {stars} звезд для @{recipient}",
+                    "payload": payload
+                }
+                async with session.post(CRYPTOBOT_API_URL + "/createInvoice", headers=headers, json=data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return result["result"]["invoice_id"], result["result"]["pay_url"]
+                    else:
+                        logger.error(f"Cryptobot API error: {response.status} - {await response.text()}")
+                        ERRORS.labels(type="api", endpoint="create_cryptobot_invoice").inc()
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.error(f"Cryptobot invoice creation failed (attempt {attempt+1}): {e}", exc_info=True)
+                ERRORS.labels(type="api", endpoint="create_cryptobot_invoice").inc()
+                await asyncio.sleep(2)
+        return None, None
+
+async def check_environment():
+    required_vars = [
+        "BOT_TOKEN",
+        "POSTGRES_URL",
+        "SPLIT_API_TOKEN",
+        "PROVIDER_TOKEN",
+        "OWNER_WALLET",
+        "WEBHOOK_URL",
+        "CRYPTOBOT_API_TOKEN",
+        "TON_API_KEY"
+    ]
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    if missing_vars:
+        logger.error(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
+        raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
+
+def setup_handlers(app: Application):
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("tonprice", ton_price_command))
+    app.add_handler(CallbackQueryHandler(callback_query_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_error_handler(error_handler)
+    logger.info("Telegram bot handlers registered")
+
+async def format_time_remaining(end_time):
+    now = datetime.now(pytz.UTC)
+    if end_time <= now:
+        return "Технический перерыв завершён."
+    delta = end_time - now
+    days = delta.days
+    hours = delta.seconds // 3600
+    minutes = (delta.seconds % 3600) // 60
+    parts = []
+    if days > 0:
+        parts.append(f"{days} дн.")
+    if hours > 0:
+        parts.append(f"{hours} ч.")
+    if minutes > 0 or (days == 0 and hours == 0):
+        parts.append(f"{minutes} мин.")
+    return " ".join(parts) if parts else "менее минуты"
+
+# Telegram handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username or str(user_id)
+    referrer_id = None
+    args = context.args
+    REQUESTS.labels(endpoint="start").inc()
+    with RESPONSE_TIME.labels(endpoint="start").time():
+        logger.info(f"Start command received: user_id={user_id}, username={username}, args={args}")
+        async with (await ensure_db_pool()) as conn:
+            user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+            if not user:
+                if args and args[0].isdigit():
+                    referrer_id = int(args[0])
+                    referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", referrer_id)
+                    if referrer:
+                        referrals = json.loads(referrer["referrals"]) if referrer["referrals"] else []
+                        if user_id not in referrals:
+                            referrals.append(user_id)
+                            await conn.execute(
+                                "UPDATE users SET referrals = $1 WHERE user_id = $2",
+                                json.dumps(referrals), referrer_id
+                            )
+                            logger.info(f"Added referral: user_id={user_id} to referrer_id={referrer_id}")
+                await conn.execute(
+                    "INSERT INTO users (user_id, username, stars_bought, referrals, ref_bonus_ton, is_admin, is_banned) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    user_id, username, 0, json.dumps([]), 0.0, False, False
+                )
+                logger.info(f"New user registered: user_id={user_id}, username={username}")
+            else:
+                await conn.execute(
+                    "UPDATE users SET username = $1 WHERE user_id = $2",
+                    username, user_id
+                )
+            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+            is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id) or False
+            if is_banned:
+                text = await get_text("user_banned", support_channel=SUPPORT_CHANNEL)
+                await update.message.reply_text(text)
+                context.user_data["state"] = STATES["main_menu"]
+                await log_analytics(user_id, "start_banned", {})
+                return STATES["main_menu"]
+            if tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC) and not is_admin:
+                time_remaining = await format_time_remaining(tech_break_info["end_time"])
+                text = await get_text(
+                    "tech_break_active",
+                    end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    minutes_left=time_remaining,
+                    reason=tech_break_info["reason"]
+                )
+                await update.message.reply_text(text)
+                context.user_data["state"] = STATES["main_menu"]
+                await log_analytics(user_id, "start_tech_break", {})
+                return STATES["main_menu"]
+            total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+            user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
+            text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
+            keyboard = [
+                [
+                    InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
+                    InlineKeyboardButton("📞 Поддержка и Отзывы", url=SUPPORT_CHANNEL)
+                ],
+                [
+                    InlineKeyboardButton("👤 Профиль", callback_data="profile"),
+                    InlineKeyboardButton("🤝 Рефералы", callback_data="referrals")
+                ],
+                [InlineKeyboardButton("🛒 Купить звезды", callback_data="buy_stars")]
+            ]
+            if is_admin:
+                keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
+            await update.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+            context.user_data["state"] = STATES["main_menu"]
+            await log_analytics(user_id, "start", {"referrer_id": referrer_id})
+            return STATES["main_menu"]
 
 async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /tonprice."""
     global tech_break_info
     user_id = update.effective_user.id
     async with (await ensure_db_pool()) as conn:
-        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
-        is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id)
+        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+        is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id) or False
         if is_banned:
             text = await get_text("user_banned", support_channel=SUPPORT_CHANNEL)
             await update.message.reply_text(text)
@@ -706,7 +839,7 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await log_analytics(user_id, "ton_price_banned", {})
             return STATES["main_menu"]
         if not is_admin and tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
-            time_remaining = format_time_remaining(tech_break_info["end_time"])
+            time_remaining = await format_time_remaining(tech_break_info["end_time"])
             text = await get_text(
                 "tech_break_active",
                 end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -743,494 +876,8 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["state"] = STATES["main_menu"]
             await log_analytics(user_id, "ton_price_error", {"error": str(e)})
         return STATES["main_menu"]
-async def generate_payload(user_id):
-    """Генерация уникального payload для платежа."""
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    random_str = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-    payload = f"{user_id}_{timestamp}_{random_str}"
-    secret = os.getenv("BOT_TOKEN").encode()
-    signature = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
-    return f"{payload}:{signature}"
-
-def format_time_remaining(end_time):
-    """Format the time remaining until end_time in days, hours, and minutes."""
-    now = datetime.now(pytz.UTC)
-    if end_time <= now:
-        return "Технический перерыв завершён."
-    delta = end_time - now
-    days = delta.days
-    hours = delta.seconds // 3600
-    minutes = (delta.seconds % 3600) // 60
-    parts = []
-    if days > 0:
-        parts.append(f"{days} дн.")
-    if hours > 0:
-        parts.append(f"{hours} ч.")
-    if minutes > 0 or (days == 0 and hours == 0):
-        parts.append(f"{minutes} мин.")
-    return " ".join(parts) if parts else "менее минуты"
-
-async def verify_payload(payload, signature):
-    """Проверка подписи payload."""
-    secret = os.getenv("BOT_TOKEN").encode()
-    expected_signature = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature, expected_signature)
-
-async def create_cryptobot_invoice(amount_usd, currency, user_id, stars, recipient, payload):
-    """Создание инвойса в Cryptobot."""
-    if not CRYPTOBOT_API_TOKEN:
-        logger.error("CRYPTOBOT_API_TOKEN не задан")
-        return None, None
-    async with aiohttp.ClientSession(timeout=ClientTimeout(total=30)) as session:
-        for attempt in range(3):
-            try:
-                headers = {"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN}
-                data = {
-                    "amount": str(amount_usd),
-                    "currency": currency,
-                    "description": f"Покупка {stars} звезд для @{recipient}",
-                    "payload": payload
-                }
-                async with session.post(CRYPTOBOT_API_URL + "/createInvoice", headers=headers, json=data) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        return result["result"]["invoice_id"], result["result"]["pay_url"]
-                    else:
-                        logger.error(f"Cryptobot API error: {response.status} - {await response.text()}")
-                        ERRORS.labels(type="api", endpoint="create_cryptobot_invoice").inc()
-                await asyncio.sleep(2)
-            except Exception as e:
-                logger.error(f"Cryptobot invoice creation failed (attempt {attempt+1}): {e}", exc_info=True)
-                ERRORS.labels(type="api", endpoint="create_cryptobot_invoice").inc()
-                await asyncio.sleep(2)
-        return None, None
-
-async def check_environment():
-    """Проверка переменных окружения."""
-    required_vars = [
-        "BOT_TOKEN",
-        "POSTGRES_URL",
-        "SPLIT_API_TOKEN",
-        "PROVIDER_TOKEN",
-        "OWNER_WALLET",
-        "WEBHOOK_URL",
-        "CRYPTOBOT_API_TOKEN",
-        "TON_API_KEY"
-    ]
-    missing_vars = []
-    for var in required_vars:
-        value = os.getenv(var)
-        if not value:
-            missing_vars.append(var)
-            logger.error(f"Отсутствует обязательная переменная окружения: {var}")
-        else:
-            logger.debug(f"Переменная окружения {var} установлена")
-    if missing_vars:
-        raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
-
-def setup_handlers(app: Application):
-    """Register Telegram bot handlers."""
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tonprice", ton_price_command))
-    app.add_handler(CallbackQueryHandler(callback_query_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    app.add_error_handler(error_handler)
-    logger.info("Telegram bot handlers registered")
-
-
-@asynccontextmanager
-async def lifespan(app: web.Application):
-    """Manage application startup and shutdown."""
-    global telegram_app
-    try:
-        # Startup
-        await check_environment()
-        await ensure_db_pool()
-        await init_db()  # Initialize database schema
-        await load_settings()
-
-        # Initialize Telegram bot
-        telegram_app = (
-            ApplicationBuilder()
-            .token(BOT_TOKEN)
-            .concurrent_updates(True)
-            .http_version("1.1")
-            .build()
-        )
-        setup_handlers(telegram_app)  # Register handlers
-        await telegram_app.initialize()
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        await telegram_app.bot.set_webhook(webhook_url)
-        await telegram_app.updater.start_webhook(
-            listen="0.0.0.0",
-            port=8443,
-            url_path="/webhook",
-            webhook_url=webhook_url,
-            cert=None,
-            key=None
-        )
-        logger.info(f"Telegram webhook started at {webhook_url}")
-
-        # Start scheduler
-        scheduler = AsyncIOScheduler(timezone="UTC")
-        scheduler.add_job(heartbeat_check, "interval", seconds=300, args=[telegram_app])
-        scheduler.add_job(check_reminders, "interval", seconds=60)
-        scheduler.add_job(backup_db, "interval", hours=24)
-        scheduler.add_job(update_ton_price, "interval", minutes=30)
-        scheduler.add_job(keep_alive, "interval", minutes=10, args=[telegram_app])
-        scheduler.start()
-        logger.info("Scheduler started")
-
-        yield  # Application runs here
-
-    finally:
-        # Shutdown
-        if 'scheduler' in locals():
-            scheduler.shutdown()
-            logger.info("Scheduler shut down")
-        if telegram_app:
-            await telegram_app.updater.stop()
-            await telegram_app.shutdown()
-            logger.info("Telegram bot shut down")
-        await close_db_pool()
-        logger.info("Application shutdown complete")
-
-async def check_webhook():
-    webhook_info = await telegram_app.bot.get_webhook_info()
-    logger.info(f"Webhook info: {webhook_info}")
-    expected_url = f"{WEBHOOK_URL}/webhook"
-    if webhook_info.url != expected_url:
-        logger.warning(f"Webhook URL mismatch: expected {expected_url}, got {webhook_info.url}")
-        await telegram_app.bot.set_webhook(expected_url)
-        logger.info(f"Webhook reset to {expected_url}")
-        
-async def heartbeat_check(app):
-    """Проверка работоспособности DB и API."""
-    try:
-        # Ensure pool is initialized before proceeding
-        async with (await ensure_db_pool()) as conn:
-            pass  # Just to ensure pool is ready
-        await test_db_connection()
-        await check_webhook()
-        async with aiohttp.ClientSession(timeout=ClientTimeout(total=30)) as session:
-            headers = {"Authorization": f"Bearer {TON_API_KEY}"}
-            try:
-                async with session.get("https://tonapi.io/v2/status", headers=headers) as resp:
-                    if resp.status != 200:
-                        logger.warning(f"TON API health check failed: {resp.status}")
-                        ERRORS.labels(type="api", endpoint="ton_health").inc()
-            except asyncio.exceptions.CancelledError as e:
-                logger.error(f"CancelledError in TON API health check: {e}", exc_info=True)
-                ERRORS.labels(type="cancelled", endpoint="ton_health").inc()
-            except Exception as e:
-                logger.error(f"Ошибка проверки TON API: {e}", exc_info=True)
-                ERRORS.labels(type="api", endpoint="ton_health").inc()
-            if CRYPTOBOT_API_TOKEN:
-                try:
-                    async with session.get(CRYPTOBOT_API_URL + "/getMe", headers={"Crypto-Pay-API-Token": CRYPTOBOT_API_TOKEN}) as resp:
-                        if resp.status != 200:
-                            logger.warning(f"Cryptobot API health check failed: {resp.status}")
-                            ERRORS.labels(type="api", endpoint="cryptobot_health").inc()
-                except asyncio.exceptions.CancelledError as e:
-                    logger.error(f"CancelledError in Cryptobot API health check: {e}", exc_info=True)
-                    ERRORS.labels(type="cancelled", endpoint="cryptobot_health").inc()
-                except Exception as e:
-                    logger.error(f"Ошибка проверки Cryptobot API: {e}", exc_info=True)
-                    ERRORS.labels(type="api", endpoint="cryptobot_health").inc()
-        logger.info("Heartbeat check passed")
-    except Exception as e:
-        logger.error(f"Heartbeat check failed: {e}", exc_info=True)
-        ERRORS.labels(type="heartbeat", endpoint="heartbeat").inc()
-        try:
-            await app.bot.send_message(
-                chat_id=ADMIN_BACKUP_ID,
-                text=f"⚠️ Бот: Проблема с подключением: {str(e)}"
-            )
-        except Exception as notify_error:
-            logger.error(f"Не удалось отправить уведомление об ошибке: {notify_error}")
-
-async def keep_alive(app):
-    """Отправка команды /start для поддержания активности бота."""
-    chat_id = str(TWIN_ACCOUNT_ID)
-    try:
-        await app.bot.send_message(chat_id=chat_id, text="/start")
-        logger.info(f"Sent /start to chat_id={chat_id} to keep bot active")
-    except Exception as e:
-        logger.error(f"Failed to send keep-alive /start to chat_id={chat_id}: {e}")
-        ERRORS.labels(type="telegram_api", endpoint="keep_alive").inc()
-
-async def check_reminders():
-    """Проверка и отправка напоминаний."""
-    try:
-        async with (await ensure_db_pool()) as conn:
-            today = datetime.now(pytz.UTC).date()
-            reminders = await conn.fetch(
-                "SELECT user_id, reminder_type FROM reminders WHERE reminder_date = $1",
-                today
-            )
-            for reminder in reminders:
-                user_id = reminder["user_id"]
-                reminder_type = reminder["reminder_type"]
-                try:
-                    await telegram_app.bot.send_message(
-                        chat_id=user_id,
-                        text=f"📅 Напоминание: Пора обновить базу данных ({reminder_type})!"
-                    )
-                    await conn.execute(
-                        "DELETE FROM reminders WHERE user_id = $1 AND reminder_date = $2 AND reminder_type = $3",
-                        user_id, today, reminder_type
-                    )
-                    await log_analytics(user_id, "send_reminder", {"type": reminder_type})
-                except Exception as e:
-                    logger.error(f"Ошибка отправки напоминания пользователю {user_id}: {e}")
-                    ERRORS.labels(type="telegram_api", endpoint="check_reminders").inc()
-    except Exception as e:
-        logger.error(f"Ошибка проверки напоминаний: {e}", exc_info=True)
-        ERRORS.labels(type="reminder", endpoint="check_reminders").inc()
-
-async def backup_db():
-    """Создание бэкапа базы данных и отправка администратору."""
-    try:
-        async with (await ensure_db_pool()) as conn:
-            users = await conn.fetch("SELECT * FROM users")
-            analytics = await conn.fetch("SELECT * FROM analytics")
-            reminders = await conn.fetch("SELECT * FROM reminders")
-            transactions = await conn.fetch("SELECT * FROM transactions")
-            feedback = await conn.fetch("SELECT * FROM feedback")
-            support_tickets = await conn.fetch("SELECT * FROM support_tickets")
-            backup_data = {
-                "users": [
-                    {
-                        **dict(row),
-                        "referrals": json.loads(row["referrals"]) if row["referrals"] else []
-                    } for row in users
-                ],
-                "analytics": [
-                    {
-                        **dict(row),
-                        "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None,
-                        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                        "data": json.loads(row["data"]) if row["data"] else None
-                    } for row in analytics
-                ],
-                "reminders": [
-                    {
-                        **dict(row),
-                        "reminder_date": row["reminder_date"].isoformat() if row["reminder_date"] else None,
-                        "created_at": row["created_at"].isoformat() if row["created_at"] else None
-                    } for row in reminders
-                ],
-                "transactions": [
-                    {
-                        **dict(row),
-                        "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None
-                    } for row in transactions
-                ],
-                "feedback": [
-                    {
-                        **dict(row),
-                        "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None
-                    } for row in feedback
-                ],
-                "support_tickets": [
-                    {
-                        **dict(row),
-                        "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None
-                    } for row in support_tickets
-                ]
-            }
-            backup_file = f"db_backup_{datetime.now(pytz.UTC).strftime('%Y-%m-%d_%H-%M-%S')}.json"
-            backup_json = json.dumps(backup_data, ensure_ascii=False, indent=2)
-            bio = BytesIO(backup_json.encode('utf-8'))
-            bio.name = backup_file
-            await telegram_app.bot.send_document(
-                chat_id=ADMIN_BACKUP_ID,
-                document=bio,
-                filename=backup_file
-            )
-            logger.info(f"Бэкап отправлен администратору: {backup_file}")
-            return backup_file, backup_data
-    except Exception as e:
-        logger.error(f"Ошибка создания/отправки бэкапа: {e}", exc_info=True)
-        ERRORS.labels(type="backup", endpoint="backup_db").inc()
-        raise
-
-async def broadcast_new_menu():
-    """Рассылка нового меню всем пользователям."""
-    try:
-        async with (await ensure_db_pool()) as conn:
-            users = await conn.fetch("SELECT user_id, username, stars_bought FROM users WHERE is_banned = FALSE")
-            total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
-            for user in users:
-                user_id = user["user_id"]
-                try:
-                    user_stars = user["stars_bought"] or 0
-                    text = await get_text(
-                        "welcome",
-                        username=user["username"] or "User",
-                        stars_bought=user_stars,
-                        total_stars=total_stars
-                    )
-                    text += "\n\n⚠️ Используйте новое меню ниже для корректной работы бота."
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
-                            InlineKeyboardButton("📞 Поддержка и Отзывы", callback_data="support_reviews")
-                        ],
-                        [InlineKeyboardButton("👤 Профиль", callback_data="profile"), InlineKeyboardButton("🤝 Рефералы", callback_data="referrals")],
-                        [InlineKeyboardButton("🛒 Купить звезды", callback_data="buy_stars")],
-                        [InlineKeyboardButton("📜 История транзакций", callback_data=TRANSACTION_HISTORY)],
-                        [InlineKeyboardButton("🏆 Лидеры рефералов", callback_data=REFERRAL_LEADERBOARD)],
-                        [InlineKeyboardButton("📢 Отправить отзыв", callback_data=FEEDBACK)],
-                        [InlineKeyboardButton("🆘 Создать тикет поддержки", callback_data=SUPPORT_TICKET)]
-                    ]
-                    if user_id == 6956377285:
-                        keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    last_message = telegram_app.bot_data.get(f"last_message_{user_id}", {})
-                    if last_message.get("message_id") and last_message.get("chat_id"):
-                        try:
-                            await telegram_app.bot.edit_message_text(
-                                chat_id=last_message["chat_id"],
-                                message_id=last_message["message_id"],
-                                text=text,
-                                reply_markup=reply_markup
-                            )
-                            logger.info(f"Сообщение обновлено для user_id={user_id}, message_id={last_message['message_id']}")
-                        except BadRequest as e:
-                            if "Message to edit not found" in str(e) or "Message is not modified" in str(e):
-                                sent_message = await telegram_app.bot.send_message(
-                                    chat_id=user_id,
-                                    text=text,
-                                    reply_markup=reply_markup
-                                )
-                                telegram_app.bot_data[f"last_message_{user_id}"] = {
-                                    "chat_id": sent_message.chat_id,
-                                    "message_id": sent_message.message_id
-                                }
-                                logger.info(f"Новое сообщение отправлено для user_id={user_id}, message_id={sent_message.message_id}")
-                            else:
-                                logger.error(f"Ошибка редактирования сообщения для user_id={user_id}: {e}")
-                                ERRORS.labels(type="telegram_api", endpoint="broadcast_new_menu").inc()
-                    else:
-                        sent_message = await telegram_app.bot.send_message(
-                            chat_id=user_id,
-                            text=text,
-                            reply_markup=reply_markup
-                        )
-                        telegram_app.bot_data[f"last_message_{user_id}"] = {
-                            "chat_id": sent_message.chat_id,
-                            "message_id": sent_message.message_id
-                        }
-                        logger.info(f"Новое сообщение отправлено для user_id={user_id}, message_id={sent_message.message_id}")
-                    await log_analytics(user_id, "broadcast_new_menu")
-                    await asyncio.sleep(0.05)
-                except TelegramError as e:
-                    logger.error(f"Ошибка отправки нового меню пользователю {user_id}: {e}")
-                    ERRORS.labels(type="telegram_api", endpoint="broadcast_new_menu").inc()
-        logger.info("Рассылка нового меню завершена")
-    except Exception as e:
-        logger.error(f"Ошибка при рассылке нового меню: {e}", exc_info=True)
-        ERRORS.labels(type="broadcast", endpoint="broadcast_new_menu").inc()
-
-async def broadcast_message_to_users(message: str):
-    """Отправка сообщения всем пользователям."""
-    async with (await ensure_db_pool()) as conn:
-        users = await conn.fetch("SELECT user_id FROM users WHERE is_banned = FALSE")
-        success_count = 0
-        failed_count = 0
-        for user in users:
-            try:
-                await telegram_app.bot.send_message(chat_id=user["user_id"], text=message)
-                success_count += 1
-                await asyncio.sleep(0.05)
-            except TelegramError as e:
-                logger.error(f"Ошибка отправки сообщения пользователю {user['user_id']}: {e}")
-                failed_count += 1
-        return success_count, failed_count
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the /start command."""
-    user_id = update.effective_user.id
-    username = update.effective_user.username or str(user_id)
-    referrer_id = None
-    args = context.args
-    REQUESTS.labels(endpoint="start").inc()
-    with RESPONSE_TIME.labels(endpoint="start").time():
-        logger.info(f"Start command received: user_id={user_id}, username={username}, args={args}")
-        async with (await ensure_db_pool()) as conn:
-            user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
-            if not user:
-                if args and args[0].isdigit():
-                    referrer_id = int(args[0])
-                    referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", referrer_id)
-                    if referrer:
-                        referrals = json.loads(referrer["referrals"]) if referrer["referrals"] else []
-                        if user_id not in referrals:
-                            referrals.append(user_id)
-                            await conn.execute(
-                                "UPDATE users SET referrals = $1 WHERE user_id = $2",
-                                json.dumps(referrals), referrer_id
-                            )
-                            logger.info(f"Added referral: user_id={user_id} to referrer_id={referrer_id}")
-                await conn.execute(
-                    "INSERT INTO users (user_id, username, stars_bought, referrals, ref_bonus_ton, is_admin) "
-                    "VALUES ($1, $2, $3, $4, $5, $6)",
-                    user_id, username, 0, json.dumps([]), 0.0, False
-                )
-                logger.info(f"New user registered: user_id={user_id}, username={username}")
-            else:
-                await conn.execute(
-                    "UPDATE users SET username = $1 WHERE user_id = $2",
-                    username, user_id
-                )
-            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-            is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id) or False
-            if is_banned:
-                text = await get_text("user_banned", support_channel=SUPPORT_CHANNEL)
-                await update.message.reply_text(text)
-                context.user_data["state"] = STATES["main_menu"]
-                await log_analytics(user_id, "start_banned", {})
-                return STATES["main_menu"]
-            if tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC) and not is_admin:
-                time_remaining = format_time_remaining(tech_break_info["end_time"])
-                text = await get_text(
-                    "tech_break_active",
-                    end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                    minutes_left=time_remaining,
-                    reason=tech_break_info["reason"]
-                )
-                await update.message.reply_text(text)
-                context.user_data["state"] = STATES["main_menu"]
-                await log_analytics(user_id, "start_tech_break", {})
-                return STATES["main_menu"]
-            total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
-            user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
-            text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
-            keyboard = [
-                [
-                    InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
-                    InlineKeyboardButton("📞 Поддержка и Отзывы", url="https://t.me/CheapStarsShop_support")
-                ],
-                [
-                    InlineKeyboardButton("👤 Профиль", callback_data="profile"),
-                    InlineKeyboardButton("🤝 Рефералы", callback_data="referrals")
-                ],
-                [InlineKeyboardButton("🛒 Купить звезды", callback_data="buy_stars")]
-            ]
-            if is_admin:
-                keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
-            await update.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            context.user_data["state"] = STATES["main_menu"]
-            await log_analytics(user_id, "start", {"referrer_id": referrer_id})
-            return STATES["main_menu"]
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик callback-запросов."""
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
@@ -1253,7 +900,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     await log_analytics(user_id, "callback_banned", {})
                     return STATES["main_menu"]
                 if tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC) and not is_admin:
-                    time_remaining = format_time_remaining(tech_break_info["end_time"])
+                    time_remaining = await format_time_remaining(tech_break_info["end_time"])
                     text = await get_text(
                         "tech_break_active",
                         end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -1620,7 +1267,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or MARKUP_PERCENTAGE
                     ref_bonus_percentage = await conn.fetchval("SELECT value FROM settings WHERE key = 'ref_bonus'") or REFERRAL_BONUS_PERCENTAGE
                     price_usd = (int(stars) / 50) * price_usd * (1 + markup / 100)
-                    # Test mode: simulate successful payment
                     await conn.execute(
                         "UPDATE users SET stars_bought = stars_bought + $1 WHERE user_id = $2",
                         int(stars), user_id
@@ -1957,6 +1603,42 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     await log_analytics(user_id, "back_to_menu", {})
                     return STATES["main_menu"]
 
+                elif data == "ban_user" and is_admin:
+                    await query.message.edit_text(
+                        "Введите ID пользователя для бана:",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
+                            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
+                        ])
+                    )
+                    await query.answer()
+                    context.user_data["state"] = STATES["ban_user"]
+                    await log_analytics(user_id, "start_ban_user", {})
+                    return STATES["ban_user"]
+
+                elif data == "unban_user" and is_admin:
+                    await query.message.edit_text(
+                        "Введите ID пользователя для разбана:",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
+                            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
+                        ])
+                    )
+                    await query.answer()
+                    context.user_data["state"] = STATES["unban_user"]
+                    await log_analytics(user_id, "start_unban_user", {})
+                    return STATES["unban_user"]
+
+                elif data == "tech_break" and is_admin:
+                    await query.message.edit_text(
+                        "Введите длительность технического перерыва (в минутах) и причину (формат: <минуты> <причина>):",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                    )
+                    await query.answer()
+                    context.user_data["state"] = STATES["tech_break"]
+                    await log_analytics(user_id, "start_tech_break", {})
+                    return STATES["tech_break"]
+
                 else:
                     await query.message.edit_text(
                         "Неизвестная команда. Вернитесь в главное меню.",
@@ -1970,173 +1652,86 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         except asyncpg.exceptions.InterfaceError as e:
             logger.error(f"Database pool error in callback_query_handler: {e}", exc_info=True)
             await query.message.edit_text(
-                "Ошибка подключения к базе данных. Попробуйте позже.",
+                "Ошибка базы данных. Попробуйте позже.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
             )
             await query.answer()
             context.user_data["state"] = STATES["main_menu"]
-            await log_analytics(user_id, "callback_error", {"error": str(e)})
+            await log_analytics(user_id, "db_error_callback", {"error": str(e)})
             return STATES["main_menu"]
-
-        except asyncpg.exceptions.InterfaceError as e:
-            logger.error(f"Database pool error in callback_query_handler: {e}", exc_info=True)
+        except TelegramError as e:
+            logger.error(f"Telegram API error in callback_query_handler for user_id={user_id}: {e}", exc_info=True)
+            ERRORS.labels(type="telegram", endpoint="callback_query").inc()
             await query.message.edit_text(
-                "Ошибка подключения к базе данных. Попробуйте позже.",
+                "Ошибка Telegram API. Попробуйте позже.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
             )
             await query.answer()
             context.user_data["state"] = STATES["main_menu"]
-            await log_analytics(user_id, "callback_error", {"error": str(e)})
+            await log_analytics(user_id, "telegram_error_callback", {"error": str(e)})
+            return STATES["main_menu"]
+        except Exception as e:
+            logger.error(f"Unexpected error in callback_query_handler for user_id={user_id}: {e}", exc_info=True)
+            ERRORS.labels(type="unexpected", endpoint="callback_query").inc()
+            await query.message.edit_text(
+                "Произошла ошибка. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            )
+            await query.answer()
+            context.user_data["state"] = STATES["main_menu"]
+            await log_analytics(user_id, "unexpected_error_callback", {"error": str(e)})
             return STATES["main_menu"]
 
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отображение админ-панели."""
     user_id = update.effective_user.id
-    logger.debug(f"Entering show_admin_panel for user_id={user_id}")
-    try:
-        async with (await ensure_db_pool()) as conn:
-            logger.debug(f"Checking admin status for user_id={user_id}")
-            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-            if not is_admin:
-                logger.warning(f"User {user_id} is not an admin, redirecting to main menu")
-                text = "У вас нет доступа к админ-панели."
-                if update.callback_query:
-                    await update.callback_query.message.edit_text(
-                        text,
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                        parse_mode="HTML"
-                    )
-                else:
-                    await update.message.reply_text(
-                        text,
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                        parse_mode="HTML"
-                    )
-                context.user_data["state"] = STATES["main_menu"]
-                await log_analytics(user_id, "admin_panel_access_denied", {})
-                return STATES["main_menu"]
-
-            logger.debug("Fetching reminder date")
-            reminder = await conn.fetchrow("SELECT reminder_date FROM reminders WHERE reminder_type = 'db_update'")
-            reminder_text = reminder["reminder_date"].strftime("%Y-%m-%d") if reminder else "Не установлено"
-            logger.debug(f"Reminder text: {reminder_text}")
-            text = await get_text(
-                "admin_panel",
-                reminder_date=reminder_text
-            )
-            keyboard = [
-                [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
-                [InlineKeyboardButton("📝 Редактировать профиль", callback_data="admin_edit_profile")],
-                [InlineKeyboardButton("📋 Список пользователей", callback_data="all_users")],
-                [InlineKeyboardButton("📬 Рассылка", callback_data="broadcast_message")],
-                [InlineKeyboardButton("⚙️ Настройки бота", callback_data="bot_settings")],
-                [InlineKeyboardButton("📜 История транзакций", callback_data="transaction_history_0")],
-                [
-                    InlineKeyboardButton(f"🔔 Напоминание о БД: {reminder_text}", callback_data="set_db_reminder" if not reminder else "view_db_reminder"),
-                    InlineKeyboardButton("🗑️ Очистить", callback_data="clear_db_reminder")
-                ],
-                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
-            ]
-            logger.debug("Attempting to send/edit message with admin panel")
-            try:
-                if update.callback_query:
-                    await update.callback_query.message.edit_text(
-                        text,
-                        reply_markup=InlineKeyboardMarkup(keyboard),
-                        parse_mode="HTML"
-                    )
-                    await update.callback_query.answer()
-                else:
-                    await update.message.reply_text(
-                        text,
-                        reply_markup=InlineKeyboardMarkup(keyboard),
-                        parse_mode="HTML"
-                    )
-            except BadRequest as e:
-                logger.error(f"Failed to edit message: {e}", exc_info=True)
-                if update.callback_query:
-                    await update.callback_query.message.edit_text(
-                        "Ошибка отображения админ-панели. Попробуйте позже.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                        parse_mode="HTML"
-                    )
-                    await update.callback_query.answer()
-                else:
-                    await update.message.reply_text(
-                        "Ошибка отображения админ-панели. Попробуйте позже.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                        parse_mode="HTML"
-                    )
-                context.user_data["state"] = STATES["main_menu"]
-                await log_analytics(user_id, "admin_panel_message_error", {"error": str(e)})
-                return STATES["main_menu"]
-
-            context.user_data["state"] = STATES["admin_panel"]
-            await log_analytics(user_id, "view_admin_panel", {})
-            logger.debug("Admin panel displayed successfully")
-            return STATES["admin_panel"]
-
-    except asyncpg.exceptions.InterfaceError as e:
-        logger.error(f"Database pool error in show_admin_panel: {e}", exc_info=True)
-        text = "Ошибка подключения к базе данных. Попробуйте позже."
-        if update.callback_query:
-            await update.callback_query.message.edit_text(
-                text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                parse_mode="HTML"
-            )
-            await update.callback_query.answer()
-        else:
-            await update.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                parse_mode="HTML"
-            )
-        context.user_data["state"] = STATES["main_menu"]
-        await log_analytics(user_id, "admin_panel_db_error", {"error": str(e)})
-        return STATES["main_menu"]
-    except Exception as e:
-        logger.error(f"Unexpected error in show_admin_panel: {e}", exc_info=True)
-        text = f"Произошла ошибка: {str(e)}. Попробуйте позже."
-        if update.callback_query:
-            await update.callback_query.message.edit_text(
-                text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                parse_mode="HTML"
-            )
-            await update.callback_query.answer()
-        else:
-            await update.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                parse_mode="HTML"
-            )
-        context.user_data["state"] = STATES["main_menu"]
-        await log_analytics(user_id, "admin_panel_unexpected_error", {"error": str(e)})
-        return STATES["main_menu"]
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    logger.info(f"Received message from user {user_id}: {text}")
-
-    # Check if user is admin
     async with (await ensure_db_pool()) as conn:
-        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+        reminder = await conn.fetchrow("SELECT reminder_date FROM reminders WHERE reminder_type = 'db_update'")
+        reminder_date = reminder["reminder_date"].strftime("%Y-%m-%d") if reminder else "Не установлено"
+        text = await get_text("admin_panel", reminder_date=reminder_date)
+        keyboard = [
+            [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton("📢 Рассылка", callback_data="broadcast_message")],
+            [InlineKeyboardButton("👤 Редактировать профиль", callback_data="admin_edit_profile")],
+            [InlineKeyboardButton("📜 История транзакций", callback_data="transaction_history_0")],
+            [InlineKeyboardButton("🔔 Установить напоминание БД", callback_data="set_db_reminder")],
+            [InlineKeyboardButton("📋 Просмотреть напоминание БД", callback_data="view_db_reminder")],
+            [InlineKeyboardButton("⚙️ Настройки бота", callback_data="bot_settings")],
+            [InlineKeyboardButton("🚫 Забанить пользователя", callback_data="ban_user")],
+            [InlineKeyboardButton("✅ Разбанить пользователя", callback_data="unban_user")],
+            [InlineKeyboardButton("🛠 Технический перерыв", callback_data="tech_break")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
+        ]
+        try:
+            await update.callback_query.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+            await update.callback_query.answer()
+            context.user_data["state"] = STATES["admin_panel"]
+            await log_analytics(user_id, "open_admin_panel", {})
+            return STATES["admin_panel"]
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                raise
 
-    # Handle admin-specific commands
-    if is_admin and text.lower() == "/admin":
-        return await show_admin_panel(update, context)
-    else:
-        # Handle other text messages
-        await update.message.reply_text(
-            "Пожалуйста, используйте команды бота или свяжитесь с поддержкой: @CheapStarsShop_support",
-            parse_mode="HTML"
-        )
-                
+async def calculate_price_ton(stars: int) -> float:
+    async with (await ensure_db_pool()) as conn:
+        price_usd = await conn.fetchval("SELECT value FROM settings WHERE key = 'price_usd'") or PRICE_USD_PER_50
+        markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or MARKUP_PERCENTAGE
+        price_usd = (stars / 50) * price_usd * (1 + markup / 100)
+        ton_price = telegram_app.bot_data.get("ton_price_info", {}).get("price", 0.0)
+        if ton_price == 0.0:
+            await update_ton_price()
+            ton_price = telegram_app.bot_data.get("ton_price_info", {}).get("price", 0.0)
+        if ton_price == 0.0:
+            logger.error("Не удалось получить цену TON для расчета")
+            return 0.0
+        return price_usd / ton_price
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик текстовых сообщений."""
-    global tech_break_info
     user_id = update.effective_user.id
     text = update.message.text.strip()
     state = context.user_data.get("state", STATES["main_menu"])
@@ -2149,218 +1744,115 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id) or False
                 if is_banned:
                     text = await get_text("user_banned", support_channel=SUPPORT_CHANNEL)
-                    await update.message.reply_text(text)
+                    await update.message.reply_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+                    )
                     context.user_data["state"] = STATES["main_menu"]
                     await log_analytics(user_id, "message_banned", {})
                     return STATES["main_menu"]
-                if not is_admin and tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
-                    time_remaining = format_time_remaining(tech_break_info["end_time"])
+                if tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC) and not is_admin:
+                    time_remaining = await format_time_remaining(tech_break_info["end_time"])
                     text = await get_text(
                         "tech_break_active",
                         end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
                         minutes_left=time_remaining,
                         reason=tech_break_info["reason"]
                     )
-                    await update.message.reply_text(text)
+                    await update.message.reply_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+                    )
                     context.user_data["state"] = STATES["main_menu"]
                     await log_analytics(user_id, "message_tech_break", {})
                     return STATES["main_menu"]
 
                 if state == STATES["buy_stars_recipient"]:
-                    recipient = text.strip()
-                    if not recipient.startswith("@"):
-                        recipient = f"@{recipient}"
-                    try:
-                        chat = await telegram_app.bot.get_chat(recipient.lower())
-                        context.user_data["recipient"] = recipient
-                        stars = context.user_data.get("stars_amount", "Не выбрано")
-                        price_ton = await calculate_price_ton(int(stars)) if stars and isinstance(stars, str) and stars.isdigit() else None
-                        price_text = f"~{price_ton:.2f} TON" if price_ton is not None else "Цена"
-                        if not stars or not isinstance(stars, str) or not stars.isdigit():
-                            text = f"Пользователь: {recipient}\nВыберите количество звезд:"
-                            keyboard = [
-                                [
-                                    InlineKeyboardButton("100", callback_data="select_stars_100"),
-                                    InlineKeyboardButton("250", callback_data="select_stars_250"),
-                                    InlineKeyboardButton("500", callback_data="select_stars_500"),
-                                    InlineKeyboardButton("1000", callback_data="select_stars_1000")
-                                ],
-                                [InlineKeyboardButton("Другое", callback_data="select_stars_custom")],
-                                [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
-                            ]
-                            await update.message.reply_text(
-                                text,
-                                reply_markup=InlineKeyboardMarkup(keyboard),
-                                parse_mode="HTML"
-                            )
-                            context.user_data["state"] = STATES["select_stars_menu"]
-                            await log_analytics(user_id, "set_recipient_no_stars", {"recipient": recipient})
-                            return STATES["select_stars_menu"]
-                        reply_text = (
-                            f"Пользователь: {recipient}\n"
-                            f"Количество звезд: {stars}\n"
-                            f"Способ оплаты: TON Wallet"
-                        )
-                        keyboard = [
-                            [InlineKeyboardButton(f"Пользователь: {recipient}", callback_data="select_recipient")],
-                            [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
-                            [
-                                InlineKeyboardButton(price_text, callback_data="show_price"),
-                                InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")
-                            ],
-                            [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
-                        ]
+                    if not text.startswith("@"):
                         await update.message.reply_text(
-                            reply_text,
-                            reply_markup=InlineKeyboardMarkup(keyboard),
-                            parse_mode="HTML"
-                        )
-                        context.user_data["state"] = STATES["buy_stars_payment_method"]
-                        await log_analytics(user_id, "set_recipient", {"recipient": recipient})
-                        return STATES["buy_stars_payment_method"]
-                    except TelegramError as e:
-                        logger.error(f"Failed to get chat for {recipient}: {e}")
-                        username = recipient[1:].lower()
-                        user_exists = await conn.fetchval(
-                            "SELECT 1 FROM users WHERE lower(username) = $1", username
-                        )
-                        if user_exists:
-                            context.user_data["recipient"] = recipient
-                            stars = context.user_data.get("stars_amount", "Не выбрано")
-                            price_ton = await calculate_price_ton(int(stars)) if stars and isinstance(stars, str) and stars.isdigit() else None
-                            price_text = f"~{price_ton:.2f} TON" if price_ton is not None else "Цена"
-                            if not stars or not isinstance(stars, str) or not stars.isdigit():
-                                text = f"Пользователь: {recipient}\nВыберите количество звезд:"
-                                keyboard = [
-                                    [
-                                        InlineKeyboardButton("100", callback_data="select_stars_100"),
-                                        InlineKeyboardButton("250", callback_data="select_stars_250"),
-                                        InlineKeyboardButton("500", callback_data="select_stars_500"),
-                                        InlineKeyboardButton("1000", callback_data="select_stars_1000")
-                                    ],
-                                    [InlineKeyboardButton("Другое", callback_data="select_stars_custom")],
-                                    [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
-                                ]
-                                await update.message.reply_text(
-                                    text,
-                                    reply_markup=InlineKeyboardMarkup(keyboard),
-                                    parse_mode="HTML"
-                                )
-                                context.user_data["state"] = STATES["select_stars_menu"]
-                                await log_analytics(user_id, "set_recipient_no_stars_db", {"recipient": recipient})
-                                return STATES["select_stars_menu"]
-                            reply_text = (
-                                f"Пользователь: {recipient}\n"
-                                f"Количество звезд: {stars}\n"
-                                f"Способ оплаты: TON Wallet"
-                            )
-                            keyboard = [
-                                [InlineKeyboardButton(f"Пользователь: {recipient}", callback_data="select_recipient")],
-                                [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
-                                [
-                                    InlineKeyboardButton(price_text, callback_data="show_price"),
-                                    InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")
-                                ],
-                                [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
-                            ]
-                            await update.message.reply_text(
-                                reply_text,
-                                reply_markup=InlineKeyboardMarkup(keyboard),
-                                parse_mode="HTML"
-                            )
-                            context.user_data["state"] = STATES["buy_stars_payment_method"]
-                            await log_analytics(user_id, "set_recipient_db", {"recipient": recipient})
-                            return STATES["buy_stars_payment_method"]
-                        await update.message.reply_text(
-                            f"Неверное имя пользователя: {recipient}. Введите корректное имя (например, @username).",
+                            "Пожалуйста, введите имя пользователя в формате @username.",
                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]])
                         )
                         return STATES["buy_stars_recipient"]
-
-                elif state == STATES["buy_stars_custom"]:
-                    try:
-                        stars = int(text)
-                        if stars <= 0:
-                            raise ValueError("Количество звезд должно быть положительным")
-                        context.user_data["stars_amount"] = str(stars)
-                        recipient = context.user_data.get("recipient", "Не выбран")
-                        price_ton = await calculate_price_ton(stars)
-                        reply_text = (
-                            f"Пользователь: {recipient}\n"
-                            f"Количество звезд: {stars}\n"
-                            f"Способ оплаты: TON Wallet"
-                        )
-                        keyboard = [
-                            [InlineKeyboardButton(f"Пользователь: {recipient}", callback_data="select_recipient")],
-                            [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
-                            [
-                                InlineKeyboardButton(f"~{price_ton:.2f} TON", callback_data="show_price"),
-                                InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")
-                            ],
-                            [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
-                        ]
-                        await update.message.reply_text(
-                            reply_text,
-                            reply_markup=InlineKeyboardMarkup(keyboard),
-                            parse_mode="HTML"
-                        )
-                        context.user_data["state"] = STATES["buy_stars_payment_method"]
-                        await log_analytics(user_id, "set_custom_stars", {"stars": stars})
-                        return STATES["buy_stars_payment_method"]
-                    except ValueError:
-                        await update.message.reply_text(
-                            "Пожалуйста, введите корректное число звезд (положительное).",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="select_stars_menu")]])
-                        )
-                        context.user_data["state"] = STATES["buy_stars_custom"]
-                        return STATES["buy_stars_custom"]
-
-                elif state == STATES["admin_broadcast"] and is_admin:
-                    context.user_data["broadcast_text"] = text
+                    context.user_data["recipient"] = text
+                    stars = context.user_data.get("stars_amount", "Не выбрано")
+                    price_ton = await calculate_price_ton(int(stars)) if stars and isinstance(stars, str) and stars.isdigit() else None
+                    price_text = f"~{price_ton:.2f} TON" if price_ton is not None else "Цена"
+                    reply_text = (
+                        f"Пользователь: {text}\n"
+                        f"Количество звезд: {stars}\n"
+                        f"Способ оплаты: TON Wallet"
+                    )
                     keyboard = [
-                        [InlineKeyboardButton("✅ Отправить", callback_data="confirm_broadcast")],
-                        [InlineKeyboardButton("❌ Отменить", callback_data="cancel_broadcast")]
+                        [InlineKeyboardButton(f"Пользователь: {text}", callback_data="select_recipient")],
+                        [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
+                        [
+                            InlineKeyboardButton(price_text, callback_data="show_price"),
+                            InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")
+                        ],
+                        [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
                     ]
                     await update.message.reply_text(
-                        f"Подтвердите текст рассылки:\n\n{text}",
+                        reply_text,
                         reply_markup=InlineKeyboardMarkup(keyboard),
                         parse_mode="HTML"
                     )
+                    context.user_data["state"] = STATES["buy_stars_payment_method"]
+                    await log_analytics(user_id, "select_recipient", {"recipient": text})
+                    return STATES["buy_stars_payment_method"]
+
+                elif state == STATES["buy_stars_custom"]:
+                    if not text.isdigit() or int(text) <= 0:
+                        await update.message.reply_text(
+                            "Пожалуйста, введите положительное число звезд.",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="select_stars_menu")]])
+                        )
+                        return STATES["buy_stars_custom"]
+                    stars = text
+                    context.user_data["stars_amount"] = stars
+                    recipient = context.user_data.get("recipient", "Не выбран")
+                    price_ton = await calculate_price_ton(int(stars))
+                    reply_text = (
+                        f"Пользователь: {recipient}\n"
+                        f"Количество звезд: {stars}\n"
+                        f"Способ оплаты: TON Wallet"
+                    )
+                    keyboard = [
+                        [InlineKeyboardButton(f"Пользователь: {recipient}", callback_data="select_recipient")],
+                        [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
+                        [
+                            InlineKeyboardButton(f"~{price_ton:.2f} TON", callback_data="show_price"),
+                            InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")
+                        ],
+                        [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
+                    ]
+                    await update.message.reply_text(
+                        reply_text,
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="HTML"
+                    )
+                    context.user_data["state"] = STATES["buy_stars_payment_method"]
+                    await log_analytics(user_id, "select_stars_custom", {"stars": stars})
+                    return STATES["buy_stars_payment_method"]
+
+                elif state == STATES["admin_broadcast"] and is_admin:
+                    context.user_data["broadcast_text"] = text
+                    await update.message.reply_text(
+                        f"Подтвердите рассылку:\n\n{text}",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_broadcast")],
+                            [InlineKeyboardButton("❌ Отменить", callback_data="cancel_broadcast")]
+                        ]),
+                        parse_mode="HTML"
+                    )
                     context.user_data["state"] = STATES["admin_broadcast"]
-                    await log_analytics(user_id, "set_broadcast_text", {"text": text[:50]})
+                    await log_analytics(user_id, "set_broadcast_text", {})
                     return STATES["admin_broadcast"]
 
                 elif state == STATES["admin_edit_profile"] and is_admin:
                     edit_user_id = context.user_data.get("edit_user_id")
-                    edit_field = context.user_data.get("edit_profile_field")
                     if not edit_user_id:
-                        try:
-                            edit_user_id = int(text)
-                            user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", edit_user_id)
-                            if not user:
-                                await update.message.reply_text(
-                                    "Пользователь не найден. Введите другой ID.",
-                                    reply_markup=InlineKeyboardMarkup([
-                                        [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
-                                        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
-                                    ])
-                                )
-                                return STATES["admin_edit_profile"]
-                            context.user_data["edit_user_id"] = edit_user_id
-                            keyboard = [
-                                [InlineKeyboardButton("Звезды", callback_data="edit_profile_stars")],
-                                [InlineKeyboardButton("Рефералы", callback_data="edit_profile_referrals")],
-                                [InlineKeyboardButton("Реферальный бонус", callback_data="edit_profile_ref_bonus")],
-                                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
-                            ]
-                            await update.message.reply_text(
-                                f"Редактирование профиля ID {edit_user_id}. Выберите поле:",
-                                reply_markup=InlineKeyboardMarkup(keyboard)
-                            )
-                            context.user_data["state"] = STATES["admin_edit_profile"]
-                            await log_analytics(user_id, "select_edit_user", {"edit_user_id": edit_user_id})
-                            return STATES["admin_edit_profile"]
-                        except ValueError:
+                        if not text.isdigit():
                             await update.message.reply_text(
                                 "Пожалуйста, введите корректный ID пользователя.",
                                 reply_markup=InlineKeyboardMarkup([
@@ -2369,109 +1861,236 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 ])
                             )
                             return STATES["admin_edit_profile"]
-                    elif edit_field:
-                        try:
-                            if edit_field == "stars_bought":
-                                stars = int(text)
-                                if stars < 0:
-                                    raise ValueError("Количество звезд не может быть отрицательным.")
-                                await conn.execute(
-                                    "UPDATE users SET stars_bought = $1 WHERE user_id = $2",
-                                    stars, edit_user_id
-                                )
+                        edit_user_id = int(text)
+                        user_exists = await conn.fetchval("SELECT 1 FROM users WHERE user_id = $1", edit_user_id)
+                        if not user_exists:
+                            await update.message.reply_text(
+                                "Пользователь не найден.",
+                                reply_markup=InlineKeyboardMarkup([
+                                    [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
+                                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
+                                ])
+                            )
+                            return STATES["admin_edit_profile"]
+                        context.user_data["edit_user_id"] = edit_user_id
+                        await update.message.reply_text(
+                            f"Редактирование пользователя ID {edit_user_id}. Выберите действие:",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("Изменить звезды", callback_data="edit_profile_stars")],
+                                [InlineKeyboardButton("Изменить рефералов", callback_data="edit_profile_referrals")],
+                                [InlineKeyboardButton("Изменить реф. бонус", callback_data="edit_profile_ref_bonus")],
+                                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
+                            ])
+                        )
+                        await log_analytics(user_id, "select_edit_user", {"edit_user_id": edit_user_id})
+                        return STATES["admin_edit_profile"]
+                    else:
+                        field = context.user_data.get("edit_profile_field")
+                        if field == "stars_bought":
+                            if not text.isdigit() or int(text) < 0:
                                 await update.message.reply_text(
-                                    f"Количество звезд для ID {edit_user_id} обновлено: {stars}.",
+                                    "Пожалуйста, введите неотрицательное число звезд.",
                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                                 )
-                                await log_analytics(user_id, "edit_profile_stars", {"edit_user_id": edit_user_id, "stars": stars})
-                            elif edit_field == "referrals":
-                                referrals = [int(r) for r in text.split(",") if r.strip().isdigit()]
+                                return STATES["admin_edit_profile"]
+                            await conn.execute(
+                                "UPDATE users SET stars_bought = $1 WHERE user_id = $2",
+                                int(text), edit_user_id
+                            )
+                            await update.message.reply_text(
+                                f"Количество звезд для пользователя ID {edit_user_id} обновлено.",
+                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                            )
+                            await log_analytics(user_id, "edit_stars", {"edit_user_id": edit_user_id, "stars": text})
+                        elif field == "referrals":
+                            try:
+                                referrals = [int(x) for x in text.split(",") if x.strip().isdigit()]
                                 await conn.execute(
                                     "UPDATE users SET referrals = $1 WHERE user_id = $2",
                                     json.dumps(referrals), edit_user_id
                                 )
                                 await update.message.reply_text(
-                                    f"Рефералы для ID {edit_user_id} обновлены.",
+                                    f"Рефералы для пользователя ID {edit_user_id} обновлены.",
                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                                 )
-                                await log_analytics(user_id, "edit_profile_referrals", {"edit_user_id": edit_user_id, "referrals": len(referrals)})
-                            elif edit_field == "ref_bonus_ton":
-                                bonus = float(text)
-                                if bonus < 0:
-                                    raise ValueError("Бонус не может быть отрицательным.")
+                                await log_analytics(user_id, "edit_referrals", {"edit_user_id": edit_user_id, "referrals": referrals})
+                            except ValueError:
+                                await update.message.reply_text(
+                                    "Пожалуйста, введите ID рефералов через запятую.",
+                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                                )
+                                return STATES["admin_edit_profile"]
+                        elif field == "ref_bonus_ton":
+                            try:
+                                ref_bonus = float(text)
+                                if ref_bonus < 0:
+                                    raise ValueError("Бонус не может быть отрицательным")
                                 await conn.execute(
                                     "UPDATE users SET ref_bonus_ton = $1 WHERE user_id = $2",
-                                    bonus, edit_user_id
+                                    ref_bonus, edit_user_id
                                 )
                                 await update.message.reply_text(
-                                    f"Реферальный бонус для ID {edit_user_id} обновлен: {bonus} TON.",
+                                    f"Реферальный бонус для пользователя ID {edit_user_id} обновлен.",
                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                                 )
-                                await log_analytics(user_id, "edit_profile_ref_bonus", {"edit_user_id": edit_user_id, "bonus": bonus})
-                            context.user_data.pop("edit_user_id", None)
-                            context.user_data.pop("edit_profile_field", None)
-                            context.user_data["state"] = STATES["admin_panel"]
-                            return await show_admin_panel(update, context)
-                        except ValueError as e:
-                            await update.message.reply_text(
-                                f"Ошибка: {str(e)}. Пожалуйста, введите корректное значение.",
-                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                            )
-                            return STATES["admin_edit_profile"]
-
-                elif state == STATES["bot_settings"] and is_admin:
-                    setting_field = context.user_data.get("setting_field")
-                    if setting_field:
-                        try:
-                            value = float(text)
-                            if value < 0:
-                                raise ValueError("Значение не может быть отрицательным.")
-                            await conn.execute(
-                                "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
-                                setting_field, value
-                            )
-                            await update.message.reply_text(
-                                f"Настройка '{setting_field}' обновлена: {value}.",
-                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                            )
-                            context.user_data.pop("setting_field", None)
-                            context.user_data["state"] = STATES["admin_panel"]
-                            await log_analytics(user_id, f"set_{setting_field}", {"value": value})
-                            return await show_admin_panel(update, context)
-                        except ValueError as e:
-                            await update.message.reply_text(
-                                f"Ошибка: {str(e)}. Введите корректное числовое значение.",
-                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                            )
-                            return STATES["bot_settings"]
+                                await log_analytics(user_id, "edit_ref_bonus", {"edit_user_id": edit_user_id, "ref_bonus": ref_bonus})
+                            except ValueError:
+                                await update.message.reply_text(
+                                    "Пожалуйста, введите корректное число для реферального бонуса.",
+                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                                )
+                                return STATES["admin_edit_profile"]
+                        context.user_data.pop("edit_user_id", None)
+                        context.user_data.pop("edit_profile_field", None)
+                        context.user_data["state"] = STATES["admin_panel"]
+                        return await show_admin_panel(update, context)
 
                 elif state == STATES["set_db_reminder"] and is_admin:
                     try:
                         reminder_date = datetime.strptime(text, "%Y-%m-%d").date()
-                        if reminder_date < datetime.now(pytz.UTC).date():
-                            raise ValueError("Дата напоминания не может быть в прошлом.")
-                        await conn.execute("DELETE FROM reminders WHERE reminder_type = 'db_update'")
-                        await conn.execute(
-                            "INSERT INTO reminders (user_id, reminder_date, reminder_type) VALUES ($1, $2, $3)",
-                            user_id, reminder_date, "db_update"
+                        existing_reminder = await conn.fetchval(
+                            "SELECT 1 FROM reminders WHERE reminder_type = 'db_update'"
                         )
-                        text = await get_text("reminder_set", reminder_date=reminder_date)
+                        if existing_reminder:
+                            existing_date = await conn.fetchval(
+                                "SELECT reminder_date FROM reminders WHERE reminder_type = 'db_update'"
+                            )
+                            await update.message.reply_text(
+                                await get_text("db_reminder_exists", reminder_date=existing_date.strftime("%Y-%m-%d")),
+                                reply_markup=InlineKeyboardMarkup([
+                                    [InlineKeyboardButton("🗑️ Очистить", callback_data="clear_db_reminder")],
+                                    [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
+                                ])
+                            )
+                            return STATES["set_db_reminder"]
+                        await conn.execute(
+                            "INSERT INTO reminders (user_id, reminder_date, reminder_type, created_at) "
+                            "VALUES ($1, $2, $3, $4)",
+                            user_id, reminder_date, "db_update", datetime.now(pytz.UTC)
+                        )
                         await update.message.reply_text(
-                            text,
-                            reply_markup=InlineKeyboardMarkup([
-                                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")],
-                                [InlineKeyboardButton("Изменить дату", callback_data="set_db_reminder")]
-                            ])
+                            await get_text("reminder_set", reminder_date=reminder_date.strftime("%Y-%m-%d")),
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                         )
                         context.user_data["state"] = STATES["admin_panel"]
-                        await log_analytics(user_id, "set_db_reminder", {"reminder_date": str(reminder_date)})
+                        await log_analytics(user_id, "set_db_reminder", {"reminder_date": text})
                         return await show_admin_panel(update, context)
-                    except ValueError as e:
+                    except ValueError:
                         await update.message.reply_text(
-                            f"Ошибка: {str(e)}. Введите дату в формате гггг-мм-дд.",
+                            "Пожалуйста, введите дату в формате гггг-мм-дд.",
                             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                         )
                         return STATES["set_db_reminder"]
+
+                elif state == STATES["bot_settings"] and is_admin:
+                    setting_field = context.user_data.get("setting_field")
+                    try:
+                        value = float(text)
+                        if value < 0:
+                            raise ValueError("Значение не может быть отрицательным")
+                        await conn.execute(
+                            "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
+                            setting_field, value
+                        )
+                        await update.message.reply_text(
+                            f"{setting_field} обновлено до {value}.",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                        )
+                        context.user_data.pop("setting_field", None)
+                        context.user_data["state"] = STATES["admin_panel"]
+                        await log_analytics(user_id, f"update_{setting_field}", {"value": value})
+                        return await show_admin_panel(update, context)
+                    except ValueError:
+                        await update.message.reply_text(
+                            f"Пожалуйста, введите корректное число для {setting_field}.",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                        )
+                        return STATES["bot_settings"]
+
+                elif state == STATES["ban_user"] and is_admin:
+                    if not text.isdigit():
+                        await update.message.reply_text(
+                            "Пожалуйста, введите корректный ID пользователя.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
+                                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
+                            ])
+                        )
+                        return STATES["ban_user"]
+                    ban_user_id = int(text)
+                    user_exists = await conn.fetchval("SELECT 1 FROM users WHERE user_id = $1", ban_user_id)
+                    if not user_exists:
+                        await update.message.reply_text(
+                            "Пользователь не найден.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
+                                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
+                            ])
+                        )
+                        return STATES["ban_user"]
+                    await conn.execute("UPDATE users SET is_banned = TRUE WHERE user_id = $1", ban_user_id)
+                    await update.message.reply_text(
+                        f"Пользователь ID {ban_user_id} забанен.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                    )
+                    context.user_data["state"] = STATES["admin_panel"]
+                    await log_analytics(user_id, "ban_user", {"ban_user_id": ban_user_id})
+                    return await show_admin_panel(update, context)
+
+                elif state == STATES["unban_user"] and is_admin:
+                    if not text.isdigit():
+                        await update.message.reply_text(
+                            "Пожалуйста, введите корректный ID пользователя.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
+                                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
+                            ])
+                        )
+                        return STATES["unban_user"]
+                    unban_user_id = int(text)
+                    user_exists = await conn.fetchval("SELECT 1 FROM users WHERE user_id = $1", unban_user_id)
+                    if not user_exists:
+                        await update.message.reply_text(
+                            "Пользователь не найден.",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
+                                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
+                            ])
+                        )
+                        return STATES["unban_user"]
+                    await conn.execute("UPDATE users SET is_banned = FALSE WHERE user_id = $1", unban_user_id)
+                    await update.message.reply_text(
+                        f"Пользователь ID {unban_user_id} разбанен.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                    )
+                    context.user_data["state"] = STATES["admin_panel"]
+                    await log_analytics(user_id, "unban_user", {"unban_user_id": unban_user_id})
+                    return await show_admin_panel(update, context)
+
+                elif state == STATES["tech_break"] and is_admin:
+                    try:
+                        minutes, reason = text.split(" ", 1)
+                        minutes = int(minutes)
+                        if minutes <= 0:
+                            raise ValueError("Длительность должна быть положительным числом")
+                        global tech_break_info
+                        tech_break_info = {
+                            "end_time": datetime.now(pytz.UTC) + timedelta(minutes=minutes),
+                            "reason": reason
+                        }
+                        await update.message.reply_text(
+                            f"Технический перерыв установлен до {tech_break_info['end_time'].strftime('%Y-%m-%d %H:%M:%S UTC')}.\nПричина: {reason}",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                        )
+                        context.user_data["state"] = STATES["admin_panel"]
+                        await log_analytics(user_id, "set_tech_break", {"minutes": minutes, "reason": reason})
+                        return await show_admin_panel(update, context)
+                    except ValueError:
+                        await update.message.reply_text(
+                            "Пожалуйста, введите длительность в минутах и причину (формат: <минуты> <причина>).",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
+                        )
+                        return STATES["tech_break"]
 
                 else:
                     total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
@@ -2496,195 +2115,115 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode="HTML"
                     )
                     context.user_data["state"] = STATES["main_menu"]
-                    await log_analytics(user_id, "unknown_message", {"text": text[:50], "state": state})
+                    await log_analytics(user_id, "default_message", {})
                     return STATES["main_menu"]
 
         except asyncpg.exceptions.InterfaceError as e:
             logger.error(f"Database pool error in message_handler: {e}", exc_info=True)
             await update.message.reply_text(
-                "Ошибка подключения к базе данных. Попробуйте позже.",
+                "Ошибка базы данных. Попробуйте позже.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
             )
             context.user_data["state"] = STATES["main_menu"]
-            await log_analytics(user_id, "message_error", {"error": str(e)})
+            await log_analytics(user_id, "db_error_message", {"error": str(e)})
             return STATES["main_menu"]
-                
-async def calculate_price_ton(stars: int) -> float:
-    """Calculate the price in TON for a given number of stars."""
-    if not isinstance(stars, int) or stars <= 0:
-        return 0.0
-    ton_price = telegram_app.bot_data.get("ton_price_info", {}).get("price", 0.0)
-    if ton_price == 0.0:
-        await update_ton_price()
-        ton_price = telegram_app.bot_data.get("ton_price_info", {}).get("price", 1.0)  # Fallback to 1.0 if still 0
-    async with (await ensure_db_pool()) as conn:
-        price_usd = await conn.fetchval("SELECT value FROM settings WHERE key = 'price_usd'") or PRICE_USD_PER_50
-        markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or MARKUP_PERCENTAGE
-    usd_price = (stars / 50) * price_usd * (1 + markup / 100)
-    ton_price = usd_price / ton_price if ton_price > 0 else usd_price
-    return round(ton_price, 2)
-
-async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /tonprice."""
-    global tech_break_info
-    user_id = update.effective_user.id
-    async with (await ensure_db_pool()) as conn:
-        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id)
-        is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id)
-        if is_banned:
-            text = await get_text("user_banned", support_channel=SUPPORT_CHANNEL)
-            await update.message.reply_text(text)
-            context.user_data["state"] = STATES["main_menu"]
-            await log_analytics(user_id, "ton_price_banned", {})
-            return STATES["main_menu"]
-        if not is_admin and tech_break_info and tech_break_info["end_time"] > datetime.now(pytz.UTC):
-            time_remaining = format_time_remaining(tech_break_info["end_time"])
-            text = await get_text(
-                "tech_break_active",
-                end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                minutes_left=time_remaining,
-                reason=tech_break_info["reason"]
+        except TelegramError as e:
+            logger.error(f"Telegram API error in message_handler for user_id={user_id}: {e}", exc_info=True)
+            ERRORS.labels(type="telegram", endpoint="message").inc()
+            await update.message.reply_text(
+                "Ошибка Telegram API. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
             )
-            await update.message.reply_text(text)
             context.user_data["state"] = STATES["main_menu"]
-            await log_analytics(user_id, "ton_price_tech_break", {})
+            await log_analytics(user_id, "telegram_error_message", {"error": str(e)})
             return STATES["main_menu"]
-    
-    REQUESTS.labels(endpoint="tonprice").inc()
-    with RESPONSE_TIME.labels(endpoint="tonprice").time():
-        try:
-            if "ton_price_info" not in telegram_app.bot_data or telegram_app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
-                await update_ton_price()
-            if "ton_price_info" not in telegram_app.bot_data or telegram_app.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
-                await update.message.reply_text("Ошибка получения цены TON. Попробуйте позже.")
-                context.user_data["state"] = STATES["main_menu"]
-                await log_analytics(user_id, "ton_price_error", {})
-                return STATES["main_menu"]
-            price = telegram_app.bot_data["ton_price_info"]["price"]
-            diff_24h = telegram_app.bot_data["ton_price_info"]["diff_24h"]
-            change_text = f"📈 +{diff_24h:.2f}%" if diff_24h >= 0 else f"📉 {diff_24h:.2f}%"
-            text = f"💰 Цена TON: ${price:.2f}\nИзменение за 24ч: {change_text}"
-            await update.message.reply_text(text)
-            context.user_data["state"] = STATES["main_menu"]
-            await log_analytics(user_id, "ton_price", {})
-            logger.info(f"/tonprice выполнен для user_id={user_id}")
         except Exception as e:
-            logger.error(f"Ошибка в /tonprice для user_id={user_id}: {e}", exc_info=True)
-            ERRORS.labels(type="tonprice", endpoint="tonprice").inc()
-            await update.message.reply_text("Ошибка при получении цены TON. Попробуйте позже.")
+            logger.error(f"Unexpected error in message_handler for user_id={user_id}: {e}", exc_info=True)
+            ERRORS.labels(type="unexpected", endpoint="message").inc()
+            await update.message.reply_text(
+                "Произошла ошибка. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            )
             context.user_data["state"] = STATES["main_menu"]
-            await log_analytics(user_id, "ton_price_error", {"error": str(e)})
-        return STATES["main_menu"]
+            await log_analytics(user_id, "unexpected_error_message", {"error": str(e)})
+            return STATES["main_menu"]
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle errors."""
     logger.error(f"Update {update} caused error {context.error}", exc_info=True)
-    ERRORS.labels(type="general", endpoint="error_handler").inc()
-    if update:
+    ERRORS.labels(type="handler", endpoint="error").inc()
+    if update and update.effective_message:
         try:
-            user_id = update.effective_user.id if update.effective_user else 0
-            await log_analytics(user_id, "error", {"error": str(context.error)})
-            if update.message or update.callback_query:
-                await (update.message or update.callback_query.message).reply_text(
-                    "Произошла ошибка. Пожалуйста, попробуйте снова или свяжитесь с поддержкой: @CheapStarsShop_support"
-                )
+            await update.effective_message.reply_text(
+                "Произошла ошибка. Попробуйте позже.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            )
         except Exception as e:
-            logger.error(f"Failed to send error message: {e}")
+            logger.error(f"Failed to send error message: {e}", exc_info=True)
 
-async def startup(app: web.Application):
-    """Initialize application resources before starting."""
+# Aiohttp application setup for webhook and Flask integration
+@asynccontextmanager
+async def lifespan(app: web.Application):
     global telegram_app
     try:
         await check_environment()
         await ensure_db_pool()
-        await init_db()  # Initialize database schema
+        await init_db()
         await load_settings()
 
-        # Initialize Telegram bot
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
-            .concurrent_updates(True)
             .http_version("1.1")
+            .concurrent_updates(True)
             .build()
         )
-        setup_handlers(telegram_app)  # Register handlers
-        await telegram_app.initialize()
-        logger.info("Application startup complete")
-    except Exception as e:
-        logger.error(f"Startup failed: {e}", exc_info=True)
-        raise
+        setup_handlers(telegram_app)
 
-async def shutdown(app: web.Application):
-    """Clean up resources on application shutdown."""
-    global telegram_app
-    try:
-        if telegram_app:
-            await telegram_app.updater.stop()
-            await telegram_app.shutdown()
-            logger.info("Telegram bot shut down")
+        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
+        scheduler.add_job(update_ton_price, "interval", minutes=5, id="update_ton_price", replace_existing=True)
+        scheduler.start()
+        logger.info("Scheduler started for TON price updates")
+
+        yield
+
+        await telegram_app.shutdown()
         await close_db_pool()
-        logger.info("Application shutdown complete")
+        scheduler.shutdown()
+        logger.info("Application shutdown completed")
     except Exception as e:
-        logger.error(f"Shutdown failed: {e}", exc_info=True)
+        logger.error(f"Error during application lifespan: {e}", exc_info=True)
+        raise
 
 async def webhook_handler(request: web.Request):
-    """Handle incoming Telegram webhook updates."""
     try:
         update = await request.json()
-        await telegram_app.update_queue.put(update)
-        return web.Response(status=200)
+        await telegram_app.update_queue.put(Update.de_json(update, telegram_app.bot))
+        return web.json_response({"status": "ok"})
     except Exception as e:
-        logger.error(f"Error in webhook handler: {e}", exc_info=True)
-        return web.Response(status=500)
+        logger.error(f"Webhook error: {e}", exc_info=True)
+        ERRORS.labels(type="webhook", endpoint="webhook").inc()
+        return web.json_response({"status": "error"}, status=500)
 
-async def main():
-    """Main entry point for the application."""
-    loop = asyncio.get_event_loop()
-    asyncio.set_event_loop(loop)  # Ensure consistent event loop
-    runner = None  # Initialize runner to None to avoid UnboundLocalError
+async def health_check(request: web.Request):
+    return web.json_response({"status": "healthy"})
 
-    # Create aiohttp application
+def create_aiohttp_app():
     app = web.Application()
-    wsgi_handler = WSGIHandler(app_flask)
-    
-    # Add routes: Flask WSGI for all paths except /webhook
-    app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
+    app.cleanup_ctx.append(lifespan)
     app.router.add_post("/webhook", webhook_handler)
-    app.router.add_get("/webhook", lambda request: web.Response(status=405, text="Method Not Allowed"))
+    app.router.add_get("/health", health_check)
+    wsgi_handler = WSGIHandler(app_flask)
+    app.router.add_route("*", "/{path:.*}", wsgi_handler.handle_request)
+    return app
 
-    # Set up signal handlers
-    def handle_shutdown():
-        logger.info("Received shutdown signal")
-        asyncio.create_task(shutdown(app))
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, handle_shutdown)
-
-    # Start application
-    try:
-        await startup(app)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(
-            runner,
-            host='0.0.0.0',
-            port=int(os.getenv("PORT", 8443)),
-            ssl_context=None
-        )
-        logger.info(f"Starting aiohttp server on port {int(os.getenv('PORT', 8443))}")
-        await site.start()
-
-        # Keep the application running
-        await asyncio.Event().wait()
-    except Exception as e:
-        logger.error(f"Fatal error in main: {e}", exc_info=True)
-        raise
-    finally:
-        await shutdown(app)
-        if runner is not None:  # Check if runner was initialized
-            await runner.cleanup()
-            logger.info("AppRunner cleaned up")
-
+# Main entry point
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        start_http_server(8000)  # Prometheus metrics
+        logger.info("Prometheus metrics server started on port 8000")
+        webhook_path = urlparse(WEBHOOK_URL).path if WEBHOOK_URL else "/webhook"
+        app = create_aiohttp_app()
+        web.run_app(app, host="0.0.0.0", port=PORT)
+    except Exception as e:
+        logger.error(f"Application startup failed: {e}", exc_info=True)
+        raise
