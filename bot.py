@@ -234,12 +234,16 @@ async def transactions():
         SELECT id, user_id, recipient_username, stars_amount, price_ton, purchase_time, checked_status
         FROM transactions WHERE 1=1
     """
+    count_query = """
+        SELECT COUNT(*) FROM transactions WHERE 1=1
+    """
     params = []
     param_index = 1
 
     if user_id:
         try:
             query += f" AND user_id = ${param_index}"
+            count_query += f" AND user_id = ${param_index}"
             params.append(int(user_id))
             param_index += 1
         except ValueError:
@@ -248,12 +252,14 @@ async def transactions():
 
     if recipient:
         query += f" AND recipient_username ILIKE ${param_index}"
+        count_query += f" AND recipient_username ILIKE ${param_index}"
         params.append(f'%{recipient}%')
         param_index += 1
 
     if start_date:
         try:
             query += f" AND purchase_time >= ${param_index}"
+            count_query += f" AND purchase_time >= ${param_index}"
             params.append(datetime.strptime(start_date, "%Y-%m-%d"))
             param_index += 1
         except ValueError:
@@ -263,6 +269,7 @@ async def transactions():
     if end_date:
         try:
             query += f" AND purchase_time <= ${param_index}"
+            count_query += f" AND purchase_time <= ${param_index}"
             params.append(datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1))
             param_index += 1
         except ValueError:
@@ -272,6 +279,7 @@ async def transactions():
     if min_stars:
         try:
             query += f" AND stars_amount >= ${param_index}"
+            count_query += f" AND stars_amount >= ${param_index}"
             params.append(int(min_stars))
             param_index += 1
         except ValueError:
@@ -281,6 +289,7 @@ async def transactions():
     if max_stars:
         try:
             query += f" AND stars_amount <= ${param_index}"
+            count_query += f" AND stars_amount <= ${param_index}"
             params.append(int(max_stars))
             param_index += 1
         except ValueError:
@@ -293,7 +302,7 @@ async def transactions():
     try:
         async with db_pool.acquire() as conn:
             transactions = await conn.fetch(query, *params)
-            total = await conn.fetchval("SELECT COUNT(*) FROM transactions WHERE 1=1" + query.split("ORDER BY")[0].split("LIMIT")[0], *params[:-2])
+            total = await conn.fetchval(count_query, *params[:-2])
             total_pages = (total + per_page - 1) // per_page
 
             eest = pytz.timezone("Europe/Tallinn")
