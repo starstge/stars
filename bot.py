@@ -497,16 +497,6 @@ async def ensure_db_pool():
                 raise
     return db_pool
         
-import asyncpg
-import logging
-from datetime import datetime
-import pytz
-import json
-
-# Configure logging
-logger = logging.getLogger(__name__)
-
-
 async def init_db():
     """Initialize the database schema and set up default values."""
     try:
@@ -598,11 +588,11 @@ async def init_db():
             await conn.execute(
                 """
                 INSERT INTO users (user_id, username, is_admin, prefix, created_at)
-                VALUES ($1, $2, $3, $4, $5)
+                VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id) DO UPDATE
                 SET is_admin = EXCLUDED.is_admin, prefix = EXCLUDED.prefix
                 """,
-                admin_user_id, "Admin", True, "Verified", datetime.now(timezone.utc)
+                admin_user_id, "Admin", True, "Verified"
             )
             logger.info(f"Admin user {admin_user_id} ensured")
 
