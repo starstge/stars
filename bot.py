@@ -188,8 +188,7 @@ def index():
 
 @app_flask.route('/transactions')
 @login_required
-async def transactions():
-    await ensure_db_pool()
+def transactions():
     page = int(request.args.get('page', 1))
     per_page = 10
     user_id = request.args.get('user_id', '')
@@ -207,87 +206,85 @@ async def transactions():
         SELECT COUNT(*) FROM transactions WHERE 1=1
     """
     params = []
-    param_index = 1
 
     if user_id:
         try:
-            query += f" AND user_id = ${param_index}"
-            count_query += f" AND user_id = ${param_index}"
+            query += " AND user_id = %s"
+            count_query += " AND user_id = %s"
             params.append(int(user_id))
-            param_index += 1
         except ValueError:
             flash("User ID must be a number.", "error")
             logger.error(f"Invalid user_id format: {user_id}")
 
     if recipient:
-        query += f" AND recipient_username ILIKE ${param_index}"
-        count_query += f" AND recipient_username ILIKE ${param_index}"
+        query += " AND recipient_username ILIKE %s"
+        count_query += " AND recipient_username ILIKE %s"
         params.append(f'%{recipient}%')
-        param_index += 1
 
     if start_date:
         try:
-            query += f" AND purchase_time >= ${param_index}"
-            count_query += f" AND purchase_time >= ${param_index}"
+            query += " AND purchase_time >= %s"
+            count_query += " AND purchase_time >= %s"
             params.append(datetime.strptime(start_date, "%Y-%m-%d"))
-            param_index += 1
         except ValueError:
             flash("Invalid start date format (yyyy-mm-dd).", "error")
             logger.error(f"Invalid start_date format: {start_date}")
 
     if end_date:
         try:
-            query += f" AND purchase_time <= ${param_index}"
-            count_query += f" AND purchase_time <= ${param_index}"
+            query += " AND purchase_time <= %s"
+            count_query += " AND purchase_time <= %s"
             params.append(datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1))
-            param_index += 1
         except ValueError:
             flash("Invalid end date format (yyyy-mm-dd).", "error")
             logger.error(f"Invalid end_date format: {end_date}")
 
     if min_stars:
         try:
-            query += f" AND stars_amount >= ${param_index}"
-            count_query += f" AND stars_amount >= ${param_index}"
+            query += " AND stars_amount >= %s"
+            count_query += " AND stars_amount >= %s"
             params.append(int(min_stars))
-            param_index += 1
         except ValueError:
             flash("Minimum stars must be a number.", "error")
             logger.error(f"Invalid min_stars format: {min_stars}")
 
     if max_stars:
         try:
-            query += f" AND stars_amount <= ${param_index}"
-            count_query += f" AND stars_amount <= ${param_index}"
+            query += " AND stars_amount <= %s"
+            count_query += " AND stars_amount <= %s"
             params.append(int(max_stars))
-            param_index += 1
         except ValueError:
             flash("Maximum stars must be a number.", "error")
             logger.error(f"Invalid max_stars format: {max_stars}")
 
-    query += f" ORDER BY purchase_time DESC LIMIT ${param_index} OFFSET ${param_index + 1}"
+    query += " ORDER BY purchase_time DESC LIMIT %s OFFSET %s"
     params.extend([per_page, (page - 1) * per_page])
 
     for attempt in range(3):
         try:
-            async with db_pool.acquire() as conn:
-                transactions = await conn.fetch(query, *params)
-                total = await conn.fetchval(count_query, *params[:-2])
-                total_pages = (total + per_page - 1) // per_page
+            conn = psycopg2.connect(POSTGRES_URL)
+            cur = conn.cursor()
+            cur.execute(query, params)
+            transactions = cur.fetchall()
+            cur.execute(count_query, params[:-2])
+            total = cur.fetchone()[0]
+            cur.close()
+            conn.close()
 
-                eest = pytz.timezone("Europe/Tallinn")
-                transactions = [
-                    {
-                        "id": t["id"],
-                        "user_id": t["user_id"],
-                        "recipient_username": t["recipient_username"],
-                        "stars_amount": t["stars_amount"],
-                        "price_ton": t["price_ton"],
-                        "purchase_time": t["purchase_time"].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST"),
-                        "checked_status": t["checked_status"]
-                    }
-                    for t in transactions
-                ]
+            total_pages = (total + per_page - 1) // per_page
+            eest = pytz.timezone("Europe/Tallinn")
+            transactions = [
+                {
+                    "id": t[0],
+                    "user_id": t[1],
+                    "recipient_username": t[2],
+                    "stars_amount": t[3],
+                    "price_ton": t[4],
+                    "purchase_time": t[5].astimezone(eest).strftime("%Y-%m-%d %H:%M:%S EEST"),
+                    "checked_status": t[6]
+                }
+                for t in transactions
+            ]
 
             logger.info(f"Displayed {len(transactions)} transactions, page {page} of {total_pages}")
             return render_template(
@@ -302,10 +299,9 @@ async def transactions():
                 max_stars=max_stars,
                 recipient=recipient
             )
-        except (asyncpg.InterfaceError, RuntimeError) as e:
+        except Exception as e:
             logger.error(f"Error loading transactions (attempt {attempt+1}): {e}", exc_info=True)
             if attempt < 2:
-                await asyncio.sleep(1)
                 continue
             flash(f"Error loading transactions: {str(e)}", "error")
             return render_template(
@@ -323,8 +319,7 @@ async def transactions():
 
 @app_flask.route('/users')
 @login_required
-async def users():
-    await ensure_db_pool()
+def users():
     page = int(request.args.get('page', 1))
     per_page = 10
     user_id = request.args.get('user_id', '')
@@ -339,54 +334,55 @@ async def users():
         SELECT COUNT(*) FROM users WHERE 1=1
     """
     params = []
-    param_index = 1
 
     if user_id:
         try:
-            query += f" AND user_id = ${param_index}"
-            count_query += f" AND user_id = ${param_index}"
+            query += " AND user_id = %s"
+            count_query += " AND user_id = %s"
             params.append(int(user_id))
-            param_index += 1
         except ValueError:
             flash("User ID must be a number.", "error")
             logger.error(f"Invalid user_id format: {user_id}")
 
     if username:
-        query += f" AND username ILIKE ${param_index}"
-        count_query += f" AND username ILIKE ${param_index}"
+        query += " AND username ILIKE %s"
+        count_query += " AND username ILIKE %s"
         params.append(f'%{username}%')
-        param_index += 1
 
     if is_admin:
-        query += f" AND is_admin = ${param_index}"
-        count_query += f" AND is_admin = ${param_index}"
+        query += " AND is_admin = %s"
+        count_query += " AND is_admin = %s"
         params.append(is_admin == 'true')
-        param_index += 1
 
-    query += f" ORDER BY created_at DESC LIMIT ${param_index} OFFSET ${param_index + 1}"
+    query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
     params.extend([per_page, (page - 1) * per_page])
 
     for attempt in range(3):
         try:
-            async with db_pool.acquire() as conn:
-                users = await conn.fetch(query, *params)
-                total = await conn.fetchval(count_query, *params[:-2])
-                total_pages = (total + per_page - 1) // per_page
+            conn = psycopg2.connect(POSTGRES_URL)
+            cur = conn.cursor()
+            cur.execute(query, params)
+            users = cur.fetchall()
+            cur.execute(count_query, params[:-2])
+            total = cur.fetchone()[0]
+            cur.close()
+            conn.close()
 
-                users = [
-                    {
-                        "user_id": u["user_id"],
-                        "username": u["username"],
-                        "stars_bought": u["stars_bought"],
-                        "ref_bonus_ton": u["ref_bonus_ton"],
-                        "referrals": json.loads(u["referrals"]) if u["referrals"] else [],
-                        "created_at": u["created_at"].strftime("%Y-%m-%d %H:%M:%S"),
-                        "is_new": u["is_new"],
-                        "is_admin": u["is_admin"],
-                        "prefix": u["prefix"]
-                    }
-                    for u in users
-                ]
+            total_pages = (total + per_page - 1) // per_page
+            users = [
+                {
+                    "user_id": u[0],
+                    "username": u[1],
+                    "stars_bought": u[2],
+                    "ref_bonus_ton": u[3],
+                    "referrals": json.loads(u[4]) if u[4] else [],
+                    "created_at": u[5].strftime("%Y-%m-%d %H:%M:%S"),
+                    "is_new": u[6],
+                    "is_admin": u[7],
+                    "prefix": u[8]
+                }
+                for u in users
+            ]
 
             logger.info(f"Displayed {len(users)} users, page {page} of {total_pages}")
             return render_template(
@@ -398,10 +394,9 @@ async def users():
                 username=username,
                 is_admin=is_admin
             )
-        except (asyncpg.InterfaceError, RuntimeError) as e:
+        except Exception as e:
             logger.error(f"Error loading users (attempt {attempt+1}): {e}", exc_info=True)
             if attempt < 2:
-                await asyncio.sleep(1)
                 continue
             flash(f"Error loading users: {str(e)}", "error")
             return render_template(
@@ -414,9 +409,11 @@ async def users():
                 is_admin=is_admin
             )
 
+from flask import jsonify
+
 @app_flask.route('/update_status', methods=['POST'])
 @login_required
-async def update_status():
+def update_status():
     data = request.get_json()
     type_ = data.get('type')
     field = data.get('field')
@@ -424,25 +421,40 @@ async def update_status():
     value = data.get('value')
 
     try:
-        async with db_pool.acquire() as conn:
-            if type_ == 'user' and field in ['is_admin', 'prefix']:
-                if field == 'prefix' and value not in ['Beginner', 'Newbie', 'Buyer', 'Regular Buyer', 'Verified']:
-                    logger.error(f"Invalid prefix value: {value}")
-                    return web.json_response({'message': 'Invalid prefix value'}, status=400)
-                await conn.execute(f"UPDATE users SET {field} = $1 WHERE user_id = $2", value if field == 'prefix' else value == 'true', int(user_id))
-                logger.info(f"Updated {field} for user_id={user_id} to {value}")
-                return web.json_response({'message': f'{field} updated for user {user_id}'})
-            elif type_ == 'transaction' and field == 'checked_status':
-                await conn.execute("UPDATE transactions SET checked_status = $1 WHERE id = $2", value, int(user_id))
-                logger.info(f"Updated checked_status for transaction_id={user_id} to {value}")
-                return web.json_response({'message': f'Status updated for transaction {user_id}'})
-            else:
-                logger.error(f"Invalid type or field: type={type_}, field={field}")
-                return web.json_response({'message': 'Invalid type or field'}, status=400)
+        conn = psycopg2.connect(POSTGRES_URL)
+        cur = conn.cursor()
+        if type_ == 'user' and field in ['is_admin', 'prefix']:
+            if field == 'prefix' and value not in ['Beginner', 'Newbie', 'Buyer', 'Regular Buyer', 'Verified']:
+                logger.error(f"Invalid prefix value: {value}")
+                cur.close()
+                conn.close()
+                return jsonify({'message': 'Invalid prefix value'}), 400
+            cur.execute(f"UPDATE users SET {field} = %s WHERE user_id = %s",
+                        (value if field == 'prefix' else value == 'true', int(user_id)))
+            conn.commit()
+            logger.info(f"Updated {field} for user_id={user_id} to {value}")
+            cur.close()
+            conn.close()
+            return jsonify({'message': f'{field} updated for user {user_id}'})
+        elif type_ == 'transaction' and field == 'checked_status':
+            cur.execute("UPDATE transactions SET checked_status = %s WHERE id = %s", (value, int(user_id)))
+            conn.commit()
+            logger.info(f"Updated checked_status for transaction_id={user_id} to {value}")
+            cur.close()
+            conn.close()
+            return jsonify({'message': f'Status updated for transaction {user_id}'})
+        else:
+            logger.error(f"Invalid type or field: type={type_}, field={field}")
+            cur.close()
+            conn.close()
+            return jsonify({'message': 'Invalid type or field'}), 400
     except Exception as e:
         logger.error(f"Error updating status: {e}", exc_info=True)
-        return web.json_response({'message': f'Error updating status: {str(e)}'}, status=500)
-
+        if 'cur' in locals():
+            cur.close()
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({'message': f'Error updating status: {str(e)}'}), 500
 # Database initialization
 async def ensure_db_pool():
     global db_pool
