@@ -477,24 +477,25 @@ async def update_status():
         return jsonify({'message': f'Error updating status: {str(e)}'}), 500
         
 async def ensure_db_pool():
-    """Обеспечивает доступ к пулу соединений базы данных."""
+    """Ensure the database connection pool is initialized in the correct event loop."""
     global db_pool
-    async with _db_pool_lock:
+    with _db_pool_lock:  # Thread-safe initialization
         if db_pool is None or db_pool._closed:
             try:
+                # Use the current event loop
                 loop = asyncio.get_running_loop()
                 db_pool = await asyncpg.create_pool(
                     POSTGRES_URL,
-                    min_size=2,  # Increase min_size to handle concurrent requests
-                    max_size=20,  # Increase max_size for better concurrency
+                    min_size=5,  # Increased to handle more concurrent connections
+                    max_size=20,
                     max_inactive_connection_lifetime=300,
-                    loop=loop  # Explicitly pass the current event loop
+                    loop=loop
                 )
                 logger.info("Database pool initialized or reinitialized")
             except Exception as e:
                 logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
                 raise
-        return db_pool
+    return db_pool
         
 import asyncpg
 import logging
@@ -508,9 +509,12 @@ logger = logging.getLogger(__name__)
 async def init_db():
     """Initialize the database schema and set up default values."""
     try:
-        # Ensure database pool is available
         async with (await ensure_db_pool()) as conn:
-            # Create users table
+            # Drop is_banned column if it exists
+            await conn.execute("ALTER TABLE users DROP COLUMN IF EXISTS is_banned")
+            logger.info("Dropped is_banned column if it existed")
+
+            # Create users table with English prefixes
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -520,7 +524,7 @@ async def init_db():
                     referrals JSONB DEFAULT '[]',
                     is_new BOOLEAN DEFAULT TRUE,
                     is_admin BOOLEAN DEFAULT FALSE,
-                    prefix TEXT DEFAULT 'Новичок',
+                    prefix TEXT DEFAULT 'Beginner',
                     referrer_id BIGINT,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 )
@@ -568,18 +572,18 @@ async def init_db():
                 )
             logger.info("Default settings inserted or verified")
 
-            # Set initial prefixes based on stars_bought for existing users
+            # Update prefixes to English based on stars_bought
             await conn.execute("""
                 UPDATE users SET prefix = CASE
-                    WHEN is_admin THEN 'Проверенный'
-                    WHEN stars_bought >= 50000 THEN 'Проверенный'
-                    WHEN stars_bought >= 10000 THEN 'Постоянный Покупатель'
-                    WHEN stars_bought >= 5000 THEN 'Покупатель'
-                    WHEN stars_bought >= 1000 THEN 'Новенький'
-                    ELSE 'Новичок'
+                    WHEN is_admin THEN 'Verified'
+                    WHEN stars_bought >= 50000 THEN 'Verified'
+                    WHEN stars_bought >= 10000 THEN 'Regular Buyer'
+                    WHEN stars_bought >= 5000 THEN 'Buyer'
+                    WHEN stars_bought >= 1000 THEN 'Newbie'
+                    ELSE 'Beginner'
                 END
             """)
-            logger.info("User prefixes updated based on stars_bought")
+            logger.info("User prefixes updated to English based on stars_bought")
 
             # Ensure admin user exists
             admin_user_id = 6956377285  # Replace with your admin user ID
@@ -590,7 +594,7 @@ async def init_db():
                 ON CONFLICT (user_id) DO UPDATE
                 SET is_admin = EXCLUDED.is_admin, prefix = EXCLUDED.prefix
                 """,
-                admin_user_id, "Admin", True, "Проверенный", datetime.now(pytz.UTC)
+                admin_user_id, "Admin", True, "Verified", datetime.now(pytz.UTC)
             )
             logger.info(f"Admin user {admin_user_id} ensured")
 
