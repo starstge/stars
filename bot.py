@@ -2115,28 +2115,6 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await log_analytics(user_id, "admin_panel_unexpected_error", {"error": str(e)})
         return STATES["main_menu"]
 
-async def webhook_handler(request: web.Request) -> web.Response:
-    """Handle incoming Telegram webhook updates."""
-    global telegram_app
-    try:
-        if not telegram_app:
-            logger.error("Telegram application not initialized")
-            return web.Response(status=500, text="Internal Server Error: Telegram app not initialized")
-
-        # Read and parse the webhook request
-        update = await request.json()
-        if not update:
-            logger.warning("Received empty webhook update")
-            return web.Response(status=400, text="Bad Request: Empty update")
-
-        # Process the update using python-telegram-bot
-        await telegram_app.update_queue.put(update)
-        return web.Response(status=200, text="OK")
-
-    except Exception as e:
-        logger.error(f"Error processing webhook update: {e}", exc_info=True)
-        return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
-        
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
@@ -2650,6 +2628,16 @@ async def shutdown(app: web.Application):
     except Exception as e:
         logger.error(f"Shutdown failed: {e}", exc_info=True)
 
+async def webhook_handler(request: web.Request):
+    """Handle incoming Telegram webhook updates."""
+    try:
+        update = await request.json()
+        await telegram_app.update_queue.put(update)
+        return web.Response(status=200)
+    except Exception as e:
+        logger.error(f"Error in webhook handler: {e}", exc_info=True)
+        return web.Response(status=500)
+
 async def main():
     """Main entry point for the application."""
     loop = asyncio.get_event_loop()
@@ -2659,7 +2647,9 @@ async def main():
     # Create aiohttp application
     app = web.Application()
     wsgi_handler = WSGIHandler(app_flask)
-    app.router.add_route('*', '/{path:.*}', wsgi_handler.handle_request)
+    
+    # Add routes: Flask WSGI for all paths except /webhook
+    app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
     app.router.add_post("/webhook", webhook_handler)
     app.router.add_get("/webhook", lambda request: web.Response(status=405, text="Method Not Allowed"))
 
