@@ -496,13 +496,21 @@ async def ensure_db_pool():
                 raise
         return db_pool
         
+import asyncpg
+import logging
+from datetime import datetime
+import pytz
+import json
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
 async def init_db():
-    """Инициализация базы данных."""
+    """Initialize the database schema and set up default values."""
     try:
+        # Ensure database pool is available
         async with (await ensure_db_pool()) as conn:
-            # Drop settings table to ensure correct schema
-            await conn.execute("DROP TABLE IF EXISTS settings")
-            # Create tables
+            # Create users table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -512,78 +520,85 @@ async def init_db():
                     referrals JSONB DEFAULT '[]',
                     is_new BOOLEAN DEFAULT TRUE,
                     is_admin BOOLEAN DEFAULT FALSE,
-                    is_banned BOOLEAN DEFAULT FALSE
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS analytics (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    action TEXT,
-                    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    data JSONB,
-                    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS reminders (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    reminder_date DATE,
-                    reminder_type TEXT,
+                    prefix TEXT DEFAULT 'Новичок',
+                    referrer_id BIGINT,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS mentions (
-                    id SERIAL PRIMARY KEY,
-                    mention_date DATE NOT NULL,
-                    set_by_user_id BIGINT NOT NULL
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    id SERIAL PRIMARY KEY,
-                    key TEXT UNIQUE NOT NULL,
-                    value FLOAT NOT NULL
-                )
-            """)
+            logger.info("Users table created or verified")
+
+            # Create transactions table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS transactions (
                     id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    recipient_username TEXT NOT NULL,
-                    stars_amount INTEGER NOT NULL,
-                    price_ton FLOAT NOT NULL,
-                    purchase_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    invoice_id TEXT,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                    user_id BIGINT REFERENCES users(user_id),
+                    recipient_username TEXT,
+                    stars_amount INTEGER,
+                    price_ton FLOAT,
+                    purchase_time TIMESTAMP WITH TIME ZONE,
+                    checked_status TEXT DEFAULT 'pending',
+                    invoice_id TEXT
                 )
             """)
-            # Initialize default settings
+            logger.info("Transactions table created or verified")
+
+            # Create settings table
             await conn.execute("""
-                INSERT INTO settings (key, value)
-                VALUES ($1, $2), ($3, $4), ($5, $6)
-                ON CONFLICT (key) DO NOTHING
-            """, "price_usd", float(PRICE_USD_PER_50), "markup", float(MARKUP_PERCENTAGE), "ref_bonus", float(REFERRAL_BONUS_PERCENTAGE))
-            # Ensure admin user
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value FLOAT
+                )
+            """)
+            logger.info("Settings table created or verified")
+
+            # Insert default settings if they don't exist
+            default_settings = [
+                ("price_usd", 2.5),  # Default price per 50 stars in USD
+                ("markup", 10.0),    # Default markup percentage
+                ("ref_bonus", 5.0)   # Default referral bonus percentage
+            ]
+            for key, value in default_settings:
+                await conn.execute(
+                    """
+                    INSERT INTO settings (key, value)
+                    VALUES ($1, $2)
+                    ON CONFLICT (key) DO NOTHING
+                    """,
+                    key, value
+                )
+            logger.info("Default settings inserted or verified")
+
+            # Set initial prefixes based on stars_bought for existing users
+            await conn.execute("""
+                UPDATE users SET prefix = CASE
+                    WHEN is_admin THEN 'Проверенный'
+                    WHEN stars_bought >= 50000 THEN 'Проверенный'
+                    WHEN stars_bought >= 10000 THEN 'Постоянный Покупатель'
+                    WHEN stars_bought >= 5000 THEN 'Покупатель'
+                    WHEN stars_bought >= 1000 THEN 'Новенький'
+                    ELSE 'Новичок'
+                END
+            """)
+            logger.info("User prefixes updated based on stars_bought")
+
+            # Ensure admin user exists
+            admin_user_id = 6956377285  # Replace with your admin user ID
             await conn.execute(
-                "INSERT INTO users (user_id, is_admin) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET is_admin = $2",
-                6956377285, True
+                """
+                INSERT INTO users (user_id, username, is_admin, prefix, created_at)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (user_id) DO UPDATE
+                SET is_admin = EXCLUDED.is_admin, prefix = EXCLUDED.prefix
+                """,
+                admin_user_id, "Admin", True, "Проверенный", datetime.now(pytz.UTC)
             )
-            # Drop unused tables
-            await conn.execute("DROP TABLE IF EXISTS feedback")
-            await conn.execute("DROP TABLE IF EXISTS support_tickets")
-            # Fix analytics table if needed
-            columns = await conn.fetch(
-                "SELECT column_name FROM information_schema.columns WHERE table_name = 'analytics'"
-            )
-            column_names = [col['column_name'] for col in columns]
-            if 'details' in column_names and 'data' not in column_names:
-                await conn.execute("ALTER TABLE analytics RENAME COLUMN details TO data")
-        logger.info("База данных инициализирована")
+            logger.info(f"Admin user {admin_user_id} ensured")
+
+    except asyncpg.InterfaceError as e:
+        logger.error(f"Database connection error during initialization: {e}", exc_info=True)
+        raise
     except Exception as e:
-        logger.error(f"Ошибка инициализации базы данных: {e}", exc_info=True)
+        logger.error(f"Error initializing database: {e}", exc_info=True)
         raise
     
 async def close_db_pool():
