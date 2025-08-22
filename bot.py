@@ -2094,11 +2094,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 elif state == STATES["tech_break"] and is_admin:
                     try:
+                        global tech_break_info
                         minutes, reason = text.split(" ", 1)
                         minutes = int(minutes)
                         if minutes <= 0:
                             raise ValueError("Длительность должна быть положительным числом")
-                        global tech_break_info
                         tech_break_info = {
                             "end_time": datetime.now(pytz.UTC) + timedelta(minutes=minutes),
                             "reason": reason
