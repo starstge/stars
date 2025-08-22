@@ -479,14 +479,13 @@ async def update_status():
 async def ensure_db_pool():
     """Ensure the database connection pool is initialized in the correct event loop."""
     global db_pool
-    with _db_pool_lock:  # Thread-safe initialization
+    async with _db_pool_lock:  # Use async context manager
         if db_pool is None or db_pool._closed:
             try:
-                # Use the current event loop
                 loop = asyncio.get_running_loop()
                 db_pool = await asyncpg.create_pool(
                     POSTGRES_URL,
-                    min_size=5,  # Increased to handle more concurrent connections
+                    min_size=5,  # Increased to handle concurrent connections
                     max_size=20,
                     max_inactive_connection_lifetime=300,
                     loop=loop
@@ -495,7 +494,7 @@ async def ensure_db_pool():
             except Exception as e:
                 logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
                 raise
-    return db_pool
+    return db_pool 
         
 import asyncpg
 import logging
