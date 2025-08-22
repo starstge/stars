@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Users</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom background colors for statuses */
+        .status-novichok { background-color: #ffffff; } /* White */
+        .status-novenkiy { background-color: #add8e6; } /* Light Blue */
+        .status-pokupatel { background-color: #90ee90; } /* Light Green */
+        .status-postoyanniy { background-color: #ffd700; } /* Light Orange */
+        .status-proverenniy { background-color: #ffffe0; } /* Light Yellow */
+        .status-table tr td { background-color: inherit !important; }
+    </style>
 </head>
 <body class="bg-gray-100">
     <div class="container mx-auto p-4">
@@ -36,11 +45,14 @@
                     </select>
                 </div>
                 <div>
-                    <label for="is_banned" class="block text-sm font-medium text-gray-700">Ban Status</label>
-                    <select name="is_banned" id="is_banned" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                    <label for="prefix" class="block text-sm font-medium text-gray-700">Prefix</label>
+                    <select name="prefix" id="prefix" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
                         <option value="">All</option>
-                        <option value="true" {% if request.args.get('is_banned') == 'true' %}selected{% endif %}>Banned</option>
-                        <option value="false" {% if request.args.get('is_banned') == 'false' %}selected{% endif %}>Not Banned</option>
+                        <option value="Новичок" {% if request.args.get('prefix') == 'Новичок' %}selected{% endif %}>Новичок</option>
+                        <option value="Новенький" {% if request.args.get('prefix') == 'Новенький' %}selected{% endif %}>Новенький</option>
+                        <option value="Покупатель" {% if request.args.get('prefix') == 'Покупатель' %}selected{% endif %}>Покупатель</option>
+                        <option value="Постоянный Покупатель" {% if request.args.get('prefix') == 'Постоянный Покупатель' %}selected{% endif %}>Постоянный Покупатель</option>
+                        <option value="Проверенный" {% if request.args.get('prefix') == 'Проверенный' %}selected{% endif %}>Проверенный</option>
                     </select>
                 </div>
             </div>
@@ -49,6 +61,17 @@
                 <a href="{{ url_for('users') }}" class="ml-2 text-blue-600 hover:underline">Clear Filters</a>
             </div>
         </form>
+
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="mb-4">
+                    {% for category, message in messages %}
+                        <p class="text-{{ 'red' if category == 'error' else 'green' }}-600">{{ message }}</p>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
 
         <!-- Users Table -->
         <div class="overflow-x-auto">
@@ -63,19 +86,19 @@
                         <th class="py-2 px-4 border-b">Created At</th>
                         <th class="py-2 px-4 border-b">Is New</th>
                         <th class="py-2 px-4 border-b">Is Admin</th>
-                        <th class="py-2 px-4 border-b">Is Banned</th>
+                        <th class="py-2 px-4 border-b">Prefix</th>
                         <th class="py-2 px-4 border-b">Referrer ID</th>
                         <th class="py-2 px-4 border-b">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for user in users %}
-                    <tr>
+                    <tr class="{% if user.is_admin %}status-proverenniy{% elif user.prefix == 'Проверенный' %}status-proverenniy{% elif user.prefix == 'Постоянный Покупатель' %}status-postoyanniy{% elif user.prefix == 'Покупатель' %}status-pokupatel{% elif user.prefix == 'Новенький' %}status-novenkiy{% else %}status-novichok{% endif %}">
                         <td class="py-2 px-4 border-b">{{ user.user_id }}</td>
                         <td class="py-2 px-4 border-b">{{ user.username or 'N/A' }}</td>
                         <td class="py-2 px-4 border-b">{{ user.stars_bought }}</td>
                         <td class="py-2 px-4 border-b">{{ user.ref_bonus_ton }}</td>
-                        <td class="py-2 px-4 border-b">{{ user.referrals }}</td>
+                        <td class="py-2 px-4 border-b">{{ user.referrals | length }}</td>
                         <td class="py-2 px-4 border-b">{{ user.created_at }}</td>
                         <td class="py-2 px-4 border-b">{{ 'Yes' if user.is_new else 'No' }}</td>
                         <td class="py-2 px-4 border-b">
@@ -85,9 +108,12 @@
                             </select>
                         </td>
                         <td class="py-2 px-4 border-b">
-                            <select onchange="updateUserStatus('is_banned', {{ user.user_id }}, this.value)">
-                                <option value="true" {% if user.is_banned %}selected{% endif %}>Banned</option>
-                                <option value="false" {% if not user.is_banned %}selected{% endif %}>Not Banned</option>
+                            <select onchange="updateUserStatus('prefix', {{ user.user_id }}, this.value)">
+                                <option value="Новичок" {% if user.prefix == 'Новичок' %}selected{% endif %}>Новичок</option>
+                                <option value="Новенький" {% if user.prefix == 'Новенький' %}selected{% endif %}>Новенький</option>
+                                <option value="Покупатель" {% if user.prefix == 'Покупатель' %}selected{% endif %}>Покупатель</option>
+                                <option value="Постоянный Покупатель" {% if user.prefix == 'Постоянный Покупатель' %}selected{% endif %}>Постоянный Покупатель</option>
+                                <option value="Проверенный" {% if user.prefix == 'Проверенный' %}selected{% endif %}>Проверенный</option>
                             </select>
                         </td>
                         <td class="py-2 px-4 border-b">{{ user.referrer_id or 'N/A' }}</td>
@@ -103,18 +129,59 @@
         <!-- Pagination -->
         <div class="mt-4 flex justify-between">
             {% if page > 1 %}
-            <a href="{{ url_for('users', page=page-1, user_id=request.args.get('user_id', ''), username=request.args.get('username', ''), is_admin=request.args.get('is_admin', ''), is_banned=request.args.get('is_banned', '')) }}"
+            <a href="{{ url_for('users', page=page-1, user_id=request.args.get('user_id', ''), username=request.args.get('username', ''), is_admin=request.args.get('is_admin', ''), prefix=request.args.get('prefix', '')) }}"
                class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600">Previous</a>
             {% else %}
             <span class="bg-gray-300 text-gray-600 px-4 py-2 rounded-md cursor-not-allowed">Previous</span>
             {% endif %}
             <span>Page {{ page }} of {{ total_pages }}</span>
             {% if page < total_pages %}
-            <a href="{{ url_for('users', page=page+1, user_id=request.args.get('user_id', ''), username=request.args.get('username', ''), is_admin=request.args.get('is_admin', ''), is_banned=request.args.get('is_banned', '')) }}"
+            <a href="{{ url_for('users', page=page+1, user_id=request.args.get('user_id', ''), username=request.args.get('username', ''), is_admin=request.args.get('is_admin', ''), prefix=request.args.get('prefix', '')) }}"
                class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600">Next</a>
             {% else %}
             <span class="bg-gray-300 text-gray-600 px-4 py-2 rounded-md cursor-not-allowed">Next</span>
             {% endif %}
+        </div>
+
+        <!-- Status Table -->
+        <div class="mt-8">
+            <h2 class="text-xl font-bold mb-4">Status Table</h2>
+            <table class="min-w-full bg-white border border-gray-300 status-table">
+                <thead>
+                    <tr class="bg-gray-200">
+                        <th class="py-2 px-4 border-b">Prefix</th>
+                        <th class="py-2 px-4 border-b">Criteria</th>
+                        <th class="py-2 px-4 border-b">Background Color</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr class="status-novichok">
+                        <td class="py-2 px-4 border-b">Новичок</td>
+                        <td class="py-2 px-4 border-b">0 stars</td>
+                        <td class="py-2 px-4 border-b">White</td>
+                    </tr>
+                    <tr class="status-novenkiy">
+                        <td class="py-2 px-4 border-b">Новенький</td>
+                        <td class="py-2 px-4 border-b">≥1000 stars</td>
+                        <td class="py-2 px-4 border-b">Light Blue</td>
+                    </tr>
+                    <tr class="status-pokupatel">
+                        <td class="py-2 px-4 border-b">Покупатель</td>
+                        <td class="py-2 px-4 border-b">≥5000 stars</td>
+                        <td class="py-2 px-4 border-b">Light Green</td>
+                    </tr>
+                    <tr class="status-postoyanniy">
+                        <td class="py-2 px-4 border-b">Постоянный Покупатель</td>
+                        <td class="py-2 px-4 border-b">≥10000 stars</td>
+                        <td class="py-2 px-4 border-b">Light Orange</td>
+                    </tr>
+                    <tr class="status-proverenniy">
+                        <td class="py-2 px-4 border-b">Проверенный</td>
+                        <td class="py-2 px-4 border-b">≥50000 stars or Admin/Tester</td>
+                        <td class="py-2 px-4 border-b">Light Yellow</td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
 
         <!-- Command Generator Modal -->
@@ -132,7 +199,7 @@
                     <select id="commandAction" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
                         <option value="find">Find User</option>
                         <option value="update_admin">Update Admin Status</option>
-                        <option value="update_banned">Update Ban Status</option>
+                        <option value="update_prefix">Update Prefix</option>
                         <option value="update_details">Update User Details</option>
                         <option value="delete">Delete User</option>
                         <option value="sort_users_by_stars">Sort Users by Stars</option>
@@ -149,6 +216,14 @@
                     <input type="number" id="starsBought" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
                     <label for="refBonusTon" class="block text-sm font-medium text-gray-700 mt-2">Ref Bonus TON</label>
                     <input type="number" step="0.01" id="refBonusTon" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                    <label for="prefix" class="block text-sm font-medium text-gray-700 mt-2">Prefix</label>
+                    <select id="prefixField" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                        <option value="Новичок">Новичок</option>
+                        <option value="Новенький">Новенький</option>
+                        <option value="Покупатель">Покупатель</option>
+                        <option value="Постоянный Покупатель">Постоянный Покупатель</option>
+                        <option value="Проверенный">Проверенный</option>
+                    </select>
                 </div>
                 <div class="mb-4">
                     <label for="commandOutput" class="block text-sm font-medium text-gray-700">Generated Command</label>
@@ -190,6 +265,7 @@
             const username = document.getElementById('usernameField')?.value.trim();
             const starsBought = document.getElementById('starsBought')?.value.trim();
             const refBonusTon = document.getElementById('refBonusTon')?.value.trim();
+            const prefix = document.getElementById('prefixField')?.value;
             const output = document.getElementById('commandOutput');
             let command = '';
 
@@ -202,13 +278,13 @@
                 users: {
                     find: 'SELECT * FROM users WHERE user_id = $1;',
                     update_admin: 'UPDATE users SET is_admin = $2 WHERE user_id = $1;',
-                    update_banned: 'UPDATE users SET is_banned = $2 WHERE user_id = $1;',
+                    update_prefix: 'UPDATE users SET prefix = $2 WHERE user_id = $1;',
                     update_details: 'UPDATE users SET {updates} WHERE user_id = $1;',
                     delete: 'DELETE FROM users WHERE user_id = $1;',
-                    sort_users_by_stars: `SELECT u.user_id, u.username, u.is_admin, COALESCE(SUM(t.stars_amount), 0) as total_stars
+                    sort_users_by_stars: `SELECT u.user_id, u.username, u.is_admin, u.prefix, COALESCE(SUM(t.stars_amount), 0) as total_stars
                         FROM users u
                         LEFT JOIN transactions t ON u.user_id = t.user_id
-                        GROUP BY u.user_id, u.username, u.is_admin
+                        GROUP BY u.user_id, u.username, u.is_admin, u.prefix
                         ORDER BY total_stars DESC;`
                 }
             };
@@ -238,6 +314,11 @@
                     params.push(parseFloat(refBonusTon).toFixed(2));
                     paramIndex++;
                 }
+                if (prefix) {
+                    updates.push(`prefix = $${paramIndex}`);
+                    params.push(prefix);
+                    paramIndex++;
+                }
 
                 if (updates.length === 0) {
                     output.textContent = 'Please enter at least one value to update.';
@@ -245,9 +326,15 @@
                 }
 
                 command = queryTemplates[table][action].replace('{updates}', updates.join(', '));
-            } else if (action === 'update_admin' || action === 'update_banned') {
-                const status = action === 'update_admin' ? 'is_admin' : 'is_banned';
-                command = queryTemplates[table][action].replace('$2', `true`); // Example: Set to true
+            } else if (action === 'update_admin') {
+                command = queryTemplates[table][action].replace('$2', `true`);
+            } else if (action === 'update_prefix') {
+                const prefixValue = prompt('Enter prefix (Новичок, Новенький, Покупатель, Постоянный Покупатель, Проверенный):');
+                if (!['Новичок', 'Новенький', 'Покупатель', 'Постоянный Покупатель', 'Проверенный'].includes(prefixValue)) {
+                    output.textContent = 'Invalid prefix value.';
+                    return;
+                }
+                command = queryTemplates[table][action].replace('$2', `'${prefixValue}'`);
             } else {
                 command = queryTemplates[table][action];
             }
@@ -256,14 +343,19 @@
         }
 
         async function updateUserStatus(field, userId, value) {
-            const response = await fetch('/update_status', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type: 'user', field, user_id: userId, value })
-            });
-            const result = await response.json();
-            alert(result.message);
-            if (!response.ok) location.reload();
+            try {
+                const response = await fetch('/update_status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'user', field, user_id: userId, value })
+                });
+                const result = await response.json();
+                alert(result.message);
+                if (!response.ok) location.reload();
+            } catch (error) {
+                alert('Error updating status: ' + error.message);
+                location.reload();
+            }
         }
     </script>
 </body>
