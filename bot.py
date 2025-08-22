@@ -606,7 +606,7 @@ async def init_db():
                 ON CONFLICT (user_id) DO UPDATE
                 SET is_admin = EXCLUDED.is_admin, prefix = EXCLUDED.prefix
                 """,
-                admin_user_id, "Admin", True, "Verified", datetime.now(pytz.UTC)
+                admin_user_id, "Admin", True, "Verified", datetime.now(timezone.utc)
             )
             logger.info(f"Admin user {admin_user_id} ensured")
 
