@@ -2240,7 +2240,6 @@ def create_aiohttp_app():
     app.router.add_route("*", "/{path:.*}", wsgi_handler.handle_request)
     return app
 
-# Main entry point
 if __name__ == "__main__":
     try:
         start_http_server(8000)  # Prometheus metrics
@@ -2248,6 +2247,8 @@ if __name__ == "__main__":
         webhook_path = urlparse(WEBHOOK_URL).path if WEBHOOK_URL else "/webhook"
         app = create_aiohttp_app()
         web.run_app(app, host="0.0.0.0", port=PORT)
+    except KeyboardInterrupt:
+        logger.info("Application shutdown initiated")
     except Exception as e:
         logger.error(f"Application startup failed: {e}", exc_info=True)
         raise
