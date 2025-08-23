@@ -3082,8 +3082,10 @@ async def health_check(request: web.Request) -> web.Response:
 
 async def main():
     app = web.Application()
-    app.router.add_post('/webhook', webhook)  # Маршрут для вебхука Telegram
-    app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)  # Исправленный маршрут для Flask
+    app.router.add_post('/webhook', webhook)
+    app.router.add_get('/', health_check)
+    app.router.add_head('/', health_check)
+    app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
     app.cleanup_ctx.append(lifespan)
     try:
         runner = web.AppRunner(app)
@@ -3095,6 +3097,9 @@ async def main():
         telegram_app = Application.builder().token("YOUR_BOT_TOKEN").build()
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         webhook_url = f"https://stars-ejwz.onrender.com/webhook"
+        # Delete existing webhook to avoid conflicts
+        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+        # Set new webhook
         await telegram_app.bot.set_webhook(webhook_url)
         await asyncio.Event().wait()
     except Exception as e:
