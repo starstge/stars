@@ -3258,5 +3258,6 @@ async def main():
         if 'runner' in locals():
             await runner.cleanup()
 
+# Run the main coroutine
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
