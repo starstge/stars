@@ -560,6 +560,8 @@ async def lifespan(app: web.Application):
         await ensure_db_pool()
         await init_db()
         await load_settings()
+        
+        # Initialize Telegram bot
         telegram_app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
@@ -571,16 +573,22 @@ async def lifespan(app: web.Application):
         await telegram_app.initialize()
         await telegram_app.start()
         logger.info("Telegram application initialized and started")
+        
+        # Set webhook
         webhook_url = f"{WEBHOOK_URL}/webhook"
         await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
         logger.info(f"Telegram webhook set to {webhook_url}")
+        
+        # Start scheduler
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
         scheduler.add_job(update_ton_price, "interval", minutes=5, id="update_ton_price", replace_existing=True, args=[telegram_app])
         scheduler.start()
         logger.info("Scheduler started for TON price updates")
+        
         yield
+        
     except Exception as e:
-        logger.error(f"Ошибка в lifespan: {e}", exc_info=True)
+        logger.error(f"Error in lifespan: {e}", exc_info=True)
         raise
     finally:
         if scheduler is not None:
@@ -588,10 +596,9 @@ async def lifespan(app: web.Application):
             logger.info("Scheduler shut down")
         if telegram_app is not None:
             await telegram_app.stop()
-            await telegram_app.update_queue.join()
             await telegram_app.shutdown()
             logger.info("Telegram application shut down")
-        await close_db_pool()
+        await close_db_pool(telegram_app)  # Pass telegram_app as context
 
 async def init_db():
     try:
@@ -2671,6 +2678,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     await log_analytics(user_id, "callback_error", {"error": str(e)})
     return 0
 
+async def webhook_handler(request):
+    """Handle incoming Telegram webhook updates."""
+    try:
+        update = await request.json()
+        await telegram_app.process_update(Update.de_json(update, telegram_app.bot))
+        return web.Response(status=200)
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}", exc_info=True)
+        return web.Response(status=500)
+
 async def calculate_price_ton(context: ContextTypes.DEFAULT_TYPE, stars: int) -> float:
     try:
         async with (await ensure_db_pool()) as conn:
@@ -3064,87 +3081,39 @@ async def health_check(request: web.Request) -> web.Response:
         return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
 
 async def main():
-    global _db_pool
+    # Create aiohttp application
+    app = web.Application()
+    
+    # Add webhook route
+    app.router.add_post('/webhook', webhook_handler)
+    
+    # Add Flask routes via aiohttp_wsgi
+    wsgi_handler = WSGIHandler(app_flask)
+    app.router.add_route('*', '/{path:.*}', wsgi_handler.handle_request)
+    
+    # Add lifespan handler
+    app.cleanup_ctx.append(lifespan)
+    
+    # Start the server
     try:
-        # Initialize database pool
-        _db_pool = await ensure_db_pool()
-
-        # Flask app for WSGI routes
-        flask_app = Flask(__name__)
-
-        @flask_app.route("/update_status", methods=["POST"])
-        async def update_status():
-            if request.headers.get("Authorization") != API_KEY:
-                return jsonify({"error": "Unauthorized"}), 401
-            data = request.get_json()
-            if not data or "type" not in data or "field" not in data or "user_id" not in data or "value" not in data:
-                return jsonify({"error": "Invalid request"}), 400
-            async with _db_pool.acquire() as conn:
-                if data["type"] == "transaction":
-                    await conn.execute(
-                        "UPDATE transactions SET checked_status = $1 WHERE user_id = $2",
-                        data["value"], data["user_id"]
-                    )
-                elif data["type"] == "user":
-                    await conn.execute(
-                        f"UPDATE users SET {data['field']} = $1 WHERE user_id = $2",
-                        data["value"], data["user_id"]
-                    )
-                else:
-                    return jsonify({"error": "Invalid type"}), 400
-            return jsonify({"status": "success"}), 200
-
-        # aiohttp app
-        app = web.Application()
-        wsgi = WSGIHandler(flask_app)
-        app.router.add_route("POST", "/update_status", wsgi.handle_request)
-        
-        # Fallback route for undefined endpoints
-        async def handle_404(request):
-            return web.json_response({"error": "Not Found"}, status=404)
-        
-        app.router.add_route("*", "/{path:.*}", handle_404)
-
-        # Telegram webhook handler
-        async def webhook(request):
-            try:
-                update = await request.json()
-                await application.update_queue.put(Update.de_json(update, application.bot))
-                return web.json_response({"status": "ok"})
-            except Exception as e:
-                logger.error(f"Webhook error: {e}", exc_info=True)
-                return web.json_response({"error": str(e)}, status=500)
-
-        app.router.add_post("/webhook", webhook)
-
-        # Initialize Telegram bot
-        application = Application.builder().token(BOT_TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CallbackQueryHandler(callback_query_handler))
-
-        # Set webhook
-        webhook_url = f"https://stars-ejwz.onrender.com/webhook"
-        await application.bot.set_webhook(webhook_url)
-        logger.info(f"Webhook set to {webhook_url}")
-
-        # Start aiohttp server
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
         await site.start()
-        logger.info("aiohttp server started")
-
-        # Run application
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
-
+        logger.info(f"aiohttp server started on port {PORT}")
+        
+        # Keep the server running
+        await asyncio.Event().wait()
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
         raise
     finally:
-        if _db_pool is not None and not _db_pool._closed:
-            await _db_pool.close()
-            logger.info("Database pool closed")
+        await runner.cleanup()
 
-# Run the main coroutine
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Application stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
