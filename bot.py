@@ -498,20 +498,24 @@ def update_status():
             conn.close()
         return jsonify({'message': f'Error updating status: {str(e)}'}), 500
 
-async def ensure_db_pool():
-    global db_pool
-    async with _db_pool_lock:
-        if db_pool is None or db_pool._closed:
-            try:
-                database_url = os.getenv("DATABASE_URL")
-                if not database_url:
-                    raise ValueError("DATABASE_URL не установлен")
-                db_pool = await asyncpg.create_pool(database_url, min_size=1, max_size=10)
-                logger.info("Database pool initialized")
-            except Exception as e:
-                logger.error(f"Ошибка при создании пула базы данных: {e}", exc_info=True)
-                raise
-    return db_pool
+_db_pool: Optional[asyncpg.Pool] = None
+async def ensure_db_pool() -> asyncpg.Pool:
+    global _db_pool
+    if _db_pool is None or _db_pool._closed:
+        try:
+            logger.info("Creating new asyncpg connection pool")
+            _db_pool = await asyncpg.create_pool(
+                dsn=os.getenv("POSTGRES_URL"),
+                min_size=1,
+                max_size=10,  # Adjust based on your needs
+                max_queries=50000,
+                max_inactive_connection_lifetime=300
+            )
+            logger.info("Connection pool created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create connection pool: {e}", exc_info=True)
+            raise
+    return _db_pool
 
 async def close_db_pool():
     global db_pool
@@ -3203,37 +3207,55 @@ async def health_check(request: web.Request) -> web.Response:
         logger.error(f"Health check failed: {e}", exc_info=True)
         return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
 
-def main():
-    app = web.Application()
-    app.cleanup_ctx.append(lifespan)
-    app.router.add_post("/webhook", webhook)
-    app.router.add_get("/health", health_check)
-    
-    # Initialize WSGI handler for Flask app
-    wsgi_handler = WSGIHandler(app_flask)
-    
-    # Explicitly define known Flask routes
-    async def flask_handler(request: web.Request) -> web.Response:
-        request.match_info["path_info"] = request.path
-        return await wsgi_handler.handle_request(request)
-    
-    # Add specific routes for Flask app
-    app.router.add_route("*", "/", flask_handler)
-    app.router.add_route("*", "/transactions", flask_handler)
-    app.router.add_route("*", "/users", flask_handler)
-    app.router.add_route("*", "/favicon.ico", flask_handler)
-    app.router.add_route("*", "/update_status", flask_handler)
-    
-    # Fallback for any other paths
-    async def catch_all_handler(request: web.Request) -> web.Response:
-        request.match_info["path_info"] = request.path
-        return await wsgi_handler.handle_request(request)
-    
-    app.router.add_route("*", "/{path:.*}", catch_all_handler)
-    
-    start_http_server(8000)
-    logger.info("Starting web application")
-    web.run_app(app, host="0.0.0.0", port=PORT)
+async def main():
+    try:
+        # Initialize database pool
+        global _db_pool
+        _db_pool = await ensure_db_pool()
+        
+        # Start Prometheus metrics server
+        start_http_server(8000)
+        
+        # Initialize Telegram bot
+        telegram_app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        
+        # Set up aiohttp server with Flask routes
+        aiohttp_app = web.Application()
+        wsgi = WSGIHandler(app_flask)
+        aiohttp_app.router.add_route('*', '/{path:.*}', wsgi.handle_request)
+        
+        runner = web.AppRunner(aiohttp_app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 8080)))
+        await site.start()
+        
+        logger.info("Starting Telegram bot polling")
+        await telegram_app.initialize()
+        await telegram_app.start()
+        await telegram_app.updater.start_polling()
+        
+        # Keep the application running
+        while True:
+            await asyncio.sleep(3600)  # Sleep for an hour
+            
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Shutting down application")
+    except Exception as e:
+        logger.error(f"Error in main: {e}", exc_info=True)
+    finally:
+        # Cleanup
+        if _db_pool is not None and not _db_pool._closed:
+            await _db_pool.close()
+            logger.info("Database pool closed")
+        if 'telegram_app' in locals():
+            await telegram_app.updater.stop()
+            await telegram_app.stop()
+            await telegram_app.shutdown()
+        if 'runner' in locals():
+            await runner.cleanup()
 
 if __name__ == "__main__":
     main()
