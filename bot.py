@@ -3035,6 +3035,17 @@ async def health_check(request: web.Request) -> web.Response:
         logger.error(f"Health check failed: {e}", exc_info=True)
         return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
 
+async def lifespan(app):
+    global telegram_app
+    if telegram_app is None:
+        logger.error("telegram_app is None in lifespan")
+        raise RuntimeError("telegram_app not initialized")
+    logger.info("Initializing telegram_app...")
+    await telegram_app.initialize()
+    yield
+    logger.info("Shutting down telegram_app...")
+    await telegram_app.shutdown()
+
 async def main():
     global telegram_app
     # Initialize telegram_app first
