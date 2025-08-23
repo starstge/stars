@@ -503,26 +503,63 @@ def update_status():
         if 'conn' in locals():
             conn.close()
         return jsonify({'message': f'Error updating status: {str(e)}'}), 500
-# Database initialization
 async def ensure_db_pool():
     global db_pool
-    async with _db_pool_lock:
-        if db_pool is None or db_pool._closed:
-            try:
-                loop = asyncio.get_event_loop()
-                db_pool = await asyncpg.create_pool(
-                    POSTGRES_URL,
-                    min_size=10,
-                    max_size=50,
-                    max_inactive_connection_lifetime=300,
-                    loop=loop
-                )
-                logger.info("Database pool initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
-                raise
+    if db_pool is None or db_pool._closed:
+        try:
+            database_url = os.getenv("DATABASE_URL")
+            if not database_url:
+                raise ValueError("DATABASE_URL не установлен")
+            db_pool = await asyncpg.create_pool(database_url, min_size=1, max_size=10)
+            logger.info("Database pool initialized")
+        except Exception as e:
+            logger.error(f"Ошибка при создании пула базы данных: {e}", exc_info=True)
+            raise
     return db_pool
 
+async def close_db_pool():
+    global db_pool
+    if db_pool is not None and not db_pool._closed:
+        await db_pool.close()
+        logger.info("Database pool closed")
+        db_pool = None
+
+async def lifespan(app: web.Application):
+    global telegram_app
+    try:
+        await check_environment()
+        await ensure_db_pool()  # Инициализация пула
+        await init_db()
+        await load_settings()
+        telegram_app = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .http_version("1.1")
+            .concurrent_updates(True)
+            .build()
+        )
+        setup_handlers(telegram_app)
+        await telegram_app.initialize()
+        await telegram_app.start()
+        logger.info("Telegram application initialized and started")
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
+        logger.info(f"Telegram webhook set to {webhook_url}")
+        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
+        scheduler.add_job(update_ton_price, "interval", minutes=5, id="update_ton_price", replace_existing=True)
+        scheduler.start()
+        logger.info("Scheduler started for TON price updates")
+        yield
+    except Exception as e:
+        logger.error(f"Ошибка в lifespan: {e}", exc_info=True)
+        raise
+    finally:
+        if telegram_app is not None:
+            await telegram_app.shutdown()
+            logger.info("Telegram application shut down")
+        await close_db_pool()  # Закрываем пул только в конце
+        scheduler.shutdown()
+        logger.info("Scheduler shut down")
 async def init_db():
     try:
         async with (await ensure_db_pool()) as conn:
@@ -639,14 +676,6 @@ async def init_db():
         logger.error(f"Error initializing database: {e}", exc_info=True)
         raise
 
-async def close_db_pool():
-    global db_pool
-    async with _db_pool_lock:
-        if db_pool and not db_pool._closed:
-            await db_pool.close()
-            logger.info("Database pool closed")
-            db_pool = None
-
 # Utility functions
 async def get_text(key: str, **kwargs) -> str:
     texts = {
@@ -681,35 +710,71 @@ async def log_analytics(user_id: int, action: str, data: dict = None):
         logger.error(f"Ошибка логирования аналитики: {e}", exc_info=True)
 
 async def update_ton_price():
-    if not TON_API_KEY:
-        logger.error("TON_API_KEY не задан, пропуск обновления цены TON")
-        telegram_app.bot_data["ton_price_info"] = {"price": 0.0, "diff_24h": 0.0}
-        return
     try:
-        headers = {"Authorization": f"Bearer {TON_API_KEY}"}
-        url = "https://tonapi.io/v2/rates?tokens=ton&currencies=usd"
-        logger.debug(f"Запрос к TonAPI: {url}")
+        # Пример: получение цены TON из API (замените на ваш источник данных)
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=10) as response:
-                response.raise_for_status()
+            async with session.get("https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd&include_24hr_change=true") as response:
                 data = await response.json()
-                ton_price = data["rates"]["TON"]["prices"]["USD"]
-                diff_24h = data["rates"]["TON"].get("diff_24h", {}).get("USD", "0.0")
-                try:
-                    diff_24h = diff_24h.replace("−", "-")
-                    diff_24h = float(diff_24h.replace("%", "")) if isinstance(diff_24h, str) else float(diff_24h)
-                except (ValueError, TypeError) as e:
-                    logger.error(f"Некорректный формат diff_24h: {diff_24h}, установка 0.0, ошибка: {e}")
-                    diff_24h = 0.0
-                telegram_app.bot_data["ton_price_info"] = {
-                    "price": ton_price,
-                    "diff_24h": diff_24h
-                }
-                logger.info(f"Цена TON обновлена: ${ton_price:.2f}, изменение за 24ч: {diff_24h:.2f}%")
+                price = data["the-open-network"]["usd"]
+                diff_24h = data["the-open-network"]["usd_24h_change"]
+        
+        # Сохраняем цену в context.bot_data
+        telegram_app.bot_data["ton_price_info"] = {"price": price, "diff_24h": diff_24h}
+        
+        # Сохраняем цену в базе данных (если нужно)
+        async with (await ensure_db_pool()) as conn:
+            await conn.execute(
+                "INSERT INTO ton_price (price, updated_at) VALUES ($1, $2)",
+                price, datetime.now(pytz.UTC)
+            )
+        logger.info(f"Updated TON price: ${price:.2f}, diff_24h: {diff_24h:.2f}%")
     except Exception as e:
-        logger.error(f"Ошибка получения цены TON: {e}", exc_info=True)
-        ERRORS.labels(type="api", endpoint="update_ton_price").inc()
-        telegram_app.bot_data["ton_price_info"] = {"price": 0.0, "diff_24h": 0.0}
+        logger.error(f"Ошибка в update_ton_price: {e}", exc_info=True)
+
+async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    username = update.effective_user.username or str(user_id)
+    logger.info(f"TON price command received: user_id={user_id}, username={username}")
+    try:
+        async with (await ensure_db_pool()) as conn:
+            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+            if context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
+                time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
+                text = await get_text(
+                    "tech_break_active",
+                    end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    minutes_left=time_remaining,
+                    reason=context.bot_data["tech_break_info"]["reason"]
+                )
+                await update.message.reply_text(text)
+                context.user_data["state"] = 0
+                await log_analytics(user_id, "ton_price_tech_break", {})
+                return 0
+            if "ton_price_info" not in context.bot_data or context.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
+                await update_ton_price()  # Убрали аргумент context
+            price = context.bot_data["ton_price_info"]["price"]
+            diff_24h = context.bot_data["ton_price_info"]["diff_24h"]
+            if price == 0.0:
+                await update.message.reply_text("Ошибка получения цены TON. Попробуйте позже.")
+                context.user_data["state"] = 0
+                await log_analytics(user_id, "ton_price_error", {})
+                return 0
+            change_text = f"📈 +{diff_24h:.2f}%" if diff_24h >= 0 else f"📉 {diff_24h:.2f}%"
+            text = f"💰 Цена TON: ${price:.2f}\nИзменение за 24ч: {change_text}"
+            await update.message.reply_text(text)
+            context.user_data["state"] = 0
+            await log_analytics(user_id, "ton_price", {})
+            logger.info(f"/tonprice executed for user_id={user_id}")
+            return 0
+    except Exception as e:
+        logger.error(f"Ошибка в ton_price_command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "Ошибка при получении цены TON. Попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+        )
+        context.user_data["state"] = 0
+        await log_analytics(user_id, "ton_price_error", {"error": str(e)})
+        return 0
 
 async def load_settings():
     global PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE
@@ -844,7 +909,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     username, user_id
                 )
             is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-            if context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
+            if context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(Pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
                 time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
                 text = await get_text(
                     "tech_break_active",
@@ -1114,7 +1179,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             elif data == "buy_stars":
                 recipient = context.user_data.get("recipient", "Не выбран")
                 stars = context.user_data.get("stars_amount", "Не выбрано")
-                price_ton = await calculate_price_ton(int(stars)) if stars and isinstance(stars, str) and stars.isdigit() else None
+                price_ton = await _price_ton(int(stars)) if stars and isinstance(stars, str) and stars.isdigit() else None
                 price_text = f"~{price_ton:.2f} TON" if price_ton is not None else "Цена"
                 text = (
                     f"Пользователь: {recipient}\n"
@@ -1148,7 +1213,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
             elif data == "show_price":
                 stars = context.user_data.get("stars_amount", "Не выбрано")
-                price_ton = await calculate_price_ton(int(stars)) if stars and isinstance(stars, str) and stars.isdigit() else None
+                price_ton = await _price_ton(int(stars)) if stars and isinstance(stars, str) and stars.isdigit() else None
                 price_text = f"~{price_ton:.2f} TON" if price_ton is not None else "Цена не определена"
                 await query.answer(text=price_text, show_alert=True)
                 return context.user_data["state"]
@@ -1196,7 +1261,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 stars = data.split("_")[-1]
                 context.user_data["stars_amount"] = stars
                 recipient = context.user_data.get("recipient", "Не выбран")
-                price_ton = await calculate_price_ton(int(stars))
+                price_ton = await _price_ton(int(stars))
                 text = (
                     f"Пользователь: {recipient}\n"
                     f"Количество звезд: {stars}\n"
@@ -1245,7 +1310,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     price_ton = None
                     price_text = "Цена"
                     if stars and isinstance(stars, str) and stars.isdigit():
-                        price_ton = await calculate_price_ton(int(stars))
+                        price_ton = await _price_ton(int(stars))
                         price_text = f"~{price_ton:.2f} TON"
                     keyboard = [
                         [InlineKeyboardButton(f"Пользователь: {context.user_data.get('recipient', 'Не выбран')}", callback_data="select_recipient")],
@@ -1268,7 +1333,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 price_usd = await conn.fetchval("SELECT value FROM settings WHERE key = 'price_usd'") or 0.81
                 markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or 10.0
                 price_usd = (stars / 50) * price_usd * (1 + markup / 100)
-                price_ton = await calculate_price_ton(stars)
+                price_ton = await _price_ton(stars)
                 payload = await generate_payload(user_id)
                 invoice_id, pay_url = await create_cryptobot_invoice(price_usd, "TON", user_id, stars, recipient, payload)
                 if not pay_url:
@@ -2178,46 +2243,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to send error message: {e}", exc_info=True)
 
-# Aiohttp application setup for webhook and Flask integration
-async def lifespan(app: web.Application):
-    global telegram_app
-    try:
-        await check_environment()
-        await ensure_db_pool()
-        await init_db()
-        await load_settings()
-        telegram_app = (
-            ApplicationBuilder()
-            .token(BOT_TOKEN)
-            .http_version("1.1")
-            .concurrent_updates(True)
-            .build()
-        )
-        setup_handlers(telegram_app)
-        await telegram_app.initialize()
-        await telegram_app.start()
-        logger.info("Telegram application initialized and started")
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
-        logger.info(f"Telegram webhook set to {webhook_url}")
-        # Удаляем polling, так как используем вебхуки
-        # asyncio.create_task(telegram_app.run_polling(drop_pending_updates=True))
-        # logger.info("Telegram application running in polling mode for debugging")
-        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
-        scheduler.add_job(update_ton_price, "interval", minutes=5, id="update_ton_price", replace_existing=True)
-        scheduler.start()
-        logger.info("Scheduler started for TON price updates")
-        yield
-    except Exception as e:
-        logger.error(f"Ошибка в lifespan: {e}", exc_info=True)
-        raise
-    finally:
-        if telegram_app is not None:
-            await telegram_app.shutdown()
-            logger.info("Telegram application shut down")
-        await close_db_pool()
-        scheduler.shutdown()
-        logger.info("Scheduler shut down")
 
 async def webhook_handler(request: web.Request):
     try:
