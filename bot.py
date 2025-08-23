@@ -2199,23 +2199,24 @@ async def lifespan(app: web.Application):
         webhook_url = f"{WEBHOOK_URL}/webhook"
         await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
         logger.info(f"Telegram webhook set to {webhook_url}")
-        # Fallback to polling for debugging
-        asyncio.create_task(telegram_app.run_polling(drop_pending_updates=True))
-        logger.info("Telegram application running in polling mode for debugging")
+        # Удаляем polling, так как используем вебхуки
+        # asyncio.create_task(telegram_app.run_polling(drop_pending_updates=True))
+        # logger.info("Telegram application running in polling mode for debugging")
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
         scheduler.add_job(update_ton_price, "interval", minutes=5, id="update_ton_price", replace_existing=True)
         scheduler.start()
         logger.info("Scheduler started for TON price updates")
         yield
+    except Exception as e:
+        logger.error(f"Ошибка в lifespan: {e}", exc_info=True)
+        raise
+    finally:
         if telegram_app is not None:
             await telegram_app.shutdown()
             logger.info("Telegram application shut down")
         await close_db_pool()
         scheduler.shutdown()
         logger.info("Scheduler shut down")
-    except Exception as e:
-        logger.error(f"Error during application lifespan: {e}", exc_info=True)
-        raise
 
 async def webhook_handler(request: web.Request):
     try:
