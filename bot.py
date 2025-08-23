@@ -734,12 +734,6 @@ async def check_environment():
         raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
 
 def setup_handlers(app: Application):
-    from .tonprice_handler import ton_price_command
-    from .start_handler import start
-    from .callback_query_handler import callback_query_handler
-    from .message_handler import message_handler
-    from .payment_handlers import pre_checkout_callback, successful_payment_callback
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tonprice", ton_price_command))
     app.add_handler(CallbackQueryHandler(callback_query_handler))
