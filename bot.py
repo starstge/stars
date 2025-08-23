@@ -3061,7 +3061,7 @@ async def webhook(request: web.Request) -> web.Response:
         logger.info(f"Webhook received data: {data}")
         update = Update.de_json(data, telegram_app.bot)
         if update:
-            await telegram_app.process_update(update)
+            await telegram_app.process_update(update)  # Error occurs here
             logger.info("Webhook processed successfully")
             return web.json_response({"status": "ok"})
         else:
