@@ -2750,9 +2750,29 @@ def main():
     app.cleanup_ctx.append(lifespan)
     app.router.add_post("/webhook", webhook)
     app.router.add_get("/health", health_check)
-    # Adjusted WSGI handler to avoid path_info KeyError
+    
+    # Initialize WSGI handler for Flask app
     wsgi_handler = WSGIHandler(app_flask)
-    app.router.add_route("*", "/{path:.*}", lambda request: wsgi_handler.handle_request(request))
+    
+    # Explicitly define known Flask routes
+    async def flask_handler(request: web.Request) -> web.Response:
+        # Ensure path_info is set for aiohttp_wsgi
+        request.match_info["path_info"] = request.path
+        return await wsgi_handler.handle_request(request)
+    
+    # Add specific routes for Flask app
+    app.router.add_route("*", "/", flask_handler)
+    app.router.add_route("*", "/transactions", flask_handler)
+    app.router.add_route("*", "/users", flask_handler)
+    app.router.add_route("*", "/favicon.ico", flask_handler)
+    
+    # Fallback for any other paths
+    async def catch_all_handler(request: web.Request) -> web.Response:
+        request.match_info["path_info"] = request.path
+        return await wsgi_handler.handle_request(request)
+    
+    app.router.add_route("*", "/{path:.*}", catch_all_handler)
+    
     start_http_server(8000)
     logger.info("Starting web application")
     web.run_app(app, host="0.0.0.0", port=PORT)
