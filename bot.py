@@ -511,47 +511,38 @@ logger = logging.getLogger(__name__)
 # Global pool variable
 _db_pool: Optional[asyncpg.Pool] = None
 
-async def ensure_db_pool(context: ContextTypes.DEFAULT_TYPE, max_retries: int = 3, retry_delay: float = 1.0) -> asyncpg.Pool:
-    async with _db_pool_lock:
-        pool = context.bot_data.get("db_pool")
-        for attempt in range(max_retries):
-            if pool is None or pool._closed:
-                try:
-                    logger.info(f"Creating new asyncpg connection pool (attempt {attempt + 1}/{max_retries})")
-                    pool = await asyncpg.create_pool(
-                        dsn=os.getenv("POSTGRES_URL"),
-                        min_size=1,
-                        max_size=3,  # Reduced for Render
-                        max_queries=50000,
-                        max_inactive_connection_lifetime=60,  # Reduced to avoid premature closure
-                        timeout=60,  # Increased for stability
-                        command_timeout=60
-                    )
-                    async with pool.acquire() as conn:
-                        await conn.execute("SELECT 1")
-                    logger.info("Connection pool created and validated successfully")
-                    context.bot_data["db_pool"] = pool
-                    return pool
-                except Exception as e:
-                    logger.error(f"Failed to create connection pool (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
-                    if attempt + 1 < max_retries:
-                        await asyncio.sleep(retry_delay)
-                    else:
-                        raise
+async def ensure_db_pool():
+    global _db_pool
+    max_retries = 3
+    retry_delay = 1
+
+    for attempt in range(max_retries):
+        try:
+            if _db_pool is None or _db_pool._closed:
+                logger.info(f"Creating new asyncpg connection pool (attempt {attempt + 1}/{max_retries})")
+                _db_pool = await asyncpg.create_pool(
+                    dsn=POSTGRES_URL,
+                    min_size=1,
+                    max_size=10,
+                    max_inactive_connection_lifetime=300,
+                )
+                # Validate pool
+                async with _db_pool.acquire() as conn:
+                    await conn.execute("SELECT 1")
+                logger.info("Connection pool created and validated successfully")
             else:
-                try:
-                    async with pool.acquire() as conn:
-                        await conn.execute("SELECT 1")
-                    logger.debug("Existing connection pool is valid")
-                    return pool
-                except asyncpg.exceptions._base.InterfaceError as e:
-                    logger.warning(f"Existing pool is invalid: {e}. Recreating pool.")
-                    pool = None
-                    context.bot_data["db_pool"] = None
-                    if attempt + 1 < max_retries:
-                        await asyncio.sleep(retry_delay)
-                    continue
-        raise asyncpg.exceptions._base.InterfaceError("Failed to create or validate connection pool after retries")
+                # Validate existing pool
+                async with _db_pool.acquire() as conn:
+                    await conn.execute("SELECT 1")
+                logger.debug("Existing connection pool is valid")
+            return _db_pool
+        except Exception as e:
+            logger.warning(f"Failed to create/validate pool (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt + 1 < max_retries:
+                await asyncio.sleep(retry_delay)
+                continue
+            logger.error(f"Failed to create pool after {max_retries} attempts: {e}", exc_info=True)
+            raise
 
 async def close_db_pool(context: ContextTypes.DEFAULT_TYPE):
     async with _db_pool_lock:
