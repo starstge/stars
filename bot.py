@@ -3081,28 +3081,38 @@ async def health_check(request: web.Request) -> web.Response:
         return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
 
 async def main():
-    # Create aiohttp application
+    # Создание приложения aiohttp
     app = web.Application()
-    
-    # Add webhook route
-    app.router.add_post('/webhook', webhook_handler)
-    
-    # Add Flask routes via aiohttp_wsgi
+
+    # Добавление маршрута для вебхука
+    app.router.add_post('/webhook', webhook)
+
+    # Добавление маршрутов Flask через aiohttp_wsgi
     wsgi_handler = WSGIHandler(app_flask)
     app.router.add_route('*', '/{path:.*}', wsgi_handler.handle_request)
-    
-    # Add lifespan handler
+
+    # Добавление lifespan-обработчика
     app.cleanup_ctx.append(lifespan)
-    
-    # Start the server
+
+    # Запуск сервера
     try:
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         await site.start()
         logger.info(f"aiohttp server started on port {PORT}")
-        
-        # Keep the server running
+
+        # Инициализация Telegram Application (без run_polling)
+        global telegram_app
+        telegram_app = Application.builder().token("YOUR_BOT_TOKEN").build()
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        # Добавьте другие обработчики, если нужно
+
+        # Установка вебхука
+        webhook_url = f"https://your-domain.com/webhook"  # Замените на ваш домен
+        await telegram_app.bot.set_webhook(webhook_url)
+
+        # Ожидание завершения
         await asyncio.Event().wait()
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
