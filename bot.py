@@ -143,6 +143,53 @@ def get_db_connection():
         logger.error(f"Error connecting to database: {e}")
         raise
 
+async def pre_checkout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    user_id = query.from_user.id
+    logger.info(f"Pre-checkout query received: user_id={user_id}, invoice_payload={query.invoice_payload}")
+    try:
+        # Проверяем payload (пример проверки, замените на вашу логику)
+        payload = query.invoice_payload
+        # Здесь должна быть ваша логика проверки payload, например, проверка подписи
+        await query.answer(ok=True)  # Подтверждаем запрос
+    except Exception as e:
+        logger.error(f"Ошибка в pre_checkout_callback: {e}", exc_info=True)
+        await query.answer(ok=False, error_message="Ошибка обработки платежа")
+    # Логирование аналитики, если функция log_analytics определена
+    try:
+        await log_analytics(user_id, "pre_checkout", {"invoice_payload": query.invoice_payload})
+    except NameError:
+        logger.warning("Функция log_analytics не определена, пропускаем логирование аналитики")
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    payment = update.message.successful_payment
+    logger.info(f"Успешный платеж: user_id={user_id}, invoice_payload={payment.invoice_payload}")
+    try:
+        async with (await ensure_db_pool()) as conn:
+            # Обновляем статус транзакции в базе данных
+            await conn.execute(
+                "UPDATE transactions SET checked_status = $1 WHERE invoice_id = $2",
+                "completed", payment.invoice_payload
+            )
+            await update.message.reply_text(
+                "Платеж успешно обработан! Спасибо за покупку.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            )
+            context.user_data["state"] = STATES["main_menu"]  # Устанавливаем состояние
+            # Логирование аналитики, если функция log_analytics определена
+            try:
+                await log_analytics(user_id, "successful_payment", {"invoice_payload": payment.invoice_payload})
+            except NameError:
+                logger.warning("Функция log_analytics не определена, пропускаем логирование аналитики")
+    except Exception as e:
+        logger.error(f"Ошибка в successful_payment_callback: {e}", exc_info=True)
+        await update.message.reply_text(
+            "Ошибка при обработке платежа. Обратитесь в поддержку.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+        )
+
+
 # Flask routes
 @app_flask.route('/login', methods=['GET', 'POST'])
 def login():
