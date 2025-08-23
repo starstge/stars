@@ -2152,7 +2152,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     minutes = int(minutes)
                     if minutes <= 0:
                         raise ValueError("Minutes must be positive")
-                    global tech_break_info
                     tech_break_info = {
                         "end_time": datetime.now(pytz.UTC) + timedelta(minutes=minutes),
                         "reason": reason
