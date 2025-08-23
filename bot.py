@@ -3064,61 +3064,86 @@ async def health_check(request: web.Request) -> web.Response:
         return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
 
 async def main():
+    global _db_pool
     try:
         # Initialize database pool
-        global _db_pool
         _db_pool = await ensure_db_pool()
+
+        # Flask app for WSGI routes
+        flask_app = Flask(__name__)
+
+        @flask_app.route("/update_status", methods=["POST"])
+        async def update_status():
+            if request.headers.get("Authorization") != API_KEY:
+                return jsonify({"error": "Unauthorized"}), 401
+            data = request.get_json()
+            if not data or "type" not in data or "field" not in data or "user_id" not in data or "value" not in data:
+                return jsonify({"error": "Invalid request"}), 400
+            async with _db_pool.acquire() as conn:
+                if data["type"] == "transaction":
+                    await conn.execute(
+                        "UPDATE transactions SET checked_status = $1 WHERE user_id = $2",
+                        data["value"], data["user_id"]
+                    )
+                elif data["type"] == "user":
+                    await conn.execute(
+                        f"UPDATE users SET {data['field']} = $1 WHERE user_id = $2",
+                        data["value"], data["user_id"]
+                    )
+                else:
+                    return jsonify({"error": "Invalid type"}), 400
+            return jsonify({"status": "success"}), 200
+
+        # aiohttp app
+        app = web.Application()
+        wsgi = WSGIHandler(flask_app)
+        app.router.add_route("POST", "/update_status", wsgi.handle_request)
         
-        # Start Prometheus metrics server
-        start_http_server(8000)
+        # Fallback route for undefined endpoints
+        async def handle_404(request):
+            return web.json_response({"error": "Not Found"}, status=404)
         
-        # Initialize Telegram bot
-        telegram_app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CallbackQueryHandler(callback_query_handler))
-        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-        
-        # Set up aiohttp server with Flask routes
-        aiohttp_app = web.Application()
-        wsgi = WSGIHandler(app_flask)
-        aiohttp_app.router.add_route('*', '/{path:.*}', wsgi.handle_request)
-        
-        runner = web.AppRunner(aiohttp_app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 8080)))
-        await site.start()
-        
-        logger.info("Starting Telegram bot polling")
-        await telegram_app.initialize()
-        await telegram_app.start()
-        await telegram_app.updater.start_polling()
-        
-        # Keep the application running
-        while True:
-            # Periodically validate pool
+        app.router.add_route("*", "/{path:.*}", handle_404)
+
+        # Telegram webhook handler
+        async def webhook(request):
             try:
-                async with (await ensure_db_pool()) as conn:
-                    await conn.execute("SELECT 1")
-                logger.debug("Periodic pool validation successful")
+                update = await request.json()
+                await application.update_queue.put(Update.de_json(update, application.bot))
+                return web.json_response({"status": "ok"})
             except Exception as e:
-                logger.warning(f"Periodic pool validation failed: {e}")
-            await asyncio.sleep(3600)  # Check every hour
-            
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Shutting down application")
+                logger.error(f"Webhook error: {e}", exc_info=True)
+                return web.json_response({"error": str(e)}, status=500)
+
+        app.router.add_post("/webhook", webhook)
+
+        # Initialize Telegram bot
+        application = Application.builder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(callback_query_handler))
+
+        # Set webhook
+        webhook_url = f"https://stars-ejwz.onrender.com/webhook"
+        await application.bot.set_webhook(webhook_url)
+        logger.info(f"Webhook set to {webhook_url}")
+
+        # Start aiohttp server
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
+        await site.start()
+        logger.info("aiohttp server started")
+
+        # Run application
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
+        raise
     finally:
-        # Cleanup
         if _db_pool is not None and not _db_pool._closed:
             await _db_pool.close()
             logger.info("Database pool closed")
-        if 'telegram_app' in locals():
-            await telegram_app.updater.stop()
-            await telegram_app.stop()
-            await telegram_app.shutdown()
-        if 'runner' in locals():
-            await runner.cleanup()
 
 # Run the main coroutine
 if __name__ == "__main__":
