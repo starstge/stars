@@ -3057,10 +3057,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def webhook(request: web.Request) -> web.Response:
     try:
-        update = Update.de_json(await request.json(), telegram_app.bot)
+        data = await request.json()
+        logger.info(f"Webhook received data: {data}")
+        update = Update.de_json(data, telegram_app.bot)
         if update:
             await telegram_app.process_update(update)
-            REQUESTS.labels(endpoint="webhook").inc()
             logger.info("Webhook processed successfully")
             return web.json_response({"status": "ok"})
         else:
@@ -3068,7 +3069,6 @@ async def webhook(request: web.Request) -> web.Response:
             return web.json_response({"status": "invalid update"}, status=400)
     except Exception as e:
         logger.error(f"Ошибка в webhook: {e}", exc_info=True)
-        ERRORS.labels(type="webhook", endpoint="webhook").inc()
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 async def health_check(request: web.Request) -> web.Response:
@@ -3082,25 +3082,29 @@ async def health_check(request: web.Request) -> web.Response:
 
 async def main():
     app = web.Application()
+    # Register specific routes first
     app.router.add_post('/webhook', webhook)
     app.router.add_get('/', health_check)
-    app.router.add_head('/', health_check)
+    # Remove app.router.add_head('/', health_check) to avoid conflict
+    wsgi_handler = WSGIHandler(app_flask)
+    # Catch-all Flask route last
     app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
     app.cleanup_ctx.append(lifespan)
     try:
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 8080)))
         await site.start()
-        logger.info(f"aiohttp server started on port {PORT}")
+        logger.info(f"aiohttp server started on port {os.getenv('PORT', 8080)}")
         global telegram_app
-        telegram_app = Application.builder().token("YOUR_BOT_TOKEN").build()
+        telegram_app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
         webhook_url = f"https://stars-ejwz.onrender.com/webhook"
-        # Delete existing webhook to avoid conflicts
+        logger.info("Deleting existing webhook...")
         await telegram_app.bot.delete_webhook(drop_pending_updates=True)
-        # Set new webhook
+        logger.info(f"Setting webhook to {webhook_url}...")
         await telegram_app.bot.set_webhook(webhook_url)
+        logger.info("Webhook set successfully")
         await asyncio.Event().wait()
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
