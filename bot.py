@@ -552,53 +552,6 @@ async def close_db_pool(context: ContextTypes.DEFAULT_TYPE):
             await pool.close()
             logger.info("Database pool closed")
             context.bot_data["db_pool"] = None
-async def lifespan(app: web.Application):
-    global telegram_app
-    scheduler = None
-    try:
-        await check_environment()
-        await ensure_db_pool()
-        await init_db()
-        await load_settings()
-        
-        # Initialize Telegram bot
-        telegram_app = (
-            ApplicationBuilder()
-            .token(BOT_TOKEN)
-            .http_version("1.1")
-            .concurrent_updates(True)
-            .build()
-        )
-        setup_handlers(telegram_app)
-        await telegram_app.initialize()
-        await telegram_app.start()
-        logger.info("Telegram application initialized and started")
-        
-        # Set webhook
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
-        logger.info(f"Telegram webhook set to {webhook_url}")
-        
-        # Start scheduler
-        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
-        scheduler.add_job(update_ton_price, "interval", minutes=5, id="update_ton_price", replace_existing=True, args=[telegram_app])
-        scheduler.start()
-        logger.info("Scheduler started for TON price updates")
-        
-        yield
-        
-    except Exception as e:
-        logger.error(f"Error in lifespan: {e}", exc_info=True)
-        raise
-    finally:
-        if scheduler is not None:
-            scheduler.shutdown()
-            logger.info("Scheduler shut down")
-        if telegram_app is not None:
-            await telegram_app.stop()
-            await telegram_app.shutdown()
-            logger.info("Telegram application shut down")
-        await close_db_pool(telegram_app)  # Pass telegram_app as context
 
 async def init_db():
     try:
@@ -3057,11 +3010,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def webhook(request: web.Request) -> web.Response:
     try:
+        if telegram_app is None or not telegram_app.initialized:
+            logger.error("telegram_app is not initialized")
+            return web.json_response({"status": "error", "message": "Application not initialized"}, status=500)
         data = await request.json()
         logger.info(f"Webhook received data: {data}")
         update = Update.de_json(data, telegram_app.bot)
         if update:
-            await telegram_app.process_update(update)  # Error occurs here
+            await telegram_app.process_update(update)
             logger.info("Webhook processed successfully")
             return web.json_response({"status": "ok"})
         else:
@@ -3070,7 +3026,6 @@ async def webhook(request: web.Request) -> web.Response:
     except Exception as e:
         logger.error(f"Ошибка в webhook: {e}", exc_info=True)
         return web.json_response({"status": "error", "message": str(e)}, status=500)
-
 async def health_check(request: web.Request) -> web.Response:
     try:
         async with (await ensure_db_pool()) as conn:
@@ -3081,24 +3036,31 @@ async def health_check(request: web.Request) -> web.Response:
         return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
 
 async def main():
+    global telegram_app
+    # Initialize telegram_app first
+    logger.info("Creating telegram_app...")
+    telegram_app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
+    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    logger.info("telegram_app created successfully")
+
     app = web.Application()
-    # Register specific routes first
+    # Register specific routes
     app.router.add_post('/webhook', webhook)
     app.router.add_get('/', health_check)
-    # Remove app.router.add_head('/', health_check) to avoid conflict
+    # Register Flask routes
     wsgi_handler = WSGIHandler(app_flask)
-    # Catch-all Flask route last
     app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
+    # Register lifespan handler
+    logger.info("Registering lifespan handler")
     app.cleanup_ctx.append(lifespan)
+
     try:
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 8080)))
+        port = int(os.getenv("PORT", 8080))
+        site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
-        logger.info(f"aiohttp server started on port {os.getenv('PORT', 8080)}")
-        global telegram_app
-        telegram_app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
-        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+        logger.info(f"aiohttp server started on port {port}")
         webhook_url = f"https://stars-ejwz.onrender.com/webhook"
         logger.info("Deleting existing webhook...")
         await telegram_app.bot.delete_webhook(drop_pending_updates=True)
