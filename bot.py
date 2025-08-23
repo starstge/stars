@@ -807,6 +807,8 @@ async def format_time_remaining(end_time):
         parts.append(f"{minutes} мин.")
     return " ".join(parts) if parts else "менее минуты"
 
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     username = update.effective_user.username or str(user_id)
@@ -814,102 +816,99 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     args = context.args
 
     logger.info(f"Start command received: user_id={user_id}, username={username}, args={args}")
-    async with (await ensure_db_pool()) as conn:
-        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
-        if not user:
-            if args and args[0].isdigit():
-                referrer_id = int(args[0])
-                referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", referrer_id)
-                if referrer:
-                    referrals = json.loads(referrer["referrals"]) if referrer["referrals"] else []
-                    if user_id not in referrals:
-                        referrals.append(user_id)
-                        await conn.execute(
-                            "UPDATE users SET referrals = $1 WHERE user_id = $2",
-                            json.dumps(referrals), referrer_id
-                        )
-                        logger.info(f"Added referral: user_id={user_id} to referrer_id={referrer_id}")
-            await conn.execute(
-                "INSERT INTO users (user_id, username, stars_bought, referrals, ref_bonus_ton, is_admin, is_banned) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                user_id, username, 0, json.dumps([]), 0.0, False, False
+    try:
+        async with (await ensure_db_pool()) as conn:
+            user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+            if not user:
+                if args and args[0].isdigit():
+                    referrer_id = int(args[0])
+                    referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", referrer_id)
+                    if referrer:
+                        referrals = json.loads(referrer["referrals"]) if referrer["referrals"] else []
+                        if user_id not in referrals:
+                            referrals.append(user_id)
+                            await conn.execute(
+                                "UPDATE users SET referrals = $1 WHERE user_id = $2",
+                                json.dumps(referrals), referrer_id
+                            )
+                            logger.info(f"Added referral: user_id={user_id} to referrer_id={referrer_id}")
+                await conn.execute(
+                    "INSERT INTO users (user_id, username, stars_bought, referrals, ref_bonus_ton, is_admin) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    user_id, username, 0, json.dumps([]), 0.0, False
+                )
+                logger.info(f"New user registered: user_id={user_id}, username={username}")
+            else:
+                await conn.execute(
+                    "UPDATE users SET username = $1 WHERE user_id = $2",
+                    username, user_id
+                )
+            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+            if context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
+                time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
+                text = await get_text(
+                    "tech_break_active",
+                    end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    minutes_left=time_remaining,
+                    reason=context.bot_data["tech_break_info"]["reason"]
+                )
+                await update.message.reply_text(text)
+                context.user_data["state"] = 0
+                await log_analytics(user_id, "start_tech_break", {})
+                return 0
+            total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+            user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
+            text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
+            keyboard = [
+                [
+                    InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
+                    InlineKeyboardButton("📞 Поддержка и Отзывы", url="https://t.me/CheapStarsShop_support")
+                ],
+                [
+                    InlineKeyboardButton("👤 Профиль", callback_data="profile"),
+                    InlineKeyboardButton("🤝 Рефералы", callback_data="referrals")
+                ],
+                [InlineKeyboardButton("🛒 Купить звезды", callback_data="buy_stars")]
+            ]
+            if is_admin:
+                keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
+            await update.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
             )
-            logger.info(f"New user registered: user_id={user_id}, username={username}")
-        else:
-            await conn.execute(
-                "UPDATE users SET username = $1 WHERE user_id = $2",
-                username, user_id
-            )
-        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-        is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id) or False
-        if is_banned:
-            text = await get_text("user_banned", support_channel="https://t.me/CheapStarsShop_support")
-            await update.message.reply_text(text)
-            context.user_data["state"] = 0  # STATES["main_menu"]
-            await log_analytics(user_id, "start_banned", {})
-            return 0
-        if context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
-            time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
-            text = await get_text(
-                "tech_break_active",
-                end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                minutes_left=time_remaining,
-                reason=context.bot_data["tech_break_info"]["reason"]
-            )
-            await update.message.reply_text(text)
             context.user_data["state"] = 0
-            await log_analytics(user_id, "start_tech_break", {})
+            await log_analytics(user_id, "start", {"referrer_id": referrer_id})
             return 0
-        total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
-        user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
-        text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
-        keyboard = [
-            [
-                InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
-                InlineKeyboardButton("📞 Поддержка и Отзывы", url="https://t.me/CheapStarsShop_support")
-            ],
-            [
-                InlineKeyboardButton("👤 Профиль", callback_data="profile"),
-                InlineKeyboardButton("🤝 Рефералы", callback_data="referrals")
-            ],
-            [InlineKeyboardButton("🛒 Купить звезды", callback_data="buy_stars")]
-        ]
-        if is_admin:
-            keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
+    except Exception as e:
+        logger.error(f"Ошибка в start: {e}", exc_info=True)
         await update.message.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
+            "Произошла ошибка. Попробуйте снова или обратитесь в поддержку.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
         )
         context.user_data["state"] = 0
-        await log_analytics(user_id, "start", {"referrer_id": referrer_id})
+        await log_analytics(user_id, "start_error", {"error": str(e)})
         return 0
 
 async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    async with (await ensure_db_pool()) as conn:
-        is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-        is_banned = await conn.fetchval("SELECT is_banned FROM users WHERE user_id = $1", user_id) or False
-        if is_banned:
-            text = await get_text("user_banned", support_channel="https://t.me/CheapStarsShop_support")
-            await update.message.reply_text(text)
-            context.user_data["state"] = 0  # STATES["main_menu"]
-            await log_analytics(user_id, "ton_price_banned", {})
-            return 0
-        if context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
-            time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
-            text = await get_text(
-                "tech_break_active",
-                end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                minutes_left=time_remaining,
-                reason=context.bot_data["tech_break_info"]["reason"]
-            )
-            await update.message.reply_text(text)
-            context.user_data["state"] = 0
-            await log_analytics(user_id, "ton_price_tech_break", {})
-            return 0
-
-        try:
+    username = update.effective_user.username or str(user_id)
+    logger.info(f"TON price command received: user_id={user_id}, username={username}")
+    try:
+        async with (await ensure_db_pool()) as conn:
+            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+            if context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
+                time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
+                text = await get_text(
+                    "tech_break_active",
+                    end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    minutes_left=time_remaining,
+                    reason=context.bot_data["tech_break_info"]["reason"]
+                )
+                await update.message.reply_text(text)
+                context.user_data["state"] = 0
+                await log_analytics(user_id, "ton_price_tech_break", {})
+                return 0
             if "ton_price_info" not in context.bot_data or context.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
                 await update_ton_price(context)
             price = context.bot_data["ton_price_info"]["price"]
@@ -926,13 +925,15 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await log_analytics(user_id, "ton_price", {})
             logger.info(f"/tonprice executed for user_id={user_id}")
             return 0
-        except Exception as e:
-            logger.error(f"Error in /tonprice for user_id={user_id}: {e}", exc_info=True)
-            await update.message.reply_text("Ошибка при получении цены TON. Попробуйте позже.")
-            context.user_data["state"] = 0
-            await log_analytics(user_id, "ton_price_error", {"error": str(e)})
-            return 0
-
+    except Exception as e:
+        logger.error(f"Ошибка в ton_price_command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "Ошибка при получении цены TON. Попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+        )
+        context.user_data["state"] = 0
+        await log_analytics(user_id, "ton_price_error", {"error": str(e)})
+        return 0
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     user_id = query.from_user.id
