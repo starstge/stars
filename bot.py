@@ -3010,8 +3010,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def webhook(request: web.Request) -> web.Response:
     try:
-        if telegram_app is None or not telegram_app.initialized:
-            logger.error("telegram_app is not initialized")
+        if telegram_app is None:
+            logger.error("telegram_app is None")
             return web.json_response({"status": "error", "message": "Application not initialized"}, status=500)
         data = await request.json()
         logger.info(f"Webhook received data: {data}")
@@ -3027,6 +3027,7 @@ async def webhook(request: web.Request) -> web.Response:
         logger.error(f"Ошибка в webhook: {e}", exc_info=True)
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 async def health_check(request: web.Request) -> web.Response:
+    logger.info(f"Health check called: {request.method} {request.path}")
     try:
         async with (await ensure_db_pool()) as conn:
             await conn.fetchval("SELECT 1")
@@ -3034,7 +3035,6 @@ async def health_check(request: web.Request) -> web.Response:
     except Exception as e:
         logger.error(f"Health check failed: {e}", exc_info=True)
         return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
-
 async def lifespan(app):
     global telegram_app
     if telegram_app is None:
@@ -3048,11 +3048,24 @@ async def lifespan(app):
 
 async def main():
     global telegram_app
-    # Initialize telegram_app first
+    # Initialize telegram_app
     logger.info("Creating telegram_app...")
-    telegram_app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
+    bot_token = os.getenv("BOT_TOKEN")
+    if not bot_token:
+        logger.error("BOT_TOKEN environment variable not set")
+        raise RuntimeError("BOT_TOKEN not set")
+    telegram_app = Application.builder().token(bot_token).build()
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     logger.info("telegram_app created successfully")
+    
+    # Initialize telegram_app explicitly
+    logger.info("Initializing telegram_app...")
+    try:
+        await telegram_app.initialize()
+        logger.info("telegram_app initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize telegram_app: {e}", exc_info=True)
+        raise
 
     app = web.Application()
     # Register specific routes
@@ -3061,9 +3074,6 @@ async def main():
     # Register Flask routes
     wsgi_handler = WSGIHandler(app_flask)
     app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
-    # Register lifespan handler
-    logger.info("Registering lifespan handler")
-    app.cleanup_ctx.append(lifespan)
 
     try:
         runner = web.AppRunner(app)
@@ -3083,6 +3093,12 @@ async def main():
         logger.error(f"Error in main: {e}", exc_info=True)
         raise
     finally:
+        logger.info("Shutting down telegram_app...")
+        try:
+            await telegram_app.shutdown()
+            logger.info("telegram_app shut down successfully")
+        except Exception as e:
+            logger.error(f"Failed to shut down telegram_app: {e}", exc_info=True)
         await runner.cleanup()
 
 if __name__ == "__main__":
