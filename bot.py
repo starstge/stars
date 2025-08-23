@@ -11,6 +11,7 @@ from aiohttp import ClientTimeout, web
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
