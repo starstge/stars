@@ -213,7 +213,6 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             parse_mode="HTML"
         )
 
-
 # Database connection (synchronous for Flask)
 def get_db_connection():
     try:
