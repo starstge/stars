@@ -776,24 +776,30 @@ async def ensure_db_pool():
     max_retries = 5
     retry_delay = 2
     async with _db_pool_lock:
+        if _db_pool is not None and not (_db_pool._closed or _db_pool._closing):
+            try:
+                async with _db_pool.acquire() as conn:
+                    await conn.execute("SELECT 1")
+                    logger.debug("Existing database pool is valid")
+                    return _db_pool
+            except Exception as e:
+                logger.warning(f"Existing pool is invalid: {e}, will recreate")
         for attempt in range(max_retries):
             try:
-                if _db_pool is None or _db_pool._closed or _db_pool._closing:
-                    logger.info(f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
-                    if _db_pool:
-                        try:
-                            await _db_pool.close()
-                            logger.debug("Closed existing pool")
-                        except Exception as e:
-                            logger.warning(f"Error closing existing pool: {e}")
-                    _db_pool = await asyncpg.create_pool(
-                        dsn=os.getenv("DATABASE_URL"),
-                        min_size=1,
-                        max_size=10,
-                        max_inactive_connection_lifetime=300,
-                        timeout=30
-                    )
-                    logger.info("Database pool created successfully")
+                logger.info(f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
+                if _db_pool:
+                    try:
+                        await _db_pool.close()
+                        logger.debug("Closed existing pool")
+                    except Exception as e:
+                        logger.warning(f"Error closing existing pool: {e}")
+                _db_pool = await asyncpg.create_pool(
+                    dsn=DATABASE_URL,
+                    min_size=1,
+                    max_size=10,
+                    max_inactive_connection_lifetime=300,
+                    timeout=30
+                )
                 async with _db_pool.acquire() as conn:
                     await conn.execute("SELECT 1")
                     logger.debug("Database pool validated successfully")
@@ -805,7 +811,6 @@ async def ensure_db_pool():
                 continue
         logger.error(f"Failed to create pool after {max_retries} attempts")
         raise asyncpg.exceptions.InterfaceError("Failed to establish database connection pool")
-
 async def health_check(request: web.Request) -> web.Response:
     logger.info("Health check called: %s %s", request.method, request.path)
     try:
@@ -917,9 +922,9 @@ async def safe_reply_text(update: Update, text: str, reply_markup=None, parse_mo
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.debug("Starting TON price update...")
     max_retries = 3
-    base_delay = 60
+    base_delay = 120  # Increased to 120 seconds
     try:
-        async with asyncio.timeout(30.0):
+        async with asyncio.timeout(60.0):  # Increased timeout to 60 seconds
             async with aiohttp.ClientSession() as session:
                 for attempt in range(max_retries):
                     try:
@@ -967,8 +972,6 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Timeout in update_ton_price")
     except Exception as e:
         logger.error(f"Fatal error in update_ton_price: {e}", exc_info=True)
-
-    # Fallback to database
     try:
         async with asyncio.timeout(5.0):
             async with (await ensure_db_pool()) as conn:
@@ -987,8 +990,6 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Timeout fetching TON price from database")
     except Exception as e:
         logger.error(f"Failed to fetch TON price from database: {e}")
-
-    # Ultimate fallback
     context.bot_data["ton_price_info"] = {
         "price": 3.32,
         "diff_24h": 0.0,
@@ -3011,17 +3012,20 @@ async def lifespan(app):
     await telegram_app.shutdown()
 
 async def webhook(request: web.Request) -> web.Response:
-    logger.debug("Webhook called")
     try:
-        update = await request.json()
-        logger.debug(f"Webhook received data: {update}")
-        if telegram_app:
-            await telegram_app.update_queue.put(Update.de_json(update, telegram_app.bot))
-            logger.debug("Update added to queue")
-        return web.Response(status=200)
+        data = await request.json()
+        logger.debug(f"Webhook received data: {data}")
+        update = Update.de_json(data, telegram_app.bot)
+        if update:
+            logger.info(f"Processing update: update_id={update.update_id}")
+            await telegram_app.process_update(update)
+            logger.debug(f"Update processed: update_id={update.update_id}")
+            return web.json_response({"status": "ok"})
+        logger.warning("Received empty or invalid update")
+        return web.json_response({"status": "no update"}, status=400)
     except Exception as e:
-        logger.error(f"Error in webhook: {e}", exc_info=True)
-        return web.Response(status=500)
+        logger.error(f"Error processing webhook: {e}", exc_info=True)
+        return web.json_response({"status": "error", "error": str(e)}, status=500)
 
 async def health_check(request: web.Request) -> web.Response:
     logger.info("Health check called: %s %s", request.method, request.path)
@@ -3036,13 +3040,13 @@ async def health_check(request: web.Request) -> web.Response:
             {"status": "running", "database": "unavailable", "error": str(e)},
             status=200  # Return 200 to avoid UptimeRobot alerts
         )
-async def setup_handlers(app: Application):
+async def setup_handlers(app: Application) -> None:
+    logger.info("Setting up handlers")
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tonprice", ton_price_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_handler(CallbackQueryHandler(callback_query_handler))
-    app.add_handler(CommandHandler("test", test))
-    logger.info("Handlers registered: start, tonprice, message, callback_query, test")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    logger.info("Handlers set up successfully")
 
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
