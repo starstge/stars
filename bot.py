@@ -76,6 +76,7 @@ CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN")
 TON_SPACE_API_TOKEN = os.getenv("TON_SPACE_API_TOKEN")
 TON_API_KEY = os.getenv("TON_API_KEY")
 OWNER_WALLET = os.getenv("OWNER_WALLET")
+DATABASE_URL = os.getenv("DATABASE_URL")
 PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 SPLIT_API_URL = "https://api.split.tg/buy/stars"
 CRYPTOBOT_API_URL = "https://pay.crypt.bot/api"
