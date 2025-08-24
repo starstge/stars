@@ -499,8 +499,7 @@ def update_status():
             conn.close()
         return jsonify({'message': f'Error updating status: {str(e)}'}), 500
 
-_db_pool: Optional[asyncpg.Pool] = None
-_db_pool: Pool | None = None
+
 
 async def ensure_db_pool(max_attempts: int = 3, retry_delay: float = 1.0) -> Pool:
     global _db_pool
