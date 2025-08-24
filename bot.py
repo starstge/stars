@@ -534,7 +534,6 @@ async def ensure_db_pool():
                     logger.info("Database pool created successfully")
                 async with _db_pool.acquire() as conn:
                     await conn.execute("SELECT 1")
-                    # Log active connections
                     active_conns = await conn.fetchval("SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND datname = current_database()")
                     logger.debug(f"Database pool validated successfully, active connections: {active_conns}")
                 return _db_pool
@@ -738,14 +737,29 @@ async def health_check(request: web.Request) -> web.Response:
     try:
         pool = await ensure_db_pool()
         async with pool.acquire() as conn:
+            active_conns = await conn.fetchval("SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND datname = current_database()")
             await conn.execute("SELECT 1")
-        return web.json_response({"status": "healthy", "database": "connected"})
+        logger.debug(f"Health check successful, active connections: {active_conns}")
+        return web.json_response({"status": "healthy", "database": "connected", "active_connections": active_conns})
     except Exception as e:
         logger.error(f"Health check failed: {e}", exc_info=True)
         return web.json_response(
             {"status": "running", "database": "unavailable", "error": str(e)},
             status=200
         )
+
+async def debug_pool(request: web.Request) -> web.Response:
+    logger.info("Debug pool called: %s %s", request.method, request.path)
+    try:
+        pool = await ensure_db_pool()
+        async with pool.acquire() as conn:
+            active_conns = await conn.fetchval("SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND datname = current_database()")
+            await conn.execute("SELECT 1")
+        return web.json_response({"status": "ok", "pool": "connected", "active_connections": active_conns})
+    except Exception as e:
+        logger.error(f"Debug pool failed: {e}", exc_info=True)
+        return web.json_response({"status": "error", "error": str(e), "pool": "unavailable"}, status=500)
+
 
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.debug("Updating TON price...")
@@ -826,99 +840,87 @@ async def safe_reply_text(update: Update, text: str, reply_markup=None, parse_mo
             if attempt + 1 == retry_count:
                 logger.error(f"Failed to send message after {retry_count} attempts")
                 raise
-async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    username = update.effective_user.username or str(user_id)
-    logger.debug(f"Entering ton_price_command handler: user_id={user_id}, username={username}, state={context.user_data.get('state', 0)}")
-
+async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.debug("Starting TON price update...")
+    max_retries = 3
+    base_delay = 60
     try:
-        # Reset state to ensure commands are processed correctly
-        context.user_data["state"] = 0
-        logger.debug(f"State reset to main_menu for user_id={user_id}")
+        async with asyncio.timeout(30.0):
+            async with aiohttp.ClientSession() as session:
+                for attempt in range(max_retries):
+                    try:
+                        async with session.get(
+                            "https://api.coingecko.com/api/v3/coins/the-open-network",
+                            headers={"User-Agent": "TelegramBot/1.0"}
+                        ) as response:
+                            if response.status == 429:
+                                delay = base_delay * (2 ** attempt)
+                                logger.warning(f"Rate limit hit on attempt {attempt + 1}/{max_retries}, waiting {delay}s")
+                                await asyncio.sleep(delay)
+                                continue
+                            if response.status != 200:
+                                logger.error(f"Failed to fetch TON price: HTTP {response.status}")
+                                break
+                            data = await response.json()
+                            price = float(data["market_data"]["current_price"]["usd"])
+                            diff_24h = data["market_data"].get("price_change_percentage_24h", 0.0)
+                            context.bot_data["ton_price_info"] = {
+                                "price": price,
+                                "diff_24h": float(str(diff_24h).replace("−", "-").rstrip("%") or 0.0),
+                                "updated_at": datetime.now(pytz.UTC)
+                            }
+                            logger.debug(f"TON price updated: price={price}, diff_24h={diff_24h}")
+                            try:
+                                async with asyncio.timeout(5.0):
+                                    async with (await ensure_db_pool()) as conn:
+                                        await conn.execute(
+                                            "INSERT INTO ton_price (price, updated_at) VALUES ($1, $2)",
+                                            price, datetime.now(pytz.UTC)
+                                        )
+                                        logger.debug("Stored TON price in database")
+                                return
+                            except asyncio.TimeoutError:
+                                logger.warning("Timeout storing TON price in database")
+                            except Exception as e:
+                                logger.warning(f"Failed to store TON price in database: {e}")
+                            return
+                    except Exception as e:
+                        logger.error(f"Error in update_ton_price (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+                        if attempt + 1 < max_retries:
+                            await asyncio.sleep(base_delay * (2 ** attempt))
+                        continue
+    except asyncio.TimeoutError:
+        logger.error("Timeout in update_ton_price")
+    except Exception as e:
+        logger.error(f"Fatal error in update_ton_price: {e}", exc_info=True)
 
-        # Ensure database pool
-        pool = await ensure_db_pool()
-        async with pool.acquire() as conn:
-            # Check admin status
-            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-            logger.debug(f"User admin status: is_admin={is_admin}")
-
-            # Initialize tech_break_info if not present
-            if "tech_break_info" not in context.bot_data:
-                context.bot_data["tech_break_info"] = {"end_time": datetime.min.replace(tzinfo=pytz.UTC), "reason": ""}
-                logger.debug("Initialized tech_break_info")
-
-            # Check tech break
-            if (
-                context.bot_data["tech_break_info"].get("end_time", datetime.min.replace(tzinfo=pytz.UTC))
-                > datetime.now(pytz.UTC)
-                and not is_admin
-            ):
-                time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
-                text = await get_text(
-                    "tech_break_active",
-                    end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                    minutes_left=time_remaining,
-                    reason=context.bot_data["tech_break_info"].get("reason", "Не указана")
-                )
-                await update.message.reply_text(
-                    text,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                    parse_mode="HTML"
-                )
-                await log_analytics(user_id, "ton_price_tech_break", {})
-                return 0
-
-            # Check TON price in bot_data
-            if "ton_price_info" not in context.bot_data or context.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
-                logger.debug("TON price not in bot_data, fetching...")
-                await update_ton_price(context)
-
-            price = context.bot_data.get("ton_price_info", {}).get("price", 0.0)
-            diff_24h = context.bot_data.get("ton_price_info", {}).get("diff_24h", 0.0)
-
-            # Fallback to database if price is unavailable
-            if price == 0.0:
-                logger.warning("TON price is zero, attempting to fetch from database")
+    # Fallback to database
+    try:
+        async with asyncio.timeout(5.0):
+            async with (await ensure_db_pool()) as conn:
                 price_record = await conn.fetchrow(
                     "SELECT price, updated_at FROM ton_price ORDER BY updated_at DESC LIMIT 1"
                 )
                 if price_record and (datetime.now(pytz.UTC) - price_record["updated_at"]).total_seconds() < 3600:
-                    price = price_record["price"]
-                    diff_24h = 0.0  # No diff_24h available from DB
-                else:
-                    logger.error("No valid TON price available")
-                    await update.message.reply_text(
-                        "Ошибка получения цены TON. Попробуйте позже.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                        parse_mode="HTML"
-                    )
-                    await log_analytics(user_id, "ton_price_error", {"error": "No valid price"})
-                    return 0
-
-            # Format response
-            change_text = f"📈 +{diff_24h:.2f}%" if diff_24h >= 0 else f"📉 {diff_24h:.2f}%"
-            text = f"💰 Цена TON: ${price:.2f}\nИзменение за 24ч: {change_text}"
-
-            # Send response
-            await update.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                parse_mode="HTML"
-            )
-            await log_analytics(user_id, "ton_price", {"price": price, "diff_24h": diff_24h})
-            logger.info(f"Successfully executed /tonprice for user_id={user_id}")
-            return 0
-
+                    context.bot_data["ton_price_info"] = {
+                        "price": price_record["price"],
+                        "diff_24h": 0.0,
+                        "updated_at": price_record["updated_at"]
+                    }
+                    logger.info(f"Using database TON price: {price_record['price']}")
+                    return
+    except asyncio.TimeoutError:
+        logger.error("Timeout fetching TON price from database")
     except Exception as e:
-        logger.error(f"Error in ton_price_command: {e}", exc_info=True)
-        await update.message.reply_text(
-            "Ошибка при получении цены TON. Попробуйте позже.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-            parse_mode="HTML"
-        )
-        await log_analytics(user_id, "ton_price_error", {"error": str(e)})
-        return 0
+        logger.error(f"Failed to fetch TON price from database: {e}")
+
+    # Ultimate fallback
+    context.bot_data["ton_price_info"] = {
+        "price": 3.32,
+        "diff_24h": 0.0,
+        "updated_at": datetime.now(pytz.UTC)
+    }
+    logger.warning("Using fallback TON price: 3.32")
         
 async def load_settings():
     global PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE
@@ -982,118 +984,105 @@ async def format_time_remaining(end_time):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    username = update.effective_user.username or str(user_id)
-    logger.debug(f"Entering start handler: user_id={user_id}, username={username}, args={context.args}, state={context.user_data.get('state', 0)}")
+    username = update.effective_user.username
+    args = context.args
+    logger.debug(f"Entering start handler: user_id={user_id}, username={username}, args={args}, state={context.user_data.get('state', 0)}")
 
     try:
-        # Reset state to ensure commands are processed correctly
-        context.user_data["state"] = 0
-        logger.debug(f"State reset to main_menu for user_id={user_id}")
+        async with asyncio.timeout(10.0):
+            async with (await ensure_db_pool()) as conn:
+                # Reset state
+                context.user_data.clear()
+                context.user_data["state"] = 0
+                logger.debug(f"State reset to main_menu for user_id={user_id}")
 
-        # Initialize referrer_id to None
-        referrer_id = None
-        if context.args and context.args[0].isdigit():
-            referrer_id = int(context.args[0])
-            logger.debug(f"Referrer ID provided: {referrer_id}")
-
-        # Ensure database pool
-        pool = await ensure_db_pool()
-        async with pool.acquire() as conn:
-            # Check if user exists
-            user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
-            if not user:
-                if referrer_id:
-                    referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", referrer_id)
-                    if referrer:
-                        referrals = json.loads(referrer["referrals"]) if referrer["referrals"] else []
-                        if user_id not in referrals:
-                            referrals.append(user_id)
+                # Handle referral
+                if args and args[0].isdigit():
+                    referrer_id = int(args[0])
+                    if referrer_id != user_id:
+                        existing_user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id = $1", user_id)
+                        if not existing_user:
                             await conn.execute(
-                                "UPDATE users SET referrals = $1 WHERE user_id = $2",
-                                json.dumps(referrals), referrer_id
+                                "INSERT INTO users (user_id, username, stars_bought, referrals, ref_bonus_ton, referrer_id, is_admin) "
+                                "VALUES ($1, $2, 0, '[]', 0.0, $3, FALSE) ON CONFLICT (user_id) DO NOTHING",
+                                user_id, username, referrer_id
                             )
-                            logger.info(f"Added referral: user_id={user_id} to referrer_id={referrer_id}")
-                await conn.execute(
-                    "INSERT INTO users (user_id, username, stars_bought, referrals, ref_bonus_ton, is_admin, created_at) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                    user_id, username, 0, json.dumps([]), 0.0, False, datetime.now(pytz.UTC)
-                )
-                logger.info(f"New user registered: user_id={user_id}, username={username}")
-            else:
-                await conn.execute(
-                    "UPDATE users SET username = $1 WHERE user_id = $2",
-                    username, user_id
-                )
-                logger.debug(f"Updated username for user_id={user_id}")
+                            await conn.execute(
+                                "UPDATE users SET referrals = jsonb_set(referrals, $1, referrals || $2) "
+                                "WHERE user_id = $3 AND NOT ($4 = ANY(referrals->>'[]')::jsonb)",
+                                [str(len(await conn.fetchval("SELECT referrals FROM users WHERE user_id = $1", referrer_id)))],
+                                json.dumps([str(user_id)]),
+                                referrer_id,
+                                str(user_id)
+                            )
+                            logger.debug(f"Added referral: user_id={user_id} referred by {referrer_id}")
 
-            # Check admin status
-            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-            logger.debug(f"User admin status: is_admin={is_admin}")
+                # Update username
+                if username:
+                    await conn.execute(
+                        "INSERT INTO users (user_id, username, stars_bought, referrals, ref_bonus_ton, is_admin) "
+                        "VALUES ($1, $2, 0, '[]', 0.0, FALSE) ON CONFLICT (user_id) DO UPDATE SET username = $2",
+                        user_id, username
+                    )
+                    logger.debug(f"Updated username for user_id={user_id}")
 
-            # Initialize tech_break_info if not present
-            if "tech_break_info" not in context.bot_data:
-                context.bot_data["tech_break_info"] = {"end_time": datetime.min.replace(tzinfo=pytz.UTC), "reason": ""}
-                logger.debug("Initialized tech_break_info")
+                # Check admin status
+                is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
+                logger.debug(f"User admin status: is_admin={is_admin}")
 
-            # Check tech break
-            if (
-                context.bot_data["tech_break_info"].get("end_time", datetime.min.replace(tzinfo=pytz.UTC))
-                > datetime.now(pytz.UTC)
-                and not is_admin
-            ):
-                time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
-                text = await get_text(
-                    "tech_break_active",
-                    end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                    minutes_left=time_remaining,
-                    reason=context.bot_data["tech_break_info"].get("reason", "Не указана")
-                )
-                await update.message.reply_text(
-                    text,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                # Fetch stats
+                total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
+                user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
+
+                # Send welcome message
+                text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
+                keyboard = [
+                    [
+                        InlineKeyboardButton("📰 Новости", url=os.getenv("NEWS_CHANNEL")),
+                        InlineKeyboardButton("📞 Поддержка и Отзывы", url=os.getenv("SUPPORT_CHANNEL"))
+                    ],
+                    [
+                        InlineKeyboardButton("👤 Профиль", callback_data="profile"),
+                        InlineKeyboardButton("🤝 Рефералы", callback_data="referrals")
+                    ],
+                    [InlineKeyboardButton("🛒 Купить звезды", callback_data="buy_stars")]
+                ]
+                if is_admin:
+                    keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
+                
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode="HTML"
                 )
-                await log_analytics(user_id, "start_tech_break", {"referrer_id": referrer_id if referrer_id is not None else "none"})
+                logger.debug(f"Sent welcome message to user_id={user_id}")
+                await log_analytics(user_id, "start", {"referrer_id": args[0] if args else None})
                 return 0
 
-            # Fetch total and user stars
-            total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
-            user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
-            text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
-
-            # Build keyboard
-            keyboard = [
-                [
-                    InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
-                    InlineKeyboardButton("📞 Поддержка и Отзывы", url=SUPPORT_CHANNEL)
-                ],
-                [
-                    InlineKeyboardButton("👤 Профиль", callback_data="profile"),
-                    InlineKeyboardButton("🤝 Рефералы", callback_data="referrals")
-                ],
-                [InlineKeyboardButton("🛒 Купить звезды", callback_data="buy_stars")]
-            ]
-            if is_admin:
-                keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
-
-            # Send response
-            await update.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            await log_analytics(user_id, "start", {"referrer_id": referrer_id if referrer_id is not None else "none"})
-            logger.info(f"Successfully executed /start for user_id={user_id}")
-            return 0
-
-    except Exception as e:
-        logger.error(f"Error in start handler: {e}", exc_info=True)
-        await update.message.reply_text(
-            "Произошла ошибка. Попробуйте снова или обратитесь в поддержку.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout in start handler for user_id={user_id}")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Ошибка: операция заняла слишком много времени. Попробуйте снова.",
             parse_mode="HTML"
         )
-        await log_analytics(user_id, "start_error", {"error": str(e), "referrer_id": referrer_id if referrer_id is not None else "none"})
+        return 0
+    except asyncpg.exceptions.InterfaceError as e:
+        logger.error(f"Database error in start handler: {e}", exc_info=True)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Ошибка: не удалось подключиться к базе данных. Попробуйте позже.",
+            parse_mode="HTML"
+        )
+        return 0
+    except Exception as e:
+        logger.error(f"Error in start handler: {e}", exc_info=True)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Произошла ошибка. Попробуйте снова или обратитесь в поддержку.",
+            parse_mode="HTML"
+        )
         return 0
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -2948,24 +2937,17 @@ async def lifespan(app):
     await telegram_app.shutdown()
 
 async def webhook(request: web.Request) -> web.Response:
+    logger.debug("Webhook called")
     try:
-        if telegram_app is None:
-            logger.error("telegram_app is None")
-            return web.json_response({"status": "error", "message": "Application not initialized"}, status=500)
-        data = await request.json()
-        logger.debug(f"Webhook received data: {data}")
-        update = Update.de_json(data, telegram_app.bot)
-        if update:
-            logger.debug(f"Processing update: update_id={update.update_id}, message={update.message}, command={update.message.text if update.message else None}")
-            await telegram_app.process_update(update)
-            logger.info("Webhook processed successfully")
-            return web.json_response({"status": "ok"})
-        else:
-            logger.warning("Invalid webhook update received")
-            return web.json_response({"status": "invalid update"}, status=400)
+        update = await request.json()
+        logger.debug(f"Webhook received data: {update}")
+        if telegram_app:
+            await telegram_app.update_queue.put(Update.de_json(update, telegram_app.bot))
+            logger.debug("Update added to queue")
+        return web.Response(status=200)
     except Exception as e:
         logger.error(f"Error in webhook: {e}", exc_info=True)
-        return web.json_response({"status": "error", "message": str(e)}, status=500)
+        return web.Response(status=500)
 
 async def health_check(request: web.Request) -> web.Response:
     logger.info("Health check called: %s %s", request.method, request.path)
@@ -2996,13 +2978,25 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def main():
     global telegram_app, _db_pool
-    logger.info("Creating telegram_app...")
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.DEBUG
+    )
+    logger.info("Starting bot...")
+
+    # Validate environment variables
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
         logger.error("BOT_TOKEN environment variable not set")
         raise RuntimeError("BOT_TOKEN not set")
 
-    telegram_app = Application.builder().token(bot_token).build()
+    # Initialize Telegram application
+    try:
+        telegram_app = Application.builder().token(bot_token).build()
+        logger.info("Telegram application created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create Telegram application: {e}", exc_info=True)
+        raise
 
     # Initialize database pool
     try:
@@ -3012,33 +3006,41 @@ async def main():
         logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
         logger.warning("Starting bot without database connection, using fallbacks")
 
-    # Register handlers
-    await setup_handlers(telegram_app)
-    logger.info("telegram_app created successfully")
-
-    # Initialize tech_break_info
+    # Initialize bot data
     telegram_app.bot_data["tech_break_info"] = {
         "end_time": datetime.min.replace(tzinfo=pytz.UTC),
         "reason": ""
     }
-    logger.debug("Initialized tech_break_info in bot_data")
+    telegram_app.bot_data["ton_price_info"] = {
+        "price": 3.32,
+        "diff_24h": 0.0,
+        "updated_at": datetime.now(pytz.UTC)
+    }
+    logger.debug("Initialized bot_data")
 
-    # Initialize telegram_app
-    logger.info("Initializing telegram_app...")
+    # Register handlers
+    try:
+        await setup_handlers(telegram_app)
+        logger.info("Handlers registered successfully")
+    except Exception as e:
+        logger.error(f"Failed to register handlers: {e}", exc_info=True)
+        raise
+
+    # Initialize Telegram application
     try:
         await telegram_app.initialize()
-        logger.info("telegram_app initialized successfully")
+        logger.info("Telegram application initialized successfully")
     except Exception as e:
-        logger.error(f"Failed to initialize telegram_app: {e}", exc_info=True)
+        logger.error(f"Failed to initialize Telegram application: {e}", exc_info=True)
         raise
 
     # Set up aiohttp server
     app = web.Application()
     app.router.add_post('/webhook', webhook)
     app.router.add_get('/', health_check)
-    app.router.add_get('/debug_pool', debug_pool)  # Added debug endpoint
-    wsgi_handler = WSGIHandler(app_flask)
-    app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
+    app.router.add_get('/debug_pool', debug_pool)
+    # Add Flask WSGI handler if needed
+    # app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
 
     try:
         runner = web.AppRunner(app)
@@ -3048,30 +3050,37 @@ async def main():
         await site.start()
         logger.info(f"aiohttp server started on port {port}")
         webhook_url = f"https://stars-ejwz.onrender.com/webhook"
-        logger.info("Deleting existing webhook...")
-        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
         logger.info(f"Setting webhook to {webhook_url}...")
-        await telegram_app.bot.set_webhook(webhook_url)
+        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+        await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
         logger.info("Webhook set successfully")
 
         # Schedule TON price updates
-        from apscheduler.schedulers.asyncio import AsyncIOScheduler
         scheduler = AsyncIOScheduler(timezone=pytz.UTC)
-        scheduler.add_job(update_ton_price, 'interval', minutes=5, args=[telegram_app])
+        scheduler.add_job(
+            update_ton_price,
+            'interval',
+            minutes=5,
+            args=[telegram_app],
+            max_instances=1,
+            misfire_grace_time=30
+        )
         scheduler.start()
         logger.info("TON price update scheduler started")
 
+        # Keep the application running
         await asyncio.Event().wait()
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
         raise
     finally:
-        logger.info("Shutting down telegram_app...")
+        logger.info("Shutting down bot...")
         try:
-            await telegram_app.shutdown()
-            logger.info("telegram_app shut down successfully")
+            if telegram_app:
+                await telegram_app.shutdown()
+                logger.info("Telegram application shut down successfully")
         except Exception as e:
-            logger.error(f"Failed to shut down telegram_app: {e}", exc_info=True)
+            logger.error(f"Failed to shut down Telegram application: {e}", exc_info=True)
         if _db_pool is not None:
             try:
                 async with _db_pool.acquire() as conn:
@@ -3082,7 +3091,14 @@ async def main():
             except asyncio.TimeoutError:
                 logger.error("Timeout closing database pool")
             except Exception as e:
-                logger.error(f"Failed to close database pool: {e}")
+                logger.error(f"Failed to close database pool: {e}", exc_info=True)
             _db_pool = None
         await runner.cleanup()
         logger.info("aiohttp server shut down")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.error(f"Fatal error in main: {e}", exc_info=True)
+        raise
