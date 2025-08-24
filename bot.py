@@ -124,6 +124,27 @@ STATES = {
     "profile_transactions": 26
 }
 
+async def fetch_ton_price(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
+            async with session.get(API_URL, headers=headers) as response:
+                if response.status != 200:
+                    logger.error(f"TON API request failed: status={response.status}")
+                    return None
+                data = await response.json()
+                rate_usd = float(data["rates"]["TON"]["prices"]["USD"])
+                context.bot_data["ton_price_info"] = {
+                    "price": rate_usd,
+                    "last_updated": datetime.now(pytz.UTC)
+                }
+                logger.debug(f"Fetched TON price: {rate_usd} USD")
+                return rate_usd
+    except Exception as e:
+        logger.error(f"Error fetching TON price: {e}")
+        return None
+
+
 # Global variables
 db_pool = None
 _db_pool_lock = asyncio.Lock()
@@ -1143,31 +1164,19 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await log_analytics(user_id, "admin_panel_error", {"error": str(e)})
         return 0
 
-async def calculate_price_ton(context: ContextTypes.DEFAULT_TYPE, stars: int) -> float:
-    try:
-        async with (await ensure_db_pool()) as conn:
-            price_usd = await conn.fetchval("SELECT value FROM settings WHERE key = 'price_usd'") or 0.81
-            markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or 10.0
-            price_usd = (stars / 50) * price_usd * (1 + markup / 100)
-            if "ton_price_info" not in context.bot_data or context.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
-                await update_ton_price(context)
-            ton_price = context.bot_data["ton_price_info"].get("price", 3.32)  # Fallback from logs
-            if ton_price == 0.0:
-                logger.warning("TON price is zero, fetching from database")
-                price_record = await conn.fetchrow(
-                    "SELECT price FROM ton_price ORDER BY updated_at DESC LIMIT 1"
-                )
-                ton_price = price_record["price"] if price_record else 3.32
-            price_ton = price_usd / ton_price
-            logger.debug(f"Calculated price: {stars} stars = {price_ton:.4f} TON")
-            return round(price_ton, 4)
-    except Exception as e:
-        logger.error(f"Error in calculate_price_ton: {e}", exc_info=True)
-        price_usd = (stars / 50) * 0.81 * (1 + 10 / 100)  # Fallback to defaults
-        ton_price = context.bot_data.get("ton_price_info", {}).get("price", 3.32)
-        price_ton = price_usd / ton_price
-        logger.warning(f"Using fallback price: {stars} stars = {price_ton:.4f} TON")
-        return round(price_ton, 4)
+async def calculate_price_ton(context: ContextTypes.DEFAULT_TYPE, stars: int):
+    # Check if price is cached and not older than 3 minutes
+    ton_price_info = context.bot_data.get("ton_price_info", {})
+    last_updated = ton_price_info.get("last_updated", datetime.min.replace(tzinfo=pytz.UTC))
+    if (datetime.now(pytz.UTC) - last_updated).total_seconds() > 180:
+        ton_price = await fetch_ton_price(context)
+    else:
+        ton_price = ton_price_info.get("price")
+    
+    # Fallback to default price if API call fails
+    ton_price = ton_price or 3.32
+    price_usd = 0.81 * (stars / 50)  # $0.81 per 50 stars
+    return price_usd / ton_price
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
@@ -1615,7 +1624,6 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return 0
 
 def are_reply_markups_equal(current, new):
-    """Compare two InlineKeyboardMarkup objects for equality."""
     if current is None or new is None:
         return False
     if len(current.inline_keyboard) != len(new.inline_keyboard):
@@ -2000,8 +2008,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         context.bot_data["tech_break_info"] = {"end_time": datetime.min.replace(tzinfo=pytz.UTC), "reason": ""}
 
     try:
-        # Wrap database operations in a timeout
-        async with asyncio.timeout(15.0):  # Increased timeout to 15s
+        async with asyncio.timeout(15.0):
             async with (await ensure_db_pool()) as conn:
                 is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
                 logger.debug(f"Fetched admin status in {time.time() - start_time:.2f}s, is_admin={is_admin}")
@@ -2205,7 +2212,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
                         [
                             InlineKeyboardButton(price_text, callback_data="show_price"),
-                            InlineKeyboardButton("Далее", callback_data="pay_stars_menu")
+                            InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")
                         ],
                         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
                     ]
@@ -2287,7 +2294,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
                         [
                             InlineKeyboardButton(f"~{price_ton:.4f} TON", callback_data="show_price"),
-                            InlineKeyboardButton("Далее", callback_data="pay_stars_menu")
+                            InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")
                         ],
                         [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
                     ]
@@ -2319,8 +2326,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     logger.debug(f"Processed select custom stars in {time.time() - start_time:.2f}s")
                     return 23
 
-                # Pay Stars Menu
-                elif data == "pay_stars_menu":
+                # Proceed to Payment (replaces pay_stars_menu)
+                elif data in ["proceed_to_payment", "pay_stars_menu"]:  # Handle both for compatibility
                     stars = context.user_data.get("stars_amount")
                     recipient = context.user_data.get("recipient")
                     if not stars:
@@ -2328,7 +2335,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         keyboard = [
                             [InlineKeyboardButton(f"Пользователь: {context.user_data.get('recipient', 'Не выбран')}", callback_data="select_recipient")],
                             [InlineKeyboardButton("Количество: Не выбрано", callback_data="select_stars_menu")],
-                            [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Далее", callback_data="pay_stars_menu")],
+                            [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")],
                             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
                         ]
                         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2336,18 +2343,18 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             await asyncio.sleep(0.1)
                             await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         except TelegramError as e:
-                            logger.error(f"Failed to edit message for pay stars error: {e}")
+                            logger.error(f"Failed to edit message for proceed to payment error: {e}")
                             await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 5
-                        await log_analytics(user_id, "pay_stars_menu_error", {"error": "missing_stars", "recipient": recipient})
-                        logger.debug(f"Processed pay stars menu error (missing stars) in {time.time() - start_time:.2f}s")
+                        await log_analytics(user_id, "proceed_to_payment_error", {"error": "missing_stars", "recipient": recipient})
+                        logger.debug(f"Processed proceed to payment error (missing stars) in {time.time() - start_time:.2f}s")
                         return 5
                     if not recipient:
                         text = "Ошибка: пользователь не выбран."
                         keyboard = [
                             [InlineKeyboardButton("Пользователь: Не выбран", callback_data="select_recipient")],
                             [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
-                            [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Далее", callback_data="pay_stars_menu")],
+                            [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")],
                             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
                         ]
                         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2355,18 +2362,18 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             await asyncio.sleep(0.1)
                             await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         except TelegramError as e:
-                            logger.error(f"Failed to edit message for pay stars error: {e}")
+                            logger.error(f"Failed to edit message for proceed to payment error: {e}")
                             await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 5
-                        await log_analytics(user_id, "pay_stars_menu_error", {"error": "missing_recipient", "stars": stars})
-                        logger.debug(f"Processed pay stars menu error (missing recipient) in {time.time() - start_time:.2f}s")
+                        await log_analytics(user_id, "proceed_to_payment_error", {"error": "missing_recipient", "stars": stars})
+                        logger.debug(f"Processed proceed to payment error (missing recipient) in {time.time() - start_time:.2f}s")
                         return 5
                     if not isinstance(stars, str) or not stars.isdigit():
                         text = "Ошибка: количество звезд должно быть числом."
                         keyboard = [
                             [InlineKeyboardButton(f"Пользователь: {recipient}", callback_data="select_recipient")],
                             [InlineKeyboardButton("Количество: Не выбрано", callback_data="select_stars_menu")],
-                            [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Далее", callback_data="pay_stars_menu")],
+                            [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")],
                             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
                         ]
                         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2374,11 +2381,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             await asyncio.sleep(0.1)
                             await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         except TelegramError as e:
-                            logger.error(f"Failed to edit message for pay stars error: {e}")
+                            logger.error(f"Failed to edit message for proceed to payment error: {e}")
                             await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 5
-                        await log_analytics(user_id, "pay_stars_menu_error", {"error": "invalid_stars", "stars": stars, "recipient": recipient})
-                        logger.debug(f"Processed pay stars menu error (invalid stars) in {time.time() - start_time:.2f}s")
+                        await log_analytics(user_id, "proceed_to_payment_error", {"error": "invalid_stars", "stars": stars, "recipient": recipient})
+                        logger.debug(f"Processed proceed to payment error (invalid stars) in {time.time() - start_time:.2f}s")
                         return 5
 
                     stars = int(stars)
@@ -2394,8 +2401,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             logger.error(f"Failed to edit message for price error: {e}")
                             await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 5
-                        await log_analytics(user_id, "pay_stars_menu_price_error", {"stars": stars})
-                        logger.debug(f"Processed pay stars menu price error in {time.time() - start_time:.2f}s")
+                        await log_analytics(user_id, "proceed_to_payment_price_error", {"stars": stars})
+                        logger.debug(f"Processed proceed to payment price error in {time.time() - start_time:.2f}s")
                         return 5
 
                     invoice_id = str(uuid.uuid4())[:8]
@@ -2430,8 +2437,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     context.user_data["state"] = 25
                     context.user_data["invoice_id"] = invoice_id
                     context.user_data["price_ton"] = price_ton
-                    await log_analytics(user_id, "pay_stars_menu", {"stars": stars, "recipient": recipient, "invoice_id": invoice_id})
-                    logger.debug(f"Processed pay stars menu in {time.time() - start_time:.2f}s")
+                    await log_analytics(user_id, "proceed_to_payment", {"stars": stars, "recipient": recipient, "invoice_id": invoice_id})
+                    logger.debug(f"Processed proceed to payment in {time.time() - start_time:.2f}s")
                     return 25
 
                 # Check Payment
@@ -2477,18 +2484,22 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         logger.debug(f"Processed payment confirmed in {time.time() - start_time:.2f}s")
                         return 0
 
-                    # Placeholder for TON blockchain verification
                     owner_wallet = os.getenv("OWNER_WALLET", "YOUR_DEFAULT_WALLET_ADDRESS")
                     payment_verified = False
-                    # Example TON API call (uncomment and configure with TON API)
-                    # async with aiohttp.ClientSession() as session:
-                    #     async with session.get(
-                    #         f"https://tonapi.io/v2/transactions?to={owner_wallet}&comment={invoice_id}",
-                    #         headers={"Authorization": f"Bearer {os.getenv('TON_API_KEY')}"}
-                    #     ) as response:
-                    #         if response.status == 200:
-                    #             data = await response.json()
-                    #             payment_verified = any(tx["amount"] == int(price_ton * 1_000_000_000) for tx in data["transactions"])
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(
+                                f"https://tonapi.io/v2/transactions?to={owner_wallet}&comment={invoice_id}",
+                                headers={"Authorization": f"Bearer {API_KEY}"} if API_KEY else {}
+                            ) as response:
+                                if response.status == 200:
+                                    data = await response.json()
+                                    payment_verified = any(
+                                        tx["amount"] == int(price_ton * 1_000_000_000)
+                                        for tx in data.get("transactions", [])
+                                    )
+                    except Exception as e:
+                        logger.error(f"Failed to verify payment with TON API: {e}")
 
                     if payment_verified:
                         await conn.execute(
@@ -2614,7 +2625,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                                 parse_mode="HTML"
                             )
                             success_count += 1
-                            await asyncio.sleep(0.1)  # Avoid rate limits
+                            await asyncio.sleep(0.1)
                         except TelegramError as e:
                             logger.error(f"Failed to send broadcast to {user['user_id']}: {e}")
                     text = f"Рассылка завершена. Отправлено {success_count} из {len(users)} пользователям."
@@ -2897,7 +2908,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     except TelegramError as e:
                         logger.error(f"Failed to edit message for back to menu: {e}")
                         await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
-                    context.user_data.clear()  # Clear user data to prevent stale state
+                    context.user_data.clear()
                     context.user_data["state"] = 0
                     await log_analytics(user_id, "back_to_menu", {})
                     logger.debug(f"Processed back to menu in {time.time() - start_time:.2f}s")
