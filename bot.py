@@ -718,46 +718,113 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Ошибка в update_ton_price: {e}", exc_info=True)
 
+from telegram.error import RetryAfter, TelegramError
+
+async def safe_reply_text(update: Update, text: str, reply_markup=None, parse_mode=None, retry_count=3):
+    for attempt in range(retry_count):
+        try:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            logger.debug(f"Successfully sent message to user_id={update.effective_user.id}")
+            return
+        except RetryAfter as e:
+            logger.warning(f"Rate limit hit, retrying after {e.retry_after} seconds (attempt {attempt + 1}/{retry_count})")
+            await asyncio.sleep(e.retry_after)
+        except TelegramError as e:
+            logger.error(f"Telegram API error: {e}", exc_info=True)
+            if attempt + 1 == retry_count:
+                logger.error(f"Failed to send message after {retry_count} attempts")
+                raise
+
+
 async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     username = update.effective_user.username or str(user_id)
-    logger.info(f"TON price command received: user_id={user_id}, username={username}")
+    logger.debug(f"Entering ton_price_command handler: user_id={user_id}, username={username}, state={context.user_data.get('state', 0)}")
+
     try:
-        async with (await ensure_db_pool()) as conn:
+        # Reset state to ensure commands are processed correctly
+        context.user_data["state"] = 0
+        logger.debug(f"State reset to main_menu for user_id={user_id}")
+
+        # Ensure database pool
+        pool = await ensure_db_pool()
+        async with pool.acquire() as conn:
+            # Check admin status
             is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-            if tech_break_info.get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
-                time_remaining = await format_time_remaining(tech_break_info["end_time"])
+            logger.debug(f"User admin status: is_admin={is_admin}")
+
+            # Check tech break
+            if (
+                context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC))
+                > datetime.now(pytz.UTC)
+                and not is_admin
+            ):
+                time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
                 text = await get_text(
                     "tech_break_active",
-                    end_time=tech_break_info["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
                     minutes_left=time_remaining,
-                    reason=tech_break_info["reason"]
+                    reason=context.bot_data["tech_break_info"].get("reason", "Не указана")
                 )
-                await update.message.reply_text(text)
-                context.user_data["state"] = 0
+                await safe_reply_text(
+                    update,
+                    text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                    parse_mode="HTML"
+                )
                 await log_analytics(user_id, "ton_price_tech_break", {})
                 return 0
+
+            # Check TON price in bot_data
             if "ton_price_info" not in context.bot_data or context.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
+                logger.debug("TON price not in bot_data, fetching...")
                 await update_ton_price(context)
-            price = context.bot_data["ton_price_info"]["price"]
-            diff_24h = context.bot_data["ton_price_info"]["diff_24h"]
+
+            price = context.bot_data.get("ton_price_info", {}).get("price", 0.0)
+            diff_24h = context.bot_data.get("ton_price_info", {}).get("diff_24h", 0.0)
+
             if price == 0.0:
-                await update.message.reply_text("Ошибка получения цены TON. Попробуйте позже.")
-                context.user_data["state"] = 0
-                await log_analytics(user_id, "ton_price_error", {})
-                return 0
+                logger.warning("TON price is zero, attempting to fetch from database")
+                price_record = await conn.fetchrow(
+                    "SELECT price, updated_at FROM ton_price ORDER BY updated_at DESC LIMIT 1"
+                )
+                if price_record and (datetime.now(pytz.UTC) - price_record["updated_at"]).total_seconds() < 3600:
+                    price = price_record["price"]
+                    diff_24h = 0.0  # No diff_24h available from DB
+                else:
+                    logger.error("No valid TON price available")
+                    await safe_reply_text(
+                        update,
+                        "Ошибка получения цены TON. Попробуйте позже.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                        parse_mode="HTML"
+                    )
+                    await log_analytics(user_id, "ton_price_error", {"error": "No valid price"})
+                    return 0
+
+            # Format response
             change_text = f"📈 +{diff_24h:.2f}%" if diff_24h >= 0 else f"📉 {diff_24h:.2f}%"
             text = f"💰 Цена TON: ${price:.2f}\nИзменение за 24ч: {change_text}"
-            await update.message.reply_text(text)
+
+            # Send response with retry logic
+            await safe_reply_text(
+                update,
+                text,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                parse_mode="HTML"
+            )
             context.user_data["state"] = 0
-            await log_analytics(user_id, "ton_price", {})
-            logger.info(f"/tonprice executed for user_id={user_id}")
+            await log_analytics(user_id, "ton_price", {"price": price, "diff_24h": diff_24h})
+            logger.info(f"Successfully executed /tonprice for user_id={user_id}")
             return 0
+
     except Exception as e:
-        logger.error(f"Ошибка в ton_price_command: {e}", exc_info=True)
-        await update.message.reply_text(
+        logger.error(f"Error in ton_price_command: {e}", exc_info=True)
+        await safe_reply_text(
+            update,
             "Ошибка при получении цены TON. Попробуйте позже.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+            parse_mode="HTML"
         )
         context.user_data["state"] = 0
         await log_analytics(user_id, "ton_price_error", {"error": str(e)})
@@ -834,17 +901,21 @@ async def format_time_remaining(end_time):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     username = update.effective_user.username or str(user_id)
-    referrer_id = None
-    args = context.args
-
-    logger.info(f"Start command received: user_id={user_id}, username={username}, args={args}")
+    logger.debug(f"Entering start handler: user_id={user_id}, username={username}, args={context.args}, state={context.user_data.get('state', 0)}")
+    
     try:
-        pool = await ensure_db_pool(context)  # Pass context
+        # Reset state to ensure commands are processed correctly
+        context.user_data["state"] = 0
+        logger.debug(f"State reset to main_menu for user_id={user_id}")
+
+        # Ensure database pool
+        pool = await ensure_db_pool()
         async with pool.acquire() as conn:
+            # Check if user exists
             user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
             if not user:
-                if args and args[0].isdigit():
-                    referrer_id = int(args[0])
+                referrer_id = int(context.args[0]) if context.args and context.args[0].isdigit() else None
+                if referrer_id:
                     referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", referrer_id)
                     if referrer:
                         referrals = json.loads(referrer["referrals"]) if referrer["referrals"] else []
@@ -856,9 +927,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                             )
                             logger.info(f"Added referral: user_id={user_id} to referrer_id={referrer_id}")
                 await conn.execute(
-                    "INSERT INTO users (user_id, username, stars_bought, referrals, ref_bonus_ton, is_admin) "
-                    "VALUES ($1, $2, $3, $4, $5, $6)",
-                    user_id, username, 0, json.dumps([]), 0.0, False
+                    "INSERT INTO users (user_id, username, stars_bought, referrals, ref_bonus_ton, is_admin, created_at) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    user_id, username, 0, json.dumps([]), 0.0, False, datetime.now(pytz.UTC)
                 )
                 logger.info(f"New user registered: user_id={user_id}, username={username}")
             else:
@@ -866,22 +937,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     "UPDATE users SET username = $1 WHERE user_id = $2",
                     username, user_id
                 )
+                logger.debug(f"Updated username for user_id={user_id}")
+
+            # Check admin status
             is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-            if context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
+            logger.debug(f"User admin status: is_admin={is_admin}")
+
+            # Check tech break
+            if (
+                context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC))
+                > datetime.now(pytz.UTC)
+                and not is_admin
+            ):
                 time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
                 text = await get_text(
                     "tech_break_active",
                     end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
                     minutes_left=time_remaining,
-                    reason=context.bot_data["tech_break_info"]["reason"]
+                    reason=context.bot_data["tech_break_info"].get("reason", "Не указана")
                 )
-                await update.message.reply_text(text)
-                context.user_data["state"] = 0
+                await safe_reply_text(
+                    update,
+                    text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+                    parse_mode="HTML"
+                )
                 await log_analytics(user_id, "start_tech_break", {})
                 return 0
+
+            # Fetch total and user stars
             total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
             user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
             text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
+
+            # Build keyboard
             keyboard = [
                 [
                     InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
@@ -895,24 +984,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             ]
             if is_admin:
                 keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
-            await update.message.reply_text(
+
+            # Send response with retry logic
+            await safe_reply_text(
+                update,
                 text,
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
             context.user_data["state"] = 0
             await log_analytics(user_id, "start", {"referrer_id": referrer_id})
+            logger.info(f"Successfully executed /start for user_id={user_id}")
             return 0
+
     except Exception as e:
-        logger.error(f"Error in start: {e}", exc_info=True)
-        await update.message.reply_text(
+        logger.error(f"Error in start handler: {e}", exc_info=True)
+        await safe_reply_text(
+            update,
             "Произошла ошибка. Попробуйте снова или обратитесь в поддержку.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
+            parse_mode="HTML"
         )
         context.user_data["state"] = 0
         await log_analytics(user_id, "start_error", {"error": str(e)})
         return 0
-
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     user_id = query.from_user.id
