@@ -771,8 +771,7 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     minutes_left=time_remaining,
                     reason=context.bot_data["tech_break_info"].get("reason", "Не указана")
                 )
-                await safe_reply_text(
-                    update,
+                await update.message.reply_text(
                     text,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
                     parse_mode="HTML"
@@ -799,8 +798,7 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     diff_24h = 0.0  # No diff_24h available from DB
                 else:
                     logger.error("No valid TON price available")
-                    await safe_reply_text(
-                        update,
+                    await update.message.reply_text(
                         "Ошибка получения цены TON. Попробуйте позже.",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
                         parse_mode="HTML"
@@ -812,9 +810,8 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             change_text = f"📈 +{diff_24h:.2f}%" if diff_24h >= 0 else f"📉 {diff_24h:.2f}%"
             text = f"💰 Цена TON: ${price:.2f}\nИзменение за 24ч: {change_text}"
 
-            # Send response with retry logic
-            await safe_reply_text(
-                update,
+            # Send response
+            await update.message.reply_text(
                 text,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
                 parse_mode="HTML"
@@ -825,14 +822,14 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     except Exception as e:
         logger.error(f"Error in ton_price_command: {e}", exc_info=True)
-        await safe_reply_text(
-            update,
+        await update.message.reply_text(
             "Ошибка при получении цены TON. Попробуйте позже.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
             parse_mode="HTML"
         )
         await log_analytics(user_id, "ton_price_error", {"error": str(e)})
         return 0
+        
 async def load_settings():
     global PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE
     async with (await ensure_db_pool()) as conn:
@@ -874,15 +871,6 @@ async def check_environment():
     if missing_vars:
         logger.error(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
         raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
-
-def setup_handlers(app: Application):
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("tonprice", ton_price_command))
-    app.add_handler(CallbackQueryHandler(callback_query_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    app.add_handler(PreCheckoutQueryHandler(pre_checkout_callback))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
-    logger.info("Registered Telegram handlers: start, tonprice, callback_query_handler, message_handler, pre_checkout_callback, successful_payment_callback")
 
 async def format_time_remaining(end_time):
     now = datetime.now(pytz.UTC)
@@ -964,8 +952,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     minutes_left=time_remaining,
                     reason=context.bot_data["tech_break_info"].get("reason", "Не указана")
                 )
-                await safe_reply_text(
-                    update,
+                await update.message.reply_text(
                     text,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
                     parse_mode="HTML"
@@ -981,8 +968,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             # Build keyboard
             keyboard = [
                 [
-                    InlineKeyboardButton("📰 Новости", url="https://t.me/cheapstarshop_news"),
-                    InlineKeyboardButton("📞 Поддержка и Отзывы", url="https://t.me/CheapStarsShop_support")
+                    InlineKeyboardButton("📰 Новости", url=NEWS_CHANNEL),
+                    InlineKeyboardButton("📞 Поддержка и Отзывы", url=SUPPORT_CHANNEL)
                 ],
                 [
                     InlineKeyboardButton("👤 Профиль", callback_data="profile"),
@@ -993,9 +980,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             if is_admin:
                 keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
 
-            # Send response with retry logic
-            await safe_reply_text(
-                update,
+            # Send response
+            await update.message.reply_text(
                 text,
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
@@ -1006,8 +992,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     except Exception as e:
         logger.error(f"Error in start handler: {e}", exc_info=True)
-        await safe_reply_text(
-            update,
+        await update.message.reply_text(
             "Произошла ошибка. Попробуйте снова или обратитесь в поддержку.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
             parse_mode="HTML"
@@ -3115,9 +3100,10 @@ async def webhook(request: web.Request) -> web.Response:
             logger.error("telegram_app is None")
             return web.json_response({"status": "error", "message": "Application not initialized"}, status=500)
         data = await request.json()
-        logger.info(f"Webhook received data: {data}")
+        logger.debug(f"Webhook received data: {data}")
         update = Update.de_json(data, telegram_app.bot)
         if update:
+            logger.debug(f"Processing update: update_id={update.update_id}, message={update.message}, command={update.message.text if update.message else None}")
             await telegram_app.process_update(update)
             logger.info("Webhook processed successfully")
             return web.json_response({"status": "ok"})
@@ -3125,8 +3111,9 @@ async def webhook(request: web.Request) -> web.Response:
             logger.warning("Invalid webhook update received")
             return web.json_response({"status": "invalid update"}, status=400)
     except Exception as e:
-        logger.error(f"Ошибка в webhook: {e}", exc_info=True)
+        logger.error(f"Error in webhook: {e}", exc_info=True)
         return web.json_response({"status": "error", "message": str(e)}, status=500)
+
 async def health_check(request: web.Request) -> web.Response:
     logger.info(f"Health check called: {request.method} {request.path}")
     try:
@@ -3136,6 +3123,23 @@ async def health_check(request: web.Request) -> web.Response:
     except Exception as e:
         logger.error(f"Health check failed: {e}", exc_info=True)
         return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
+
+async def setup_handlers(app: Application):
+    """Register all Telegram handlers."""
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("tonprice", ton_price_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_handler(CallbackQueryHandler(callback_query_handler))
+    app.add_handler(CommandHandler("test", test))  # For debugging
+    logger.info("Handlers registered: start, tonprice, message, callback_query, test")
+
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Debug command to verify handler execution."""
+    user_id = update.effective_user.id
+    logger.debug(f"Test command received: user_id={user_id}")
+    await update.message.reply_text("Bot is responding!", parse_mode="HTML")
+    await log_analytics(user_id, "test_command", {})
+
 async def lifespan(app):
     global telegram_app
     if telegram_app is None:
@@ -3149,17 +3153,26 @@ async def lifespan(app):
 
 async def main():
     global telegram_app
-    # Initialize telegram_app
     logger.info("Creating telegram_app...")
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
         logger.error("BOT_TOKEN environment variable not set")
         raise RuntimeError("BOT_TOKEN not set")
+    
     telegram_app = Application.builder().token(bot_token).build()
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    
+    # Register handlers
+    await setup_handlers(telegram_app)
     logger.info("telegram_app created successfully")
     
-    # Initialize telegram_app explicitly
+    # Initialize tech_break_info
+    telegram_app.bot_data["tech_break_info"] = {
+        "end_time": datetime.min.replace(tzinfo=pytz.UTC),
+        "reason": ""
+    }
+    logger.debug("Initialized tech_break_info in bot_data")
+
+    # Initialize telegram_app
     logger.info("Initializing telegram_app...")
     try:
         await telegram_app.initialize()
@@ -3168,11 +3181,10 @@ async def main():
         logger.error(f"Failed to initialize telegram_app: {e}", exc_info=True)
         raise
 
+    # Set up aiohttp server
     app = web.Application()
-    # Register specific routes
     app.router.add_post('/webhook', webhook)
     app.router.add_get('/', health_check)
-    # Register Flask routes
     wsgi_handler = WSGIHandler(app_flask)
     app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
 
@@ -3189,6 +3201,14 @@ async def main():
         logger.info(f"Setting webhook to {webhook_url}...")
         await telegram_app.bot.set_webhook(webhook_url)
         logger.info("Webhook set successfully")
+
+        # Schedule TON price updates
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        scheduler = AsyncIOScheduler(timezone=pytz.UTC)
+        scheduler.add_job(update_ton_price, 'interval', minutes=5, args=[telegram_app])
+        scheduler.start()
+        logger.info("TON price update scheduler started")
+
         await asyncio.Event().wait()
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
