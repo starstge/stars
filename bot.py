@@ -1958,20 +1958,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await log_analytics(user_id, "message_error", {"error": str(e)})
         return 0
 
-import uuid
-import json
-import pytz
-from datetime import datetime
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TelegramError
-from telegram import Update
-from telegram.ext import ContextTypes
-import asyncpg
-import asyncio
-import logging
-import os
-
-logger = logging.getLogger(__main__)
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
