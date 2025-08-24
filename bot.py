@@ -5,6 +5,7 @@ import logging
 import asyncio
 import aiohttp
 import psycopg2
+import time
 from asyncpg.pool import Pool
 import signal
 from functools import wraps
