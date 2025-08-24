@@ -587,30 +587,33 @@ async def ensure_db_pool():
     max_retries = 5
     retry_delay = 2
     async with _db_pool_lock:
-        for attempt in range(max_retries):
+        if _db_pool is not None and not _db_pool._closed and not _db_pool._closing:
             try:
-                if _db_pool is None or _db_pool._closed or _db_pool._closing:
-                    logger.info(f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
-                    if _db_pool:
-                        try:
-                            await asyncio.wait_for(_db_pool.close(), timeout=10.0)
-                            logger.debug("Closed existing pool")
-                        except asyncio.TimeoutError:
-                            logger.warning("Timeout closing existing pool")
-                        except Exception as e:
-                            logger.warning(f"Error closing existing pool: {e}")
-                    _db_pool = await asyncpg.create_pool(
-                        dsn=os.getenv("DATABASE_URL"),
-                        min_size=1,
-                        max_size=10,
-                        max_inactive_connection_lifetime=300,
-                        timeout=30
-                    )
-                    logger.info("Database pool created successfully")
                 async with _db_pool.acquire() as conn:
                     await conn.execute("SELECT 1")
-                    active_conns = await conn.fetchval("SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND datname = current_database()")
-                    logger.debug(f"Database pool validated successfully, active connections: {active_conns}")
+                    logger.debug("Existing database pool is valid")
+                    return _db_pool
+            except Exception as e:
+                logger.warning(f"Existing pool is invalid: {e}, will recreate")
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
+                if _db_pool is not None:
+                    try:
+                        await _db_pool.close()
+                        logger.debug("Closed existing pool")
+                    except Exception as e:
+                        logger.warning(f"Error closing existing pool: {e}")
+                _db_pool = await asyncpg.create_pool(
+                    dsn=env.str("DATABASE_URL"),
+                    min_size=1,
+                    max_size=10,
+                    max_inactive_connection_lifetime=300,
+                    timeout=30
+                )
+                async with _db_pool.acquire() as conn:
+                    await conn.execute("SELECT 1")
+                    logger.debug("Database pool validated successfully")
                 return _db_pool
             except Exception as e:
                 logger.warning(f"Failed to create/validate pool (attempt {attempt + 1}/{max_retries}): {e}")
@@ -1676,6 +1679,20 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await log_analytics(user_id, "admin_panel_error", {"error": str(e)})
         return 0
 
+def are_reply_markups_equal(current, new):
+    """Compare two InlineKeyboardMarkup objects for equality."""
+    if current is None or new is None:
+        return False
+    if len(current.inline_keyboard) != len(new.inline_keyboard):
+        return False
+    for row1, row2 in zip(current.inline_keyboard, new.inline_keyboard):
+        if len(row1) != len(row2):
+            return False
+        for btn1, btn2 in zip(row1, row2):
+            if btn1.text != btn2.text or btn1.callback_data != btn2.callback_data:
+                return False
+    return True
+
 async def calculate_price_ton(context: ContextTypes.DEFAULT_TYPE, stars: int) -> float:
     try:
         async with (await ensure_db_pool()) as conn:
@@ -2027,31 +2044,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await log_analytics(user_id, "message_error", {"error": str(e)})
         return 0
 
-
-import uuid
-import json
-import pytz
-from datetime import datetime, timedelta
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TelegramError
-from telegram import Update
-from telegram.ext import ContextTypes
-import asyncpg
-import asyncio
-import logging
-import os
-import time
-
-logger = logging.getLogger(__name__)
-
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     user_id = query.from_user.id
     data = query.data
     start_time = time.time()
-    logger.info(f"Callback query received: user_id={user_id}, data={data}")
+    logger.info(f"Callback query received: user_id={user_id}, data={data}, user_data={context.user_data}")
 
-    # Answer query immediately with timeout
+    # Answer query with timeout
     try:
         await asyncio.wait_for(query.answer(), timeout=5.0)
         logger.debug(f"Answered callback query in {time.time() - start_time:.2f}s")
@@ -2065,11 +2065,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         context.bot_data["tech_break_info"] = {"end_time": datetime.min.replace(tzinfo=pytz.UTC), "reason": ""}
 
     try:
-        # Wrap database operations in a timeout to prevent blocking
-        async with asyncio.timeout(10.0):
+        # Wrap database operations in a timeout
+        async with asyncio.timeout(15.0):  # Increased timeout to 15s
             async with (await ensure_db_pool()) as conn:
                 is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-                logger.debug(f"Fetched admin status in {time.time() - start_time:.2f}s")
+                logger.debug(f"Fetched admin status in {time.time() - start_time:.2f}s, is_admin={is_admin}")
 
                 # Tech break check
                 if context.bot_data["tech_break_info"].get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
@@ -2080,16 +2080,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         minutes_left=time_remaining,
                         reason=context.bot_data["tech_break_info"].get("reason", "Не указана")
                     )
-                    new_keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
-                    new_reply_markup = InlineKeyboardMarkup(new_keyboard)
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for tech break: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 0
                     await log_analytics(user_id, "callback_tech_break", {})
                     logger.debug(f"Processed tech break check in {time.time() - start_time:.2f}s")
@@ -2115,15 +2113,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         [InlineKeyboardButton("🏅 Топ покупок", callback_data="top_purchases")],
                         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
                     ]
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup(keyboard)
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for profile: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 1
                     await log_analytics(user_id, "view_profile", {})
                     logger.debug(f"Processed profile callback in {time.time() - start_time:.2f}s")
@@ -2157,15 +2153,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     if page > 0:
                         keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"profile_transactions_{page - 1}")])
                     keyboard.append([InlineKeyboardButton("🔙 В профиль", callback_data="profile")])
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup(keyboard)
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for profile transactions: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 26
                     await log_analytics(user_id, "view_profile_transactions", {"page": page})
                     logger.debug(f"Processed profile transactions in {time.time() - start_time:.2f}s")
@@ -2185,15 +2179,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         ref_count=len(referrals),
                         ref_bonus_ton=ref_bonus_ton
                     )
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for referrals: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 2
                     await log_analytics(user_id, "view_referrals", {})
                     logger.debug(f"Processed referrals callback in {time.time() - start_time:.2f}s")
@@ -2218,15 +2211,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         "referral_leaderboard",
                         users_list="\n".join(text_lines) if text_lines else "Рефералов пока нет."
                     )
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for referral leaderboard: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 12
                     await log_analytics(user_id, "view_referral_leaderboard", {})
                     logger.debug(f"Processed referral leaderboard in {time.time() - start_time:.2f}s")
@@ -2250,15 +2242,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         "top_purchases",
                         users_list="\n".join(text_lines) if text_lines else "Покупок пока нет."
                     )
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for top purchases: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 13
                     await log_analytics(user_id, "view_top_purchases", {})
                     logger.debug(f"Processed top purchases in {time.time() - start_time:.2f}s")
@@ -2283,15 +2274,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         ],
                         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
                     ]
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup(keyboard)
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for buy stars: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 5
                     await log_analytics(user_id, "open_buy_stars_payment_method", {})
                     logger.debug(f"Processed buy stars in {time.time() - start_time:.2f}s")
@@ -2304,20 +2293,19 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     price_text = f"~{price_ton:.4f} TON" if price_ton is not None else "Цена не определена"
                     await query.answer(text=price_text, show_alert=True)
                     logger.debug(f"Processed show price in {time.time() - start_time:.2f}s")
-                    return context.user_data["state"]
+                    return context.user_data.get("state", 0)
 
                 # Select Recipient
                 elif data == "select_recipient":
                     text = "Введите имя пользователя (например, @username):"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for select recipient: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 3
                     await log_analytics(user_id, "start_select_recipient", {})
                     logger.debug(f"Processed select recipient in {time.time() - start_time:.2f}s")
@@ -2337,15 +2325,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         [InlineKeyboardButton("Другое", callback_data="select_stars_custom")],
                         [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
                     ]
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup(keyboard)
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for select stars menu: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 22
                     await log_analytics(user_id, "open_select_stars_menu", {})
                     logger.debug(f"Processed select stars menu in {time.time() - start_time:.2f}s")
@@ -2370,15 +2356,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         ],
                         [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
                     ]
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup(keyboard)
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for select stars: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 5
                     await log_analytics(user_id, f"select_stars_{stars}", {"stars": stars})
                     logger.debug(f"Processed select stars {stars} in {time.time() - start_time:.2f}s")
@@ -2387,15 +2371,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Select Custom Stars
                 elif data == "select_stars_custom":
                     text = "Введите количество звезд (положительное число):"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="select_stars_menu")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="select_stars_menu")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for select custom stars: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 23
                     await log_analytics(user_id, "start_select_stars_custom", {})
                     logger.debug(f"Processed select custom stars in {time.time() - start_time:.2f}s")
@@ -2405,26 +2388,62 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 elif data == "pay_stars_menu":
                     stars = context.user_data.get("stars_amount")
                     recipient = context.user_data.get("recipient")
-                    if not stars or not recipient or not isinstance(stars, str) or not stars.isdigit():
-                        text = "Ошибка: выберите пользователя и количество звезд."
+                    if not stars:
+                        text = "Ошибка: количество звезд не выбрано."
                         keyboard = [
                             [InlineKeyboardButton(f"Пользователь: {context.user_data.get('recipient', 'Не выбран')}", callback_data="select_recipient")],
-                            [InlineKeyboardButton(f"Количество: {context.user_data.get('stars_amount', 'Не выбрано')}", callback_data="select_stars_menu")],
+                            [InlineKeyboardButton("Количество: Не выбрано", callback_data="select_stars_menu")],
                             [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Далее", callback_data="pay_stars_menu")],
                             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
                         ]
-                        current_text = query.message.text
-                        current_reply_markup = query.message.reply_markup
-                        new_reply_markup = InlineKeyboardMarkup(keyboard)
-                        if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                            await query.message.edit_text(
-                                text,
-                                reply_markup=new_reply_markup,
-                                parse_mode="HTML"
-                            )
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        try:
+                            await asyncio.sleep(0.1)
+                            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        except TelegramError as e:
+                            logger.error(f"Failed to edit message for pay stars error: {e}")
+                            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 5
-                        await log_analytics(user_id, "pay_stars_menu_error", {"stars": stars, "recipient": recipient})
-                        logger.debug(f"Processed pay stars menu error in {time.time() - start_time:.2f}s")
+                        await log_analytics(user_id, "pay_stars_menu_error", {"error": "missing_stars", "recipient": recipient})
+                        logger.debug(f"Processed pay stars menu error (missing stars) in {time.time() - start_time:.2f}s")
+                        return 5
+                    if not recipient:
+                        text = "Ошибка: пользователь не выбран."
+                        keyboard = [
+                            [InlineKeyboardButton("Пользователь: Не выбран", callback_data="select_recipient")],
+                            [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
+                            [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Далее", callback_data="pay_stars_menu")],
+                            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        try:
+                            await asyncio.sleep(0.1)
+                            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        except TelegramError as e:
+                            logger.error(f"Failed to edit message for pay stars error: {e}")
+                            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        context.user_data["state"] = 5
+                        await log_analytics(user_id, "pay_stars_menu_error", {"error": "missing_recipient", "stars": stars})
+                        logger.debug(f"Processed pay stars menu error (missing recipient) in {time.time() - start_time:.2f}s")
+                        return 5
+                    if not isinstance(stars, str) or not stars.isdigit():
+                        text = "Ошибка: количество звезд должно быть числом."
+                        keyboard = [
+                            [InlineKeyboardButton(f"Пользователь: {recipient}", callback_data="select_recipient")],
+                            [InlineKeyboardButton("Количество: Не выбрано", callback_data="select_stars_menu")],
+                            [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Далее", callback_data="pay_stars_menu")],
+                            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        try:
+                            await asyncio.sleep(0.1)
+                            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        except TelegramError as e:
+                            logger.error(f"Failed to edit message for pay stars error: {e}")
+                            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        context.user_data["state"] = 5
+                        await log_analytics(user_id, "pay_stars_menu_error", {"error": "invalid_stars", "stars": stars, "recipient": recipient})
+                        logger.debug(f"Processed pay stars menu error (invalid stars) in {time.time() - start_time:.2f}s")
                         return 5
 
                     stars = int(stars)
@@ -2432,11 +2451,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     if price_ton == 0.0:
                         text = "Ошибка: не удалось рассчитать цену. Попробуйте позже."
                         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]]
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=InlineKeyboardMarkup(keyboard),
-                            parse_mode="HTML"
-                        )
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        try:
+                            await asyncio.sleep(0.1)
+                            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        except TelegramError as e:
+                            logger.error(f"Failed to edit message for price error: {e}")
+                            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 5
                         await log_analytics(user_id, "pay_stars_menu_price_error", {"stars": stars})
                         logger.debug(f"Processed pay stars menu price error in {time.time() - start_time:.2f}s")
@@ -2464,16 +2485,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         [InlineKeyboardButton("✅ Проверить оплату", callback_data=f"check_payment_{invoice_id}")],
                         [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
                     ]
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup(keyboard)
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML",
-                            disable_web_page_preview=True
-                        )
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML", disable_web_page_preview=True)
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for payment link: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML", disable_web_page_preview=True)
                     context.user_data["state"] = 25
                     context.user_data["invoice_id"] = invoice_id
                     context.user_data["price_ton"] = price_ton
@@ -2490,11 +2508,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     if not stars or not recipient or not price_ton or not invoice_id:
                         text = "Ошибка: данные о покупке отсутствуют. Начните заново."
                         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]]
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=InlineKeyboardMarkup(keyboard),
-                            parse_mode="HTML"
-                        )
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        try:
+                            await asyncio.sleep(0.1)
+                            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        except TelegramError as e:
+                            logger.error(f"Failed to edit message for check payment error: {e}")
+                            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 5
                         await log_analytics(user_id, "check_payment_error", {"invoice_id": invoice_id})
                         logger.debug(f"Processed check payment error in {time.time() - start_time:.2f}s")
@@ -2506,11 +2526,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     if transaction and transaction["checked_status"] == "completed":
                         text = f"Платеж подтвержден!\n{stars} звезд добавлены для {recipient}."
                         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=InlineKeyboardMarkup(keyboard),
-                            parse_mode="HTML"
-                        )
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        try:
+                            await asyncio.sleep(0.1)
+                            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        except TelegramError as e:
+                            logger.error(f"Failed to edit message for payment confirmed: {e}")
+                            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 0
                         context.user_data.pop("stars_amount", None)
                         context.user_data.pop("recipient", None)
@@ -2553,11 +2575,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             await log_analytics(user_id, "referral_bonus_added", {"referrer_id": referrer_id, "bonus_ton": ref_bonus_ton})
                         text = f"Платеж подтвержден!\n{stars} звезд добавлены для {recipient}."
                         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=InlineKeyboardMarkup(keyboard),
-                            parse_mode="HTML"
-                        )
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        try:
+                            await asyncio.sleep(0.1)
+                            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        except TelegramError as e:
+                            logger.error(f"Failed to edit message for payment verified: {e}")
+                            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 0
                         context.user_data.pop("stars_amount", None)
                         context.user_data.pop("recipient", None)
@@ -2572,11 +2596,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             [InlineKeyboardButton("✅ Проверить снова", callback_data=f"check_payment_{invoice_id}")],
                             [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
                         ]
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=InlineKeyboardMarkup(keyboard),
-                            parse_mode="HTML"
-                        )
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        try:
+                            await asyncio.sleep(0.1)
+                            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        except TelegramError as e:
+                            logger.error(f"Failed to edit message for payment check failed: {e}")
+                            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 25
                         await log_analytics(user_id, "payment_check_failed", {"invoice_id": invoice_id})
                         logger.debug(f"Processed payment check failed in {time.time() - start_time:.2f}s")
@@ -2597,15 +2623,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         total_stars=total_stars,
                         total_referrals=total_referrals
                     )
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for admin stats: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 9
                     await log_analytics(user_id, "view_admin_stats", {})
                     logger.debug(f"Processed admin stats in {time.time() - start_time:.2f}s")
@@ -2614,15 +2639,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Broadcast Message
                 elif data == "broadcast_message" and is_admin:
                     text = "Введите текст для рассылки:"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for broadcast message: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 10
                     await log_analytics(user_id, "start_broadcast", {})
                     logger.debug(f"Processed broadcast message in {time.time() - start_time:.2f}s")
@@ -2633,16 +2657,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     broadcast_text = context.user_data.get("broadcast_text", "")
                     if not broadcast_text:
                         text = "Текст рассылки пуст. Введите текст заново."
-                        current_text = query.message.text
-                        current_reply_markup = query.message.reply_markup
-                        new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                        if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                            await query.message.edit_text(
-                                text,
-                                reply_markup=new_reply_markup,
-                                parse_mode="HTML"
-                            )
+                        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        try:
+                            await asyncio.sleep(0.1)
+                            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                        except TelegramError as e:
+                            logger.error(f"Failed to edit message for empty broadcast: {e}")
+                            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                         context.user_data["state"] = 10
+                        await log_analytics(user_id, "empty_broadcast", {})
+                        logger.debug(f"Processed empty broadcast in {time.time() - start_time:.2f}s")
                         return 10
                     users = await conn.fetch("SELECT user_id FROM users")
                     success_count = 0
@@ -2654,18 +2679,18 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                                 parse_mode="HTML"
                             )
                             success_count += 1
+                            await asyncio.sleep(0.1)  # Avoid rate limits
                         except TelegramError as e:
                             logger.error(f"Failed to send broadcast to {user['user_id']}: {e}")
                     text = f"Рассылка завершена. Отправлено {success_count} из {len(users)} пользователям."
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for broadcast complete: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data.pop("broadcast_text", None)
                     context.user_data["state"] = 8
                     await log_analytics(user_id, "complete_broadcast", {"success_count": success_count, "total_users": len(users)})
@@ -2675,15 +2700,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Cancel Broadcast
                 elif data == "cancel_broadcast" and is_admin:
                     text = "Рассылка отменена."
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for cancel broadcast: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data.pop("broadcast_text", None)
                     context.user_data["state"] = 8
                     await log_analytics(user_id, "cancel_broadcast", {})
@@ -2693,18 +2717,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Admin Edit Profile
                 elif data == "admin_edit_profile" and is_admin:
                     text = "Введите ID пользователя для редактирования:"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([
+                    keyboard = [
                         [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
                         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
-                    ])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for admin edit profile: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 11
                     await log_analytics(user_id, "start_edit_profile", {})
                     logger.debug(f"Processed admin edit profile in {time.time() - start_time:.2f}s")
@@ -2733,15 +2756,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         "all_users",
                         users_list="\n".join(text_lines) if text_lines else "Пользователи не найдены."
                     )
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад в админ-панель", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад в админ-панель", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for all users: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 15
                     await log_analytics(user_id, "view_all_users", {"users_count": len(users)})
                     logger.debug(f"Processed all users in {time.time() - start_time:.2f}s")
@@ -2751,15 +2773,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 elif data == "edit_profile_stars" and is_admin:
                     context.user_data["edit_profile_field"] = "stars_bought"
                     text = "Введите новое количество звезд:"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for edit profile stars: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 11
                     await log_analytics(user_id, "start_edit_stars", {})
                     logger.debug(f"Processed edit profile stars in {time.time() - start_time:.2f}s")
@@ -2769,15 +2790,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 elif data == "edit_profile_referrals" and is_admin:
                     context.user_data["edit_profile_field"] = "referrals"
                     text = "Введите ID рефералов через запятую:"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for edit profile referrals: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 11
                     await log_analytics(user_id, "start_edit_referrals", {})
                     logger.debug(f"Processed edit profile referrals in {time.time() - start_time:.2f}s")
@@ -2787,15 +2807,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 elif data == "edit_profile_ref_bonus" and is_admin:
                     context.user_data["edit_profile_field"] = "ref_bonus_ton"
                     text = "Введите новый реферальный бонус (TON):"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for edit profile ref bonus: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 11
                     await log_analytics(user_id, "start_edit_ref_bonus", {})
                     logger.debug(f"Processed edit profile ref bonus in {time.time() - start_time:.2f}s")
@@ -2804,15 +2823,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Set DB Reminder
                 elif data == "set_db_reminder" and is_admin:
                     text = "Введите дату напоминания в формате гггг-мм-дд:"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for set db reminder: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 14
                     await log_analytics(user_id, "start_set_db_reminder", {})
                     logger.debug(f"Processed set db reminder in {time.time() - start_time:.2f}s")
@@ -2821,15 +2839,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Tech Break
                 elif data == "tech_break" and is_admin:
                     text = "Введите длительность тех. перерыва (в минутах) и причину (формат: <минуты> <причина>):"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for tech break: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 16
                     await log_analytics(user_id, "start_tech_break", {})
                     logger.debug(f"Processed tech break in {time.time() - start_time:.2f}s")
@@ -2852,15 +2869,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         [InlineKeyboardButton("Изменить реф. бонус", callback_data="edit_ref_bonus")],
                         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]
                     ]
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup(keyboard)
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for bot settings: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 17
                     await log_analytics(user_id, "view_bot_settings", {})
                     logger.debug(f"Processed bot settings in {time.time() - start_time:.2f}s")
@@ -2869,15 +2884,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Edit Price USD
                 elif data == "edit_price_usd" and is_admin:
                     text = "Введите новую цену за 50 звезд (USD):"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for edit price usd: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 17
                     context.user_data["edit_setting"] = "price_usd"
                     await log_analytics(user_id, "start_edit_price_usd", {})
@@ -2887,15 +2901,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Edit Markup
                 elif data == "edit_markup" and is_admin:
                     text = "Введите новую накрутку (%):"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for edit markup: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 17
                     context.user_data["edit_setting"] = "markup"
                     await log_analytics(user_id, "start_edit_markup", {})
@@ -2905,15 +2918,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Edit Referral Bonus
                 elif data == "edit_ref_bonus" and is_admin:
                     text = "Введите новый реферальный бонус (%):"
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for edit ref bonus: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
                     context.user_data["state"] = 17
                     context.user_data["edit_setting"] = "ref_bonus"
                     await log_analytics(user_id, "start_edit_ref_bonus", {})
@@ -2932,8 +2944,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
                     keyboard = [
                         [
-                            InlineKeyboardButton("📰 Новости", url=os.getenv("NEWS_CHANNEL")),
-                            InlineKeyboardButton("📞 Поддержка и Отзывы", url=os.getenv("SUPPORT_CHANNEL"))
+                            InlineKeyboardButton("📰 Новости", url=os.getenv("NEWS_CHANNEL", "https://t.me/news")),
+                            InlineKeyboardButton("📞 Поддержка и Отзывы", url=os.getenv("SUPPORT_CHANNEL", "https://t.me/support"))
                         ],
                         [
                             InlineKeyboardButton("👤 Профиль", callback_data="profile"),
@@ -2943,15 +2955,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     ]
                     if is_admin:
                         keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel")])
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup(keyboard)
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                        await query.message.edit_text(
-                            text,
-                            reply_markup=new_reply_markup,
-                            parse_mode="HTML"
-                        )
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    try:
+                        await asyncio.sleep(0.1)
+                        await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    except TelegramError as e:
+                        logger.error(f"Failed to edit message for back to menu: {e}")
+                        await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+                    context.user_data.clear()  # Clear user data to prevent stale state
                     context.user_data["state"] = 0
                     await log_analytics(user_id, "back_to_menu", {})
                     logger.debug(f"Processed back to menu in {time.time() - start_time:.2f}s")
@@ -2966,11 +2977,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         logger.error(f"Database operation timed out for user_id={user_id}, data={data}", exc_info=True)
         text = "Ошибка: операция с базой данных заняла слишком много времени. Попробуйте снова."
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
-        await query.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await asyncio.sleep(0.1)
+            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+        except TelegramError as e:
+            logger.error(f"Failed to edit message for timeout: {e}")
+            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+        context.user_data.clear()
         context.user_data["state"] = 0
         await log_analytics(user_id, "database_timeout", {"data": data})
         return 0
@@ -2978,28 +2992,48 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         logger.error(f"Database pool error: {e}", exc_info=True)
         text = "Ошибка: не удалось подключиться к базе данных. Попробуйте снова позже."
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
-        await query.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await asyncio.sleep(0.1)
+            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+        except TelegramError as e:
+            logger.error(f"Failed to edit message for db error: {e}")
+            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+        context.user_data.clear()
         context.user_data["state"] = 0
         await log_analytics(user_id, "database_error", {"error": str(e)})
+        return 0
+    except TelegramError as e:
+        logger.error(f"Telegram API error: {e}", exc_info=True)
+        text = "Ошибка Telegram API. Пожалуйста, попробуйте снова или обратитесь в поддержку."
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await asyncio.sleep(0.1)
+            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+        except TelegramError as e2:
+            logger.error(f"Failed to send error message: {e2}")
+        context.user_data.clear()
+        context.user_data["state"] = 0
+        await log_analytics(user_id, "telegram_error", {"error": str(e)})
         return 0
     except Exception as e:
         logger.error(f"Error in callback_query_handler: {e}", exc_info=True)
         text = "Произошла ошибка. Попробуйте снова или обратитесь в поддержку."
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
-        await query.message.edit_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await asyncio.sleep(0.1)
+            await query.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+        except TelegramError as e:
+            logger.error(f"Failed to edit message for error: {e}")
+            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
+        context.user_data.clear()
         context.user_data["state"] = 0
         await log_analytics(user_id, "callback_error", {"error": str(e)})
         return 0
     finally:
-        logger.debug(f"Total callback query processing time: {time.time() - start_time:.2f}s")
+        logger.debug(f"Total callback query processing time: {time.time() - start_time:.2f}s, final_user_data={context.user_data}")
 
 async def lifespan(app):
     global telegram_app
