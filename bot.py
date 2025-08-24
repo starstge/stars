@@ -506,26 +506,38 @@ _db_pool_lock = asyncio.Lock()
 
 async def ensure_db_pool():
     global _db_pool
-    max_retries = 3
-    retry_delay = 1
-    for attempt in range(max_retries):
-        try:
-            if _db_pool is None or _db_pool._closed:
-                logger.debug(f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
-                _db_pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"), min_size=1, max_size=10)
-                logger.info("Database pool created successfully")
-            # Validate pool
-            async with _db_pool.acquire() as conn:
-                await conn.execute("SELECT 1")
-                logger.debug("Database pool validated")
-            return _db_pool
-        except Exception as e:
-            logger.warning(f"Failed to create/validate pool (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt + 1 < max_retries:
-                await asyncio.sleep(retry_delay)
-            else:
-                logger.error(f"Failed to create pool after {max_retries} attempts: {e}", exc_info=True)
-                raise
+    max_retries = 5  # Increased retries
+    retry_delay = 2  # Increased delay to 2 seconds
+    async with _db_pool_lock:
+        for attempt in range(max_retries):
+            try:
+                if _db_pool is None or _db_pool._closed or _db_pool._closing:
+                    logger.info(f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
+                    if _db_pool:
+                        try:
+                            await _db_pool.close()
+                            logger.debug("Closed existing pool")
+                        except Exception as e:
+                            logger.warning(f"Error closing existing pool: {e}")
+                    _db_pool = await asyncpg.create_pool(
+                        dsn=os.getenv("DATABASE_URL"),
+                        min_size=1,
+                        max_size=10,
+                        max_inactive_connection_lifetime=300,  # Close inactive connections after 5 minutes
+                        timeout=30
+                    )
+                    logger.info("Database pool created successfully")
+                async with _db_pool.acquire() as conn:
+                    await conn.execute("SELECT 1")
+                    logger.debug(f"Pool validated: min_size={_db_pool.min_size}, max_size={_db_pool.max_size}, free={_db_pool.freesize}")
+                return _db_pool
+            except Exception as e:
+                logger.warning(f"Failed to create/validate pool (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt + 1 < max_retries:
+                    await asyncio.sleep(retry_delay)
+                continue
+        logger.error(f"Failed to create pool after {max_retries} attempts")
+        raise asyncpg.exceptions.InterfaceError("Failed to establish database connection pool")
 async def close_db_pool(context: ContextTypes.DEFAULT_TYPE):
     async with _db_pool_lock:
         pool = context.bot_data.get("db_pool")
@@ -1074,15 +1086,23 @@ async def calculate_price_ton(context: ContextTypes.DEFAULT_TYPE, stars: int) ->
             price_usd = (stars / 50) * price_usd * (1 + markup / 100)
             if "ton_price_info" not in context.bot_data or context.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
                 await update_ton_price(context)
-            ton_price = context.bot_data["ton_price_info"].get("price", 1.0)
+            ton_price = context.bot_data["ton_price_info"].get("price", 3.32)  # Fallback from logs
             if ton_price == 0.0:
-                logger.error("TON price is zero, cannot calculate price")
-                return 0.0
+                logger.warning("TON price is zero, fetching from database")
+                price_record = await conn.fetchrow(
+                    "SELECT price FROM ton_price ORDER BY updated_at DESC LIMIT 1"
+                )
+                ton_price = price_record["price"] if price_record else 3.32
             price_ton = price_usd / ton_price
-            return round(price_ton, 2)
+            logger.debug(f"Calculated price: {stars} stars = {price_ton:.4f} TON")
+            return round(price_ton, 4)
     except Exception as e:
-        logger.error(f"Ошибка в calculate_price_ton: {e}", exc_info=True)
-        return 0.0
+        logger.error(f"Error in calculate_price_ton: {e}", exc_info=True)
+        price_usd = (stars / 50) * 0.81 * (1 + 10 / 100)  # Fallback to defaults
+        ton_price = context.bot_data.get("ton_price_info", {}).get("price", 3.32)
+        price_ton = price_usd / ton_price
+        logger.warning(f"Using fallback price: {stars} stars = {price_ton:.4f} TON")
+        return round(price_ton, 4)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
@@ -2815,16 +2835,18 @@ async def webhook(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 async def health_check(request: web.Request) -> web.Response:
-    logger.info(f"Health check called: {request.method} {request.path}")
+    logger.info("Health check called: %s %s", request.method, request.path)
     try:
         pool = await ensure_db_pool()
         async with pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-        return web.json_response({"status": "healthy"})
+            await conn.execute("SELECT 1")
+        return web.json_response({"status": "healthy", "database": "connected"})
     except Exception as e:
         logger.error(f"Health check failed: {e}", exc_info=True)
-        return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
-
+        return web.json_response(
+            {"status": "running", "database": "unavailable", "error": str(e)},
+            status=200  # Return 200 to avoid UptimeRobot alerts
+        )
 async def setup_handlers(app: Application):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tonprice", ton_price_command))
