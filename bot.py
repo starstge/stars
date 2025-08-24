@@ -690,66 +690,6 @@ async def log_analytics(user_id: int, action: str, data: dict = None):
     except Exception as e:
         logger.error(f"Ошибка логирования аналитики: {e}", exc_info=True)
 
-The logs indicate that your Telegram bot fails to start due to an error in the ensure_db_pool function at /opt/render/project/src/bot.py:540. The specific error is 'Pool' object has no attribute 'min_size', which occurs when trying to validate the database connection pool. This suggests an issue with the asyncpg library version or an incorrect assumption about the Pool object’s attributes. The error causes the application to exit early during deployment on Render, as seen in the repeated attempts at 13:27:44 and 13:28:09 on August 24, 2025. Additionally, the pip notice suggests upgrading to version 25.2, which we’ll address to ensure compatibility.
-Below, I’ll analyze the issue, provide a fixed ensure_db_pool function, update related functions (health_check, update_ton_price, calculate_price_ton, and callback_query_handler) to handle this error gracefully, and provide deployment steps to resolve the issue. I’ll also ensure compatibility with the previously provided pay_stars_menu and Tonkeeper payment functionality.
-
-Analysis of the Issue
-
-Error: 'Pool' object has no attribute 'min_size':
-
-The ensure_db_pool function tries to access min_size, max_size, and freesize attributes of the asyncpg.Pool object in the log statement: logger.debug(f"Pool validated: min_size={_db_pool.min_size}, max_size={_db_pool.max_size}, free={_db_pool.freesize}").
-In older versions of asyncpg (e.g., 0.29.0, as per your requirements.txt), these attributes exist. However, the error suggests either:
-
-A newer asyncpg version (e.g., 0.30.0 or later) where these attributes were renamed or removed.
-A mismatch in the asyncpg version installed in your environment.
-An issue where _db_pool is not a proper Pool object due to initialization failure.
-
-
-The pool creation succeeds initially (Database pool created successfully), but the validation step fails, leading to the InterfaceError and application crash.
-
-
-Impact:
-
-The bot fails to start because main calls ensure_db_pool (line 2876), and the raised InterfaceError halts asyncio.run(main()).
-This prevents the bot from processing webhooks or running scheduled jobs like update_ton_price.
-Health checks and other database-dependent functions (e.g., pay_stars_menu in callback_query_handler) will fail if the pool isn’t initialized.
-
-
-Pip Version Notice:
-
-The notice [notice] A new release of pip is available: 24.0 -> 25.2 suggests that the Render environment is using an outdated pip version. While not directly related to the error, upgrading pip ensures dependency installation is reliable.
-
-
-Previous Context:
-
-The callback_query_handler provided earlier includes the pay_stars_menu callback for Tonkeeper payments, which relies on ensure_db_pool for database operations (e.g., storing transactions).
-The previous pool is closing error was addressed by adding a lock and explicit pool closure, but this new error indicates a compatibility issue with asyncpg.
-
-
-
-
-Fixes and Improvements
-To resolve the issue, we’ll:
-
-Update ensure_db_pool to remove references to min_size, max_size, and freesize, using safer pool validation.
-Adjust related functions (health_check, update_ton_price, calculate_price_ton, callback_query_handler) to handle pool initialization failures gracefully.
-Update requirements.txt to pin asyncpg to a compatible version and upgrade pip.
-Provide deployment and troubleshooting steps to verify the fix.
-
-1. Updated ensure_db_pool
-The ensure_db_pool function will be modified to:
-
-Remove references to min_size, max_size, and freesize.
-Validate the pool using a simple query (SELECT 1).
-Retain the lock and retry logic for robustness.
-Log pool status without relying on specific attributes.
-
-pythonimport asyncpg
-import asyncio
-import os
-import logging
-from asyncio import Lock
-
 logger = logging.getLogger(__name__)
 _db_pool = None
 _db_pool_lock = Lock()
@@ -788,15 +728,6 @@ async def ensure_db_pool():
                 continue
         logger.error(f"Failed to create pool after {max_retries} attempts")
         raise asyncpg.exceptions.InterfaceError("Failed to establish database connection pool")
-Changes:
-
-Removed min_size, max_size, and freesize from the log statement.
-Simplified validation to SELECT 1 to confirm pool connectivity.
-Kept the lock and retry logic to handle concurrent access and transient errors.
-
-2. Updated health_check
-Modify health_check to handle pool initialization failures and return a warning status instead of crashing.
-pythonfrom aiohttp import web
 
 async def health_check(request: web.Request) -> web.Response:
     logger.info("Health check called: %s %s", request.method, request.path)
@@ -812,16 +743,6 @@ async def health_check(request: web.Request) -> web.Response:
             status=200
         )
 Changes:
-
-No changes needed, as the function already handles exceptions gracefully. Included for completeness.
-
-3. Updated update_ton_price
-Ensure update_ton_price can function without a database connection by caching the price in bot_data and using a fallback.
-pythonimport aiohttp
-from datetime import datetime
-import pytz
-import asyncpg
-from telegram.ext import ContextTypes
 
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.debug("Updating TON price...")
