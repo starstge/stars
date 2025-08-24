@@ -500,16 +500,7 @@ def update_status():
         return jsonify({'message': f'Error updating status: {str(e)}'}), 500
 
 _db_pool: Optional[asyncpg.Pool] = None
-import asyncpg
-import logging
-import os
-from typing import Optional
-import asyncio
-
-logger = logging.getLogger(__name__)
-
-# Global pool variable
-_db_pool: Optional[asyncpg.Pool] = None
+_db_pool: Pool | None = None
 
 async def ensure_db_pool(max_attempts: int = 3, retry_delay: float = 1.0) -> Pool:
     global _db_pool
