@@ -139,6 +139,81 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
+
+async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    logger.debug(f"Entering ton_price_command: user_id={user_id}")
+
+    try:
+        async with asyncio.timeout(5.0):
+            # Try fetching from bot_data
+            ton_price_info = context.bot_data.get("ton_price_info", {})
+            price = ton_price_info.get("price", 0.0)
+            updated_at = ton_price_info.get("updated_at", datetime.min.replace(tzinfo=pytz.UTC))
+            diff_24h = ton_price_info.get("diff_24h", 0.0)
+
+            # If price is missing or outdated (>1 hour), fetch from database
+            if price == 0.0 or (datetime.now(pytz.UTC) - updated_at).total_seconds() > 3600:
+                logger.debug("TON price missing or outdated, fetching from database")
+                async with (await ensure_db_pool()) as conn:
+                    price_record = await conn.fetchrow(
+                        "SELECT price, updated_at FROM ton_price ORDER BY updated_at DESC LIMIT 1"
+                    )
+                    if price_record:
+                        price = price_record["price"]
+                        updated_at = price_record["updated_at"]
+                        diff_24h = 0.0
+                        context.bot_data["ton_price_info"] = {
+                            "price": price,
+                            "diff_24h": diff_24h,
+                            "updated_at": updated_at
+                        }
+                        logger.debug(f"Updated bot_data with database price: {price}")
+                    else:
+                        price = 3.32
+                        diff_24h = 0.0
+                        updated_at = datetime.now(pytz.UTC)
+                        context.bot_data["ton_price_info"] = {
+                            "price": price,
+                            "diff_24h": diff_24h,
+                            "updated_at": updated_at
+                        }
+                        logger.warning("No TON price in database, using fallback: 3.32")
+
+            # Format response
+            diff_text = f"(+{diff_24h:.2f}%)" if diff_24h > 0 else f"({diff_24h:.2f}%)" if diff_24h < 0 else ""
+            text = f"Текущая цена TON: ${price:.2f} {diff_text}\nОбновлено: {updated_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=text,
+                parse_mode="HTML"
+            )
+            logger.debug(f"Sent TON price to user_id={user_id}: {price}")
+            await log_analytics(user_id, "ton_price_command", {"price": price, "diff_24h": diff_24h})
+
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout in ton_price_command for user_id={user_id}")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Ошибка: операция заняла слишком много времени. Попробуйте снова.",
+            parse_mode="HTML"
+        )
+    except asyncpg.exceptions.InterfaceError as e:
+        logger.error(f"Database error in ton_price_command: {e}", exc_info=True)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Ошибка: не удалось подключиться к базе данных. Попробуйте позже.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Error in ton_price_command: {e}", exc_info=True)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Произошла ошибка. Попробуйте снова или обратитесь в поддержку.",
+            parse_mode="HTML"
+        )
+
+
 # Database connection (synchronous for Flask)
 def get_db_connection():
     try:
