@@ -6,6 +6,7 @@ import asyncio
 import aiohttp
 import psycopg2
 import time
+import uuid
 from asyncpg.pool import Pool
 import signal
 from functools import wraps
@@ -75,6 +76,7 @@ POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 SPLIT_API_TOKEN = os.getenv("SPLIT_API_TOKEN")
 CRYPTOBOT_API_TOKEN = os.getenv("CRYPTOBOT_API_TOKEN")
 TON_SPACE_API_TOKEN = os.getenv("TON_SPACE_API_TOKEN")
+API_KEY = os.getenv("TON_API_KEY")
 TON_API_KEY = os.getenv("TON_API_KEY")
 OWNER_WALLET = os.getenv("OWNER_WALLET")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -143,8 +145,6 @@ async def fetch_ton_price(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error fetching TON price: {e}")
         return None
-
-
 # Global variables
 db_pool = None
 _db_pool_lock = asyncio.Lock()
