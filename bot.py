@@ -504,44 +504,28 @@ def update_status():
 _db_pool: Pool | None = None
 _db_pool_lock = asyncio.Lock()
 
-async def ensure_db_pool(max_attempts: int = 3, retry_delay: float = 1.0) -> Pool:
+async def ensure_db_pool():
     global _db_pool
-    async with _db_pool_lock:
-        attempt = 1
-        while attempt <= max_attempts:
-            try:
-                if _db_pool is None or _db_pool._closed:
-                    logger.debug(f"Creating new database pool (attempt {attempt}/{max_attempts})")
-                    database_url = os.getenv("DATABASE_URL")
-                    if not database_url:
-                        logger.error("DATABASE_URL environment variable not set")
-                        raise ValueError("DATABASE_URL not set")
-                    
-                    _db_pool = await asyncpg.create_pool(
-                        database_url,
-                        min_size=1,
-                        max_size=10,
-                        max_inactive_connection_lifetime=300
-                    )
-                    logger.info("Database pool created successfully")
-                
-                # Verify pool is usable
-                async with _db_pool.acquire() as conn:
-                    await conn.fetchval("SELECT 1")
-                    logger.debug("Database pool validated")
-                    return _db_pool
-
-            except Exception as e:
-                logger.warning(f"Failed to create/validate pool (attempt {attempt}/{max_attempts}): {e}")
-                _db_pool = None  # Reset pool if it’s unusable
-                attempt += 1
-                if attempt <= max_attempts:
-                    await asyncio.sleep(retry_delay)
-                continue
-
-        logger.error(f"Failed to create pool after {max_attempts} attempts")
-        raise asyncpg.exceptions.InterfaceError("Failed to create database pool")
-
+    max_retries = 3
+    retry_delay = 1
+    for attempt in range(max_retries):
+        try:
+            if _db_pool is None or _db_pool._closed:
+                logger.debug(f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
+                _db_pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"), min_size=1, max_size=10)
+                logger.info("Database pool created successfully")
+            # Validate pool
+            async with _db_pool.acquire() as conn:
+                await conn.execute("SELECT 1")
+                logger.debug("Database pool validated")
+            return _db_pool
+        except Exception as e:
+            logger.warning(f"Failed to create/validate pool (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt + 1 < max_retries:
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(f"Failed to create pool after {max_retries} attempts: {e}", exc_info=True)
+                raise
 async def close_db_pool(context: ContextTypes.DEFAULT_TYPE):
     async with _db_pool_lock:
         pool = context.bot_data.get("db_pool")
@@ -702,7 +686,7 @@ async def log_analytics(user_id: int, action: str, data: dict = None):
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.debug("Updating TON price...")
     max_retries = 3
-    retry_delay = 60  # Wait 60 seconds for rate limit reset
+    retry_delay = 60  # Wait for rate limit reset
     for attempt in range(max_retries):
         try:
             async with aiohttp.ClientSession() as session:
@@ -720,22 +704,13 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
                         break
                     data = await response.json()
                     price = float(data["market_data"]["current_price"]["usd"])
-                    diff_24h = data["market_data"]["price_change_percentage_24h"]
-                    diff_24h_str = str(diff_24h).replace("−", "-")
-                    try:
-                        diff_24h = float(diff_24h_str.rstrip("%"))
-                    except ValueError as e:
-                        logger.warning(f"Failed to parse diff_24h '{diff_24h_str}': {e}")
-                        diff_24h = 0.0
-
+                    diff_24h = data["market_data"].get("price_change_percentage_24h", 0.0)
                     context.bot_data["ton_price_info"] = {
                         "price": price,
-                        "diff_24h": diff_24h,
+                        "diff_24h": float(str(diff_24h).replace("−", "-").rstrip("%") or 0.0),
                         "updated_at": datetime.now(pytz.UTC)
                     }
                     logger.debug(f"TON price updated: price={price}, diff_24h={diff_24h}")
-
-                    # Store in database
                     async with (await ensure_db_pool()) as conn:
                         await conn.execute(
                             "INSERT INTO ton_price (price, updated_at) VALUES ($1, $2)",
@@ -743,34 +718,26 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
                         )
                         logger.debug("Stored TON price in database")
                     return
-
         except Exception as e:
             logger.error(f"Error in update_ton_price (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
             continue
-
     logger.error("Failed to update TON price after all retries")
-    # Fallback to database
-    try:
-        async with (await ensure_db_pool()) as conn:
-            price_record = await conn.fetchrow(
-                "SELECT price, updated_at FROM ton_price ORDER BY updated_at DESC LIMIT 1"
-            )
-            if price_record and (datetime.now(pytz.UTC) - price_record["updated_at"]).total_seconds() < 3600:
-                context.bot_data["ton_price_info"] = {
-                    "price": price_record["price"],
-                    "diff_24h": 0.0,
-                    "updated_at": price_record["updated_at"]
-                }
-                logger.info(f"Using database TON price: {price_record['price']}")
-            else:
-                logger.warning("No valid TON price in database")
-                context.bot_data["ton_price_info"] = {"price": 1.0, "diff_24h": 0.0, "updated_at": datetime.now(pytz.UTC)}
-    except Exception as e:
-        logger.error(f"Failed to fetch TON price from database: {e}", exc_info=True)
-        context.bot_data["ton_price_info"] = {"price": 1.0, "diff_24h": 0.0, "updated_at": datetime.now(pytz.UTC)}
-
+    async with (await ensure_db_pool()) as conn:
+        price_record = await conn.fetchrow(
+            "SELECT price, updated_at FROM ton_price ORDER BY updated_at DESC LIMIT 1"
+        )
+        if price_record and (datetime.now(pytz.UTC) - price_record["updated_at"]).total_seconds() < 3600:
+            context.bot_data["ton_price_info"] = {
+                "price": price_record["price"],
+                "diff_24h": 0.0,
+                "updated_at": price_record["updated_at"]
+            }
+            logger.info(f"Using database TON price: {price_record['price']}")
+        else:
+            context.bot_data["ton_price_info"] = {"price": 1.0, "diff_24h": 0.0, "updated_at": datetime.now(pytz.UTC)}
+            logger.warning("No valid TON price, using default: 1.0")
 async def safe_reply_text(update: Update, text: str, reply_markup=None, parse_mode=None, retry_count=3):
     for attempt in range(retry_count):
         try:
@@ -2772,16 +2739,25 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     await log_analytics(user_id, "callback_error", {"error": str(e)})
     return 0
 
-async def webhook_handler(request):
-    """Handle incoming Telegram webhook updates."""
+async def webhook(request: web.Request) -> web.Response:
     try:
-        update = await request.json()
-        await telegram_app.process_update(Update.de_json(update, telegram_app.bot))
-        return web.Response(status=200)
+        data = await request.json()
+        logger.debug(f"Webhook received data: {data}")
+        # Filter out non-Telegram updates
+        if "update_id" not in data:
+            logger.warning(f"Ignoring non-Telegram webhook data: {data.get('event_type', 'unknown')}")
+            return web.json_response({"status": "ignored", "message": "Non-Telegram update"}, status=200)
+        update = Update.de_json(data, telegram_app.bot)
+        if not update:
+            logger.warning("Invalid Telegram update received")
+            return web.json_response({"status": "invalid update"}, status=400)
+        logger.debug(f"Processing update: update_id={update.update_id}, message={update.message}, command={update.message.text if update.message else None}")
+        await telegram_app.process_update(update)
+        logger.info("Webhook processed successfully")
+        return web.json_response({"status": "ok"})
     except Exception as e:
-        logger.error(f"Error processing webhook update: {e}", exc_info=True)
-        return web.Response(status=500)
-
+        logger.error(f"Error in webhook: {e}", exc_info=True)
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
 async def calculate_price_ton(context: ContextTypes.DEFAULT_TYPE, stars: int) -> float:
     try:
         async with (await ensure_db_pool()) as conn:
