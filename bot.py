@@ -742,7 +742,6 @@ async def health_check(request: web.Request) -> web.Response:
             {"status": "running", "database": "unavailable", "error": str(e)},
             status=200
         )
-Changes:
 
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.debug("Updating TON price...")
