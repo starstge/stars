@@ -1114,7 +1114,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 text = await get_text("welcome", total_stars=total_stars, stars_bought=user_stars)
                 keyboard = [
                     [
-                        InlineKeyboardButton("📰 Новости", url=""https://t.me/CheapStarsShop_support),
+                        InlineKeyboardButton("📰 Новости", url="https://t.me/CheapStarsShop_support"),
                         InlineKeyboardButton("📞 Поддержка и Отзывы", url="https://t.me/cheapstarshop_news")
                     ],
                     [
