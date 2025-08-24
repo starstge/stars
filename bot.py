@@ -5,6 +5,7 @@ import logging
 import asyncio
 import aiohttp
 import psycopg2
+from asyncpg.pool import Pool
 import signal
 from functools import wraps
 from aiohttp import ClientTimeout, web
@@ -500,43 +501,46 @@ def update_status():
         return jsonify({'message': f'Error updating status: {str(e)}'}), 500
 
 
+_db_pool: Pool | None = None
+_db_pool_lock = asyncio.Lock()
 
 async def ensure_db_pool(max_attempts: int = 3, retry_delay: float = 1.0) -> Pool:
     global _db_pool
-    attempt = 1
-    while attempt <= max_attempts:
-        try:
-            if _db_pool is None or _db_pool._closed:
-                logger.debug(f"Creating new database pool (attempt {attempt}/{max_attempts})")
-                database_url = os.getenv("DATABASE_URL")
-                if not database_url:
-                    logger.error("DATABASE_URL environment variable not set")
-                    raise ValueError("DATABASE_URL not set")
+    async with _db_pool_lock:
+        attempt = 1
+        while attempt <= max_attempts:
+            try:
+                if _db_pool is None or _db_pool._closed:
+                    logger.debug(f"Creating new database pool (attempt {attempt}/{max_attempts})")
+                    database_url = os.getenv("DATABASE_URL")
+                    if not database_url:
+                        logger.error("DATABASE_URL environment variable not set")
+                        raise ValueError("DATABASE_URL not set")
+                    
+                    _db_pool = await asyncpg.create_pool(
+                        database_url,
+                        min_size=1,
+                        max_size=10,
+                        max_inactive_connection_lifetime=300
+                    )
+                    logger.info("Database pool created successfully")
                 
-                _db_pool = await asyncpg.create_pool(
-                    database_url,
-                    min_size=1,
-                    max_size=10,
-                    max_inactive_connection_lifetime=300
-                )
-                logger.info("Database pool created successfully")
-            
-            # Verify pool is usable
-            async with _db_pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
-                logger.debug("Database pool validated")
-                return _db_pool
+                # Verify pool is usable
+                async with _db_pool.acquire() as conn:
+                    await conn.fetchval("SELECT 1")
+                    logger.debug("Database pool validated")
+                    return _db_pool
 
-        except Exception as e:
-            logger.warning(f"Failed to create/validate pool (attempt {attempt}/{max_attempts}): {e}")
-            _db_pool = None  # Reset pool if it’s unusable
-            attempt += 1
-            if attempt <= max_attempts:
-                await asyncio.sleep(retry_delay)
-            continue
+            except Exception as e:
+                logger.warning(f"Failed to create/validate pool (attempt {attempt}/{max_attempts}): {e}")
+                _db_pool = None  # Reset pool if it’s unusable
+                attempt += 1
+                if attempt <= max_attempts:
+                    await asyncio.sleep(retry_delay)
+                continue
 
-    logger.error(f"Failed to create pool after {max_attempts} attempts: {e}")
-    raise asyncpg.exceptions.InterfaceError("Failed to create database pool")
+        logger.error(f"Failed to create pool after {max_attempts} attempts")
+        raise asyncpg.exceptions.InterfaceError("Failed to create database pool")
 
 async def close_db_pool(context: ContextTypes.DEFAULT_TYPE):
     async with _db_pool_lock:
