@@ -1885,17 +1885,25 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     user_id = query.from_user.id
     data = query.data
     logger.info(f"Callback query received: user_id={user_id}, data={data}")
-    
-    # Initialize tech_break_info in bot_data if not present
+
+    # Answer query immediately to avoid timeout
+    try:
+        await query.answer()
+    except TelegramError as e:
+        logger.warning(f"Failed to answer callback query: {e}")
+
+    # Initialize tech_break_info
     if "tech_break_info" not in context.bot_data:
         context.bot_data["tech_break_info"] = {"end_time": datetime.min.replace(tzinfo=pytz.UTC), "reason": ""}
-    
+
     max_retries = 3
+    retry_delay = 1
     for attempt in range(max_retries):
         try:
             async with (await ensure_db_pool()) as conn:
                 is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-                
+
+                # Tech break check
                 if context.bot_data["tech_break_info"].get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
                     time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
                     text = await get_text(
@@ -1904,21 +1912,21 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         minutes_left=time_remaining,
                         reason=context.bot_data["tech_break_info"].get("reason", "Не указана")
                     )
-                    current_text = query.message.text
-                    current_reply_markup = query.message.reply_markup
                     new_keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
                     new_reply_markup = InlineKeyboardMarkup(new_keyboard)
+                    current_text = query.message.text
+                    current_reply_markup = query.message.reply_markup
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
                         await query.message.edit_text(
                             text,
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 0
                     await log_analytics(user_id, "callback_tech_break", {})
                     return 0
 
+                # Profile
                 if data == "profile":
                     user = await conn.fetchrow(
                         "SELECT stars_bought, referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id
@@ -1947,11 +1955,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
-                    context.user_data["state"] = 1  # STATES["profile"]
+                    context.user_data["state"] = 1
                     await log_analytics(user_id, "view_profile", {})
                     return 1
 
+                # Profile Transactions
                 elif data.startswith("profile_transactions"):
                     page = int(data.split("_")[-1]) if "_" in data else 0
                     transactions_per_page = 10
@@ -1971,7 +1979,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             eest_time = utc_time.astimezone(pytz.timezone('Europe/Tallinn')).strftime('%Y-%m-%d %H:%M:%S EEST')
                             text += (
                                 f"{idx}. Куплено {t['stars_amount']} звезд для {t['recipient_username']} "
-                                f"за {t['price_ton']:.2f} TON в {eest_time}\n\n"
+                                f"за {t['price_ton']:.4f} TON в {eest_time}\n\n"
                             )
                     keyboard = []
                     if total_transactions > (page + 1) * transactions_per_page:
@@ -1988,11 +1996,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
-                    context.user_data["state"] = 26  # STATES["profile_transactions"]
+                    context.user_data["state"] = 26
                     await log_analytics(user_id, "view_profile_transactions", {"page": page})
                     return 26
 
+                # Referrals
                 elif data == "referrals":
                     user = await conn.fetchrow(
                         "SELECT referrals, ref_bonus_ton FROM users WHERE user_id = $1", user_id
@@ -2015,11 +2023,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
-                    context.user_data["state"] = 2  # STATES["referrals"]
+                    context.user_data["state"] = 2
                     await log_analytics(user_id, "view_referrals", {})
                     return 2
 
+                # Referral Leaderboard
                 elif data == "referral_leaderboard":
                     users = await conn.fetch(
                         "SELECT user_id, username, jsonb_array_length(referrals) as ref_count "
@@ -2047,11 +2055,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
-                    context.user_data["state"] = 12  # STATES["top_referrals"]
+                    context.user_data["state"] = 12
                     await log_analytics(user_id, "view_referral_leaderboard", {})
                     return 12
 
+                # Top Purchases
                 elif data == "top_purchases":
                     users = await conn.fetch(
                         "SELECT user_id, username, stars_bought FROM users "
@@ -2078,16 +2086,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
-                    context.user_data["state"] = 13  # STATES["top_purchases"]
+                    context.user_data["state"] = 13
                     await log_analytics(user_id, "view_top_purchases", {})
                     return 13
 
+                # Buy Stars
                 elif data == "buy_stars":
                     recipient = context.user_data.get("recipient", "Не выбран")
                     stars = context.user_data.get("stars_amount", "Не выбрано")
                     price_ton = await calculate_price_ton(context, int(stars)) if stars and isinstance(stars, str) and stars.isdigit() else None
-                    price_text = f"~{price_ton:.2f} TON" if price_ton is not None else "Цена"
+                    price_text = f"~{price_ton:.4f} TON" if price_ton is not None else "Цена"
                     text = (
                         f"Пользователь: {recipient}\n"
                         f"Количество звезд: {stars}"
@@ -2110,21 +2118,22 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 5
                     await log_analytics(user_id, "open_buy_stars_payment_method", {})
                     return 5
 
+                # Show Price
                 elif data == "show_price":
                     stars = context.user_data.get("stars_amount", "Не выбрано")
                     price_ton = await calculate_price_ton(context, int(stars)) if stars and isinstance(stars, str) and stars.isdigit() else None
-                    price_text = f"~{price_ton:.2f} TON" if price_ton is not None else "Цена не определена"
+                    price_text = f"~{price_ton:.4f} TON" if price_ton is not None else "Цена не определена"
                     await query.answer(text=price_text, show_alert=True)
                     return context.user_data["state"]
 
+                # Select Recipient
                 elif data == "select_recipient":
-                    current_text = query.message.text
                     text = "Введите имя пользователя (например, @username):"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2133,11 +2142,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 3
                     await log_analytics(user_id, "start_select_recipient", {})
                     return 3
 
+                # Select Stars Menu
                 elif data == "select_stars_menu":
                     recipient = context.user_data.get("recipient", "Не выбран")
                     text = f"Пользователь: {recipient}\nВыберите количество звезд:"
@@ -2160,11 +2169,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 22
                     await log_analytics(user_id, "open_select_stars_menu", {})
                     return 22
 
+                # Select Stars
                 elif data in ["select_stars_100", "select_stars_250", "select_stars_500", "select_stars_1000"]:
                     stars = data.split("_")[-1]
                     context.user_data["stars_amount"] = stars
@@ -2178,7 +2187,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         [InlineKeyboardButton(f"Пользователь: {recipient}", callback_data="select_recipient")],
                         [InlineKeyboardButton(f"Количество: {stars}", callback_data="select_stars_menu")],
                         [
-                            InlineKeyboardButton(f"~{price_ton:.2f} TON", callback_data="show_price"),
+                            InlineKeyboardButton(f"~{price_ton:.4f} TON", callback_data="show_price"),
                             InlineKeyboardButton("Далее", callback_data="pay_stars_menu")
                         ],
                         [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
@@ -2192,14 +2201,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 5
                     await log_analytics(user_id, f"select_stars_{stars}", {"stars": stars})
                     return 5
 
+                # Select Custom Stars
                 elif data == "select_stars_custom":
-                    current_text = query.message.text
                     text = "Введите количество звезд (положительное число):"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="select_stars_menu")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2208,29 +2217,21 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 23
                     await log_analytics(user_id, "start_select_stars_custom", {})
                     return 23
 
-                elif data == "proceed_to_payment":
+                # Pay Stars Menu
+                elif data == "pay_stars_menu":
                     stars = context.user_data.get("stars_amount")
                     recipient = context.user_data.get("recipient")
                     if not stars or not recipient or not isinstance(stars, str) or not stars.isdigit():
                         text = "Ошибка: выберите пользователя и количество звезд."
-                        price_ton = None
-                        price_text = "Цена"
-                        if stars and isinstance(stars, str) and stars.isdigit():
-                            price_ton = await calculate_price_ton(context, int(stars))
-                            price_text = f"~{price_ton:.2f} TON"
                         keyboard = [
                             [InlineKeyboardButton(f"Пользователь: {context.user_data.get('recipient', 'Не выбран')}", callback_data="select_recipient")],
                             [InlineKeyboardButton(f"Количество: {context.user_data.get('stars_amount', 'Не выбрано')}", callback_data="select_stars_menu")],
-                            [
-                                InlineKeyboardButton(price_text, callback_data="show_price"),
-                                InlineKeyboardButton("Оплатить", callback_data="proceed_to_payment")
-                            ],
-                            [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
+                            [InlineKeyboardButton("Цена", callback_data="show_price"), InlineKeyboardButton("Далее", callback_data="pay_stars_menu")],
+                            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]
                         ]
                         current_text = query.message.text
                         current_reply_markup = query.message.reply_markup
@@ -2241,45 +2242,44 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                                 reply_markup=new_reply_markup,
                                 parse_mode="HTML"
                             )
-                        await query.answer()
                         context.user_data["state"] = 5
+                        await log_analytics(user_id, "pay_stars_menu_error", {"stars": stars, "recipient": recipient})
                         return 5
+
                     stars = int(stars)
-                    price_usd = await conn.fetchval("SELECT value FROM settings WHERE key = 'price_usd'") or 0.81
-                    markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or 10.0
-                    price_usd = (stars / 50) * price_usd * (1 + markup / 100)
                     price_ton = await calculate_price_ton(context, stars)
-                    payload = await generate_payload(user_id)
-                    invoice_id, pay_url = await create_cryptobot_invoice(price_usd, "TON", user_id, stars, recipient, payload)
-                    if not pay_url:
-                        current_text = query.message.text
-                        text = "Ошибка создания платежа. Попробуйте позже."
-                        current_reply_markup = query.message.reply_markup
-                        new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]])
-                        if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                            await query.message.edit_text(
-                                text,
-                                reply_markup=new_reply_markup,
-                                parse_mode="HTML"
-                            )
-                        await query.answer()
+                    if price_ton == 0.0:
+                        text = "Ошибка: не удалось рассчитать цену. Попробуйте позже."
+                        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]]
+                        await query.message.edit_text(
+                            text,
+                            reply_markup=InlineKeyboardMarkup(keyboard),
+                            parse_mode="HTML"
+                        )
                         context.user_data["state"] = 5
+                        await log_analytics(user_id, "pay_stars_menu_price_error", {"stars": stars})
                         return 5
+
+                    invoice_id = str(uuid.uuid4())[:8]
+                    owner_wallet = os.getenv("OWNER_WALLET", "YOUR_DEFAULT_WALLET_ADDRESS")
+                    amount_nano = int(price_ton * 1_000_000_000)
+                    payment_link = f"ton://transfer/{owner_wallet}?amount={amount_nano}&text={invoice_id}"
+
                     await conn.execute(
-                        "INSERT INTO transactions (user_id, recipient_username, stars_amount, price_ton, invoice_id, purchase_time) "
-                        "VALUES ($1, $2, $3, $4, $5, $6)",
-                        user_id, recipient, stars, price_ton, invoice_id, datetime.now(pytz.UTC)
+                        "INSERT INTO transactions (user_id, recipient_username, stars_amount, price_ton, invoice_id, purchase_time, checked_status) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                        user_id, recipient, stars, price_ton, invoice_id, datetime.now(pytz.UTC), "pending"
                     )
+
                     text = (
-                        f"Подтвердите покупку:\n"
-                        f"Звезды: {stars}\n"
-                        f"Получатель: {recipient}\n"
-                        f"Сумма: ~{price_ton:.2f} TON\n"
-                        f"Оплатите по ссылке:"
+                        f"Оплата за {stars} звезд:\n"
+                        f"Тип кошелька: TON\n"
+                        f"Цена: {price_ton:.4f} TON\n"
+                        f"Комментарий: {invoice_id}\n"
+                        f"Ссылка для оплаты: <a href='{payment_link}'>Оплатить через Tonkeeper</a>"
                     )
                     keyboard = [
-                        [InlineKeyboardButton("Оплатить", url=pay_url)],
-                        [InlineKeyboardButton("Проверить оплату", callback_data=f"check_payment_{invoice_id}")],
+                        [InlineKeyboardButton("✅ Проверить оплату", callback_data=f"check_payment_{invoice_id}")],
                         [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
                     ]
                     current_text = query.message.text
@@ -2289,76 +2289,117 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         await query.message.edit_text(
                             text,
                             reply_markup=new_reply_markup,
-                            parse_mode="HTML"
+                            parse_mode="HTML",
+                            disable_web_page_preview=True
                         )
-                    await query.answer()
-                    context.user_data["state"] = 25  # STATES["buy_stars_payment"]
+                    context.user_data["state"] = 25
                     context.user_data["invoice_id"] = invoice_id
                     context.user_data["price_ton"] = price_ton
-                    await log_analytics(user_id, "proceed_to_payment", {"stars": stars, "recipient": recipient, "invoice_id": invoice_id})
+                    await log_analytics(user_id, "pay_stars_menu", {"stars": stars, "recipient": recipient, "invoice_id": invoice_id})
                     return 25
 
+                # Check Payment
                 elif data.startswith("check_payment_"):
                     invoice_id = data.split("_")[-1]
                     stars = context.user_data.get("stars_amount")
                     recipient = context.user_data.get("recipient")
                     price_ton = context.user_data.get("price_ton")
-                    if not stars or not recipient or not price_ton:
-                        current_text = query.message.text
+                    if not stars or not recipient or not price_ton or not invoice_id:
                         text = "Ошибка: данные о покупке отсутствуют. Начните заново."
-                        current_reply_markup = query.message.reply_markup
-                        new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]])
-                        if current_text != text or str(current_reply_markup) != str(new_reply_markup):
-                            await query.message.edit_text(
-                                text,
-                                reply_markup=new_reply_markup,
-                                parse_mode="HTML"
-                            )
-                        await query.answer()
-                        context.user_data["state"] = 5
-                        return 5
-                    price_usd = await conn.fetchval("SELECT value FROM settings WHERE key = 'price_usd'") or 0.81
-                    markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or 10.0
-                    ref_bonus_percentage = await conn.fetchval("SELECT value FROM settings WHERE key = 'ref_bonus'") or 30.0
-                    price_usd = (int(stars) / 50) * price_usd * (1 + markup / 100)
-                    await conn.execute(
-                        "UPDATE users SET stars_bought = stars_bought + $1 WHERE user_id = $2",
-                        int(stars), user_id
-                    )
-                    await conn.execute(
-                        "UPDATE transactions SET purchase_time = $1 WHERE invoice_id = $2",
-                        datetime.now(pytz.UTC), invoice_id
-                    )
-                    referrer_id = await conn.fetchval("SELECT referrer_id FROM users WHERE user_id = $1", user_id)
-                    if referrer_id:
-                        ref_bonus_ton = price_ton * (ref_bonus_percentage / 100)
-                        await conn.execute(
-                            "UPDATE users SET ref_bonus_ton = ref_bonus_ton + $1 WHERE user_id = $2",
-                            ref_bonus_ton, referrer_id
-                        )
-                        await log_analytics(user_id, "referral_bonus_added", {"referrer_id": referrer_id, "bonus_ton": ref_bonus_ton})
-                    current_text = query.message.text
-                    text = f"Платеж подтвержден!\n{stars} звезд добавлены для {recipient}."
-                    current_reply_markup = query.message.reply_markup
-                    new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
-                    if current_text != text or str(current_reply_markup) != str(new_reply_markup):
+                        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]]
                         await query.message.edit_text(
                             text,
-                            reply_markup=new_reply_markup,
+                            reply_markup=InlineKeyboardMarkup(keyboard),
                             parse_mode="HTML"
                         )
-                    await query.answer()
-                    context.user_data["state"] = 0
-                    context.user_data.pop("stars_amount", None)
-                    context.user_data.pop("recipient", None)
-                    context.user_data.pop("price_ton", None)
-                    context.user_data.pop("invoice_id", None)
-                    await log_analytics(user_id, "payment_confirmed_test", {"stars": stars, "recipient": recipient, "currency": "TON"})
-                    return 0
+                        context.user_data["state"] = 5
+                        await log_analytics(user_id, "check_payment_error", {"invoice_id": invoice_id})
+                        return 5
 
+                    transaction = await conn.fetchrow(
+                        "SELECT checked_status FROM transactions WHERE invoice_id = $1", invoice_id
+                    )
+                    if transaction and transaction["checked_status"] == "completed":
+                        text = f"Платеж подтвержден!\n{stars} звезд добавлены для {recipient}."
+                        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
+                        await query.message.edit_text(
+                            text,
+                            reply_markup=InlineKeyboardMarkup(keyboard),
+                            parse_mode="HTML"
+                        )
+                        context.user_data["state"] = 0
+                        context.user_data.pop("stars_amount", None)
+                        context.user_data.pop("recipient", None)
+                        context.user_data.pop("price_ton", None)
+                        context.user_data.pop("invoice_id", None)
+                        await log_analytics(user_id, "payment_confirmed", {"stars": stars, "recipient": recipient, "invoice_id": invoice_id})
+                        return 0
+
+                    # Placeholder for TON blockchain verification
+                    owner_wallet = os.getenv("OWNER_WALLET", "YOUR_DEFAULT_WALLET_ADDRESS")
+                    payment_verified = False
+                    # Example TON API call (uncomment and configure with TON API)
+                    # async with aiohttp.ClientSession() as session:
+                    #     async with session.get(
+                    #         f"https://tonapi.io/v2/transactions?to={owner_wallet}&comment={invoice_id}",
+                    #         headers={"Authorization": f"Bearer {os.getenv('TON_API_KEY')}"}
+                    #     ) as response:
+                    #         if response.status == 200:
+                    #             data = await response.json()
+                    #             payment_verified = any(tx["amount"] == int(price_ton * 1_000_000_000) for tx in data["transactions"])
+
+                    if payment_verified:
+                        await conn.execute(
+                            "UPDATE transactions SET checked_status = 'completed', purchase_time = $1 WHERE invoice_id = $2",
+                            datetime.now(pytz.UTC), invoice_id
+                        )
+                        await conn.execute(
+                            "UPDATE users SET stars_bought = stars_bought + $1 WHERE user_id = $2",
+                            int(stars), user_id
+                        )
+                        ref_bonus_percentage = await conn.fetchval("SELECT value FROM settings WHERE key = 'ref_bonus'") or 30.0
+                        referrer_id = await conn.fetchval("SELECT referrer_id FROM users WHERE user_id = $1", user_id)
+                        if referrer_id:
+                            ref_bonus_ton = price_ton * (ref_bonus_percentage / 100)
+                            await conn.execute(
+                                "UPDATE users SET ref_bonus_ton = ref_bonus_ton + $1 WHERE user_id = $2",
+                                ref_bonus_ton, referrer_id
+                            )
+                            await log_analytics(user_id, "referral_bonus_added", {"referrer_id": referrer_id, "bonus_ton": ref_bonus_ton})
+                        text = f"Платеж подтвержден!\n{stars} звезд добавлены для {recipient}."
+                        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]
+                        await query.message.edit_text(
+                            text,
+                            reply_markup=InlineKeyboardMarkup(keyboard),
+                            parse_mode="HTML"
+                        )
+                        context.user_data["state"] = 0
+                        context.user_data.pop("stars_amount", None)
+                        context.user_data.pop("recipient", None)
+                        context.user_data.pop("price_ton", None)
+                        context.user_data.pop("invoice_id", None)
+                        await log_analytics(user_id, "payment_confirmed", {"stars": stars, "recipient": recipient, "invoice_id": invoice_id})
+                        return 0
+                    else:
+                        text = "Оплата еще не подтверждена. Попробуйте снова через несколько минут."
+                        keyboard = [
+                            [InlineKeyboardButton("✅ Проверить снова", callback_data=f"check_payment_{invoice_id}")],
+                            [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
+                        ]
+                        await query.message.edit_text(
+                            text,
+                            reply_markup=InlineKeyboardMarkup(keyboard),
+                            parse_mode="HTML"
+                        )
+                        context.user_data["state"] = 25
+                        await log_analytics(user_id, "payment_check_failed", {"invoice_id": invoice_id})
+                        return 25
+
+                # Admin Panel
                 elif data == "admin_panel" and is_admin:
                     return await show_admin_panel(update, context)
 
+                # Admin Stats
                 elif data == "admin_stats" and is_admin:
                     total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
                     total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
@@ -2378,14 +2419,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
-                    context.user_data["state"] = 9  # STATES["admin_stats"]
+                    context.user_data["state"] = 9
                     await log_analytics(user_id, "view_admin_stats", {})
                     return 9
 
+                # Broadcast Message
                 elif data == "broadcast_message" and is_admin:
-                    current_text = query.message.text
                     text = "Введите текст для рассылки:"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2394,16 +2435,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
-                    context.user_data["state"] = 10  # STATES["admin_broadcast"]
+                    context.user_data["state"] = 10
                     await log_analytics(user_id, "start_broadcast", {})
                     return 10
 
+                # Confirm Broadcast
                 elif data == "confirm_broadcast" and is_admin:
                     broadcast_text = context.user_data.get("broadcast_text", "")
                     if not broadcast_text:
-                        current_text = query.message.text
                         text = "Текст рассылки пуст. Введите текст заново."
+                        current_text = query.message.text
                         current_reply_markup = query.message.reply_markup
                         new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                         if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2412,7 +2453,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                                 reply_markup=new_reply_markup,
                                 parse_mode="HTML"
                             )
-                        await query.answer()
                         context.user_data["state"] = 10
                         return 10
                     users = await conn.fetch("SELECT user_id FROM users")
@@ -2427,8 +2467,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             success_count += 1
                         except TelegramError as e:
                             logger.error(f"Failed to send broadcast to {user['user_id']}: {e}")
-                    current_text = query.message.text
                     text = f"Рассылка завершена. Отправлено {success_count} из {len(users)} пользователям."
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2437,15 +2477,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data.pop("broadcast_text", None)
                     context.user_data["state"] = 8
                     await log_analytics(user_id, "complete_broadcast", {"success_count": success_count, "total_users": len(users)})
                     return 8
 
+                # Cancel Broadcast
                 elif data == "cancel_broadcast" and is_admin:
-                    current_text = query.message.text
                     text = "Рассылка отменена."
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2454,15 +2494,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data.pop("broadcast_text", None)
                     context.user_data["state"] = 8
                     await log_analytics(user_id, "cancel_broadcast", {})
                     return await show_admin_panel(update, context)
 
+                # Admin Edit Profile
                 elif data == "admin_edit_profile" and is_admin:
-                    current_text = query.message.text
                     text = "Введите ID пользователя для редактирования:"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([
                         [InlineKeyboardButton("📋 Все пользователи", callback_data="all_users")],
@@ -2474,11 +2514,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 11
                     await log_analytics(user_id, "start_edit_profile", {})
                     return 11
 
+                # All Users
                 elif data == "all_users" and is_admin:
                     users = await conn.fetch(
                         "SELECT user_id, username, stars_bought FROM users ORDER BY stars_bought DESC LIMIT 10"
@@ -2510,15 +2550,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 15
                     await log_analytics(user_id, "view_all_users", {"users_count": len(users)})
                     return 15
 
+                # Edit Profile Stars
                 elif data == "edit_profile_stars" and is_admin:
                     context.user_data["edit_profile_field"] = "stars_bought"
-                    current_text = query.message.text
                     text = "Введите новое количество звезд:"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2527,15 +2567,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 11
                     await log_analytics(user_id, "start_edit_stars", {})
                     return 11
 
+                # Edit Profile Referrals
                 elif data == "edit_profile_referrals" and is_admin:
                     context.user_data["edit_profile_field"] = "referrals"
-                    current_text = query.message.text
                     text = "Введите ID рефералов через запятую:"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2544,15 +2584,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 11
                     await log_analytics(user_id, "start_edit_referrals", {})
                     return 11
 
+                # Edit Profile Referral Bonus
                 elif data == "edit_profile_ref_bonus" and is_admin:
                     context.user_data["edit_profile_field"] = "ref_bonus_ton"
-                    current_text = query.message.text
                     text = "Введите новый реферальный бонус (TON):"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2561,14 +2601,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 11
                     await log_analytics(user_id, "start_edit_ref_bonus", {})
                     return 11
 
+                # Set DB Reminder
                 elif data == "set_db_reminder" and is_admin:
-                    current_text = query.message.text
                     text = "Введите дату напоминания в формате гггг-мм-дд:"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2577,14 +2617,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 14
                     await log_analytics(user_id, "start_set_db_reminder", {})
                     return 14
 
+                # Tech Break
                 elif data == "tech_break" and is_admin:
-                    current_text = query.message.text
                     text = "Введите длительность тех. перерыва (в минутах) и причину (формат: <минуты> <причина>):"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2593,11 +2633,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 16
                     await log_analytics(user_id, "start_tech_break", {})
                     return 16
 
+                # Bot Settings
                 elif data == "bot_settings" and is_admin:
                     price_usd = await conn.fetchval("SELECT value FROM settings WHERE key = 'price_usd'") or 0.81
                     markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or 10.0
@@ -2623,14 +2663,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 17
                     await log_analytics(user_id, "view_bot_settings", {})
                     return 17
 
+                # Edit Price USD
                 elif data == "edit_price_usd" and is_admin:
-                    current_text = query.message.text
                     text = "Введите новую цену за 50 звезд (USD):"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2639,15 +2679,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 17
                     context.user_data["edit_setting"] = "price_usd"
                     await log_analytics(user_id, "start_edit_price_usd", {})
                     return 17
 
+                # Edit Markup
                 elif data == "edit_markup" and is_admin:
-                    current_text = query.message.text
                     text = "Введите новую накрутку (%):"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2656,15 +2696,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 17
                     context.user_data["edit_setting"] = "markup"
                     await log_analytics(user_id, "start_edit_markup", {})
                     return 17
 
+                # Edit Referral Bonus
                 elif data == "edit_ref_bonus" and is_admin:
-                    current_text = query.message.text
                     text = "Введите новый реферальный бонус (%):"
+                    current_text = query.message.text
                     current_reply_markup = query.message.reply_markup
                     new_reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]])
                     if current_text != text or str(current_reply_markup) != str(new_reply_markup):
@@ -2673,15 +2713,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 17
                     context.user_data["edit_setting"] = "ref_bonus"
                     await log_analytics(user_id, "start_edit_ref_bonus", {})
                     return 17
 
+                # Back to Admin
                 elif data == "back_to_admin" and is_admin:
                     return await show_admin_panel(update, context)
 
+                # Back to Menu
                 elif data == "back_to_menu":
                     total_stars = await conn.fetchval("SELECT SUM(stars_bought) FROM users") or 0
                     user_stars = await conn.fetchval("SELECT stars_bought FROM users WHERE user_id = $1", user_id) or 0
@@ -2708,7 +2749,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             reply_markup=new_reply_markup,
                             parse_mode="HTML"
                         )
-                    await query.answer()
                     context.user_data["state"] = 0
                     await log_analytics(user_id, "back_to_menu", {})
                     return 0
@@ -2734,396 +2774,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
         parse_mode="HTML"
     )
-    await query.answer()
+    try:
+        await query.answer()
+    except TelegramError as e:
+        logger.warning(f"Failed to answer callback query on error: {e}")
     context.user_data["state"] = 0
     await log_analytics(user_id, "callback_error", {"error": str(e)})
     return 0
 
-async def webhook(request: web.Request) -> web.Response:
-    try:
-        data = await request.json()
-        logger.debug(f"Webhook received data: {data}")
-        # Filter out non-Telegram updates
-        if "update_id" not in data:
-            logger.warning(f"Ignoring non-Telegram webhook data: {data.get('event_type', 'unknown')}")
-            return web.json_response({"status": "ignored", "message": "Non-Telegram update"}, status=200)
-        update = Update.de_json(data, telegram_app.bot)
-        if not update:
-            logger.warning("Invalid Telegram update received")
-            return web.json_response({"status": "invalid update"}, status=400)
-        logger.debug(f"Processing update: update_id={update.update_id}, message={update.message}, command={update.message.text if update.message else None}")
-        await telegram_app.process_update(update)
-        logger.info("Webhook processed successfully")
-        return web.json_response({"status": "ok"})
-    except Exception as e:
-        logger.error(f"Error in webhook: {e}", exc_info=True)
-        return web.json_response({"status": "error", "message": str(e)}, status=500)
-async def calculate_price_ton(context: ContextTypes.DEFAULT_TYPE, stars: int) -> float:
-    try:
-        async with (await ensure_db_pool()) as conn:
-            price_usd = await conn.fetchval("SELECT value FROM settings WHERE key = 'price_usd'") or 0.81
-            markup = await conn.fetchval("SELECT value FROM settings WHERE key = 'markup'") or 10.0
-            price_usd = (stars / 50) * price_usd * (1 + markup / 100)
-            if "ton_price_info" not in context.bot_data or context.bot_data["ton_price_info"].get("price", 0.0) == 0.0:
-                await update_ton_price(context)
-            ton_price = context.bot_data["ton_price_info"].get("price", 1.0)
-            if ton_price == 0.0:
-                logger.error("TON price is zero, cannot calculate price")
-                return 0.0
-            price_ton = price_usd / ton_price
-            return round(price_ton, 2)
-    except Exception as e:
-        logger.error(f"Ошибка в calculate_price_ton: {e}", exc_info=True)
-        return 0.0
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    username = update.effective_user.username or str(user_id)
-    text = update.message.text
-    state = context.user_data.get("state", 0)
-    logger.info(f"Message received: user_id={user_id}, state={state}, text={text}")
-
-    try:
-        async with (await ensure_db_pool()) as conn:
-            is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
-            # Update username in database if changed
-            if username != str(user_id):
-                await conn.execute(
-                    "UPDATE users SET username = $1 WHERE user_id = $2",
-                    username, user_id
-                )
-            if context.bot_data["tech_break_info"].get("end_time", datetime.min.replace(tzinfo=pytz.UTC)) > datetime.now(pytz.UTC) and not is_admin:
-                time_remaining = await format_time_remaining(context.bot_data["tech_break_info"]["end_time"])
-                text = await get_text(
-                    "tech_break_active",
-                    end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                    minutes_left=time_remaining,
-                    reason=context.bot_data["tech_break_info"].get("reason", "Не указана")
-                )
-                await update.message.reply_text(
-                    text,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
-                    parse_mode="HTML"
-                )
-                context.user_data["state"] = 0
-                await log_analytics(user_id, "message_tech_break", {})
-                return 0
-
-            if state == STATES["buy_stars_recipient"]:
-                if not text.startswith("@") or len(text) < 2:
-                    await update.message.reply_text(
-                        "Пожалуйста, введите корректное имя пользователя, начиная с @.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]])
-                    )
-                    await log_analytics(user_id, "invalid_recipient", {"input": text})
-                    return 3
-                context.user_data["recipient"] = text
-                price_ton = await calculate_price_ton(context, int(context.user_data.get("stars_amount", 0))) if context.user_data.get("stars_amount") else None
-                price_text = f"~{price_ton:.2f} TON" if price_ton is not None else "Цена"
-                reply_text = (
-                    f"Пользователь: {text}\n"
-                    f"Количество звезд: {context.user_data.get('stars_amount', 'Не выбрано')}"
-                )
-                keyboard = [
-                    [InlineKeyboardButton(f"Пользователь: {text}", callback_data="select_recipient")],
-                    [InlineKeyboardButton(f"Количество: {context.user_data.get('stars_amount', 'Не выбрано')}", callback_data="select_stars_menu")],
-                    [
-                        InlineKeyboardButton(price_text, callback_data="show_price"),
-                        InlineKeyboardButton("Далее", callback_data="pay_stars_menu")
-                    ],
-                    [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
-                ]
-                await update.message.reply_text(
-                    reply_text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML"
-                )
-                context.user_data["state"] = 5
-                await log_analytics(user_id, "set_recipient", {"recipient": text})
-                return 5
-
-            elif state == STATES["buy_stars_custom"]:
-                if not text.isdigit() or int(text) <= 0:
-                    await update.message.reply_text(
-                        "Пожалуйста, введите положительное число звезд.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="select_stars_menu")]])
-                    )
-                    await log_analytics(user_id, "invalid_stars_amount", {"input": text})
-                    return 23
-                context.user_data["stars_amount"] = text
-                recipient = context.user_data.get("recipient", "Не выбран")
-                price_ton = await calculate_price_ton(context, int(text))
-                reply_text = (
-                    f"Пользователь: {recipient}\n"
-                    f"Количество звезд: {text}"
-                )
-                keyboard = [
-                    [InlineKeyboardButton(f"Пользователь: {recipient}", callback_data="select_recipient")],
-                    [InlineKeyboardButton(f"Количество: {text}", callback_data="select_stars_menu")],
-                    [
-                        InlineKeyboardButton(f"~{price_ton:.2f} TON", callback_data="show_price"),
-                        InlineKeyboardButton("Далее", callback_data="pay_stars_menu")
-                    ],
-                    [InlineKeyboardButton("🔙 Назад", callback_data="buy_stars")]
-                ]
-                await update.message.reply_text(
-                    reply_text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML"
-                )
-                context.user_data["state"] = 5
-                await log_analytics(user_id, "set_custom_stars", {"stars": text})
-                return 5
-
-            elif state == STATES["admin_broadcast"] and is_admin:
-                context.user_data["broadcast_text"] = text
-                reply_text = f"Подтвердите рассылку:\n\n{text}"
-                keyboard = [
-                    [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_broadcast")],
-                    [InlineKeyboardButton("❌ Отменить", callback_data="cancel_broadcast")]
-                ]
-                await update.message.reply_text(
-                    reply_text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML"
-                )
-                context.user_data["state"] = 10
-                await log_analytics(user_id, "set_broadcast_text", {"text_length": len(text)})
-                return 10
-
-            elif state == STATES["admin_edit_profile"] and is_admin:
-                if not text.isdigit():
-                    await update.message.reply_text(
-                        "Пожалуйста, введите корректный ID пользователя.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_profile")]])
-                    )
-                    await log_analytics(user_id, "invalid_edit_user_id", {"input": text})
-                    return 11
-                edit_user_id = int(text)
-                user = await conn.fetchrow("SELECT username, stars_bought, ref_bonus_ton, referrals FROM users WHERE user_id = $1", edit_user_id)
-                if not user:
-                    await update.message.reply_text(
-                        "Пользователь не найден.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_profile")]])
-                    )
-                    await log_analytics(user_id, "edit_user_not_found", {"edit_user_id": edit_user_id})
-                    return 11
-                context.user_data["edit_user_id"] = edit_user_id
-                try:
-                    tg_user = await context.bot.get_chat(edit_user_id)
-                    username = f"@{tg_user.username}" if tg_user.username else f"ID {edit_user_id}"
-                    # Update username in database if changed
-                    if tg_user.username and tg_user.username != user['username']:
-                        await conn.execute(
-                            "UPDATE users SET username = $1 WHERE user_id = $2",
-                            tg_user.username, edit_user_id
-                        )
-                except TelegramError:
-                    username = f"@{user['username']}" if user['username'] else f"ID {edit_user_id}"
-                reply_text = (
-                    f"Редактирование пользователя {username}:\n"
-                    f"Звезды: {user['stars_bought']}\n"
-                    f"Реф. бонус: {user['ref_bonus_ton']} TON\n"
-                    f"Рефералы: {len(json.loads(user['referrals']) if user['referrals'] else [])}"
-                )
-                keyboard = [
-                    [InlineKeyboardButton("Изменить звезды", callback_data="edit_profile_stars")],
-                    [InlineKeyboardButton("Изменить рефералов", callback_data="edit_profile_referrals")],
-                    [InlineKeyboardButton("Изменить реф. бонус", callback_data="edit_profile_ref_bonus")],
-                    [InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_profile")]
-                ]
-                await update.message.reply_text(
-                    reply_text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML"
-                )
-                context.user_data["state"] = 11
-                await log_analytics(user_id, "view_edit_profile", {"edit_user_id": edit_user_id})
-                return 11
-
-            elif state == STATES["admin_edit_profile"] and is_admin and "edit_profile_field" in context.user_data:
-                edit_user_id = context.user_data.get("edit_user_id")
-                field = context.user_data["edit_profile_field"]
-                if field == "stars_bought":
-                    if not text.isdigit() or int(text) < 0:
-                        await update.message.reply_text(
-                            "Пожалуйста, введите корректное количество звезд.",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_profile")]])
-                        )
-                        await log_analytics(user_id, "invalid_stars_input", {"input": text})
-                        return 11
-                    await conn.execute(
-                        "UPDATE users SET stars_bought = $1 WHERE user_id = $2",
-                        int(text), edit_user_id
-                    )
-                    reply_text = f"Звезды для пользователя ID {edit_user_id} обновлены: {text}"
-                elif field == "referrals":
-                    try:
-                        referral_ids = [int(r) for r in text.split(",") if r.strip().isdigit()]
-                        await conn.execute(
-                            "UPDATE users SET referrals = $1 WHERE user_id = $2",
-                            json.dumps(referral_ids), edit_user_id
-                        )
-                        reply_text = f"Рефералы для пользователя ID {edit_user_id} обновлены."
-                    except ValueError:
-                        await update.message.reply_text(
-                            "Пожалуйста, введите ID рефералов через запятую.",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_profile")]])
-                        )
-                        await log_analytics(user_id, "invalid_referrals_input", {"input": text})
-                        return 11
-                elif field == "ref_bonus_ton":
-                    try:
-                        bonus = float(text)
-                        if bonus < 0:
-                            raise ValueError("Negative bonus")
-                        await conn.execute(
-                            "UPDATE users SET ref_bonus_ton = $1 WHERE user_id = $2",
-                            bonus, edit_user_id
-                        )
-                        reply_text = f"Реферальный бонус для пользователя ID {edit_user_id} обновлен: {bonus} TON"
-                    except ValueError:
-                        await update.message.reply_text(
-                            "Пожалуйста, введите корректное число для реф. бонуса.",
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_profile")]])
-                        )
-                        await log_analytics(user_id, "invalid_ref_bonus_input", {"input": text})
-                        return 11
-                await conn.execute(
-                    "UPDATE users SET prefix = CASE "
-                    "WHEN is_admin THEN 'Verified' "
-                    "WHEN stars_bought >= 50000 THEN 'Verified' "
-                    "WHEN stars_bought >= 10000 THEN 'Regular Buyer' "
-                    "WHEN stars_bought >= 5000 THEN 'Buyer' "
-                    "WHEN stars_bought >= 1000 THEN 'Newbie' "
-                    "ELSE 'Beginner' END WHERE user_id = $1",
-                    edit_user_id
-                )
-                await update.message.reply_text(
-                    reply_text,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_profile")]])
-                )
-                context.user_data.pop("edit_profile_field", None)
-                context.user_data["state"] = 11
-                await log_analytics(user_id, f"edit_{field}", {"edit_user_id": edit_user_id, "value": text})
-                return 11
-
-            elif state == STATES["set_db_reminder"] and is_admin:
-                try:
-                    reminder_date = datetime.strptime(text, "%Y-%m-%d").date()
-                    existing_reminder = await conn.fetchval(
-                        "SELECT id FROM reminders WHERE reminder_type = 'db' AND reminder_date >= $1",
-                        datetime.now(pytz.UTC).date()
-                    )
-                    if existing_reminder:
-                        reply_text = await get_text(
-                            "db_reminder_exists",
-                            reminder_date=reminder_date.strftime("%Y-%m-%d")
-                        )
-                        await update.message.reply_text(
-                            reply_text,
-                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                        )
-                        await log_analytics(user_id, "db_reminder_exists", {"reminder_date": text})
-                        return 14
-                    await conn.execute(
-                        "INSERT INTO reminders (user_id, reminder_date, reminder_type, created_at) "
-                        "VALUES ($1, $2, $3, $4)",
-                        user_id, reminder_date, "db", datetime.now(pytz.UTC)
-                    )
-                    reply_text = await get_text("reminder_set", reminder_date=reminder_date.strftime("%Y-%m-%d"))
-                    await update.message.reply_text(
-                        reply_text,
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    )
-                    context.user_data["state"] = 8
-                    await log_analytics(user_id, "set_db_reminder", {"reminder_date": text})
-                    return 8
-                except ValueError:
-                    await update.message.reply_text(
-                        "Неверный формат даты. Используйте гггг-мм-дд.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    )
-                    await log_analytics(user_id, "invalid_reminder_date", {"input": text})
-                    return 14
-
-            elif state == STATES["tech_break"] and is_admin:
-                try:
-                    minutes, reason = text.split(" ", 1)
-                    minutes = int(minutes)
-                    if minutes <= 0:
-                        raise ValueError("Minutes must be positive")
-                    context.bot_data["tech_break_info"] = {
-                        "end_time": datetime.now(pytz.UTC) + timedelta(minutes=minutes),
-                        "reason": reason
-                    }
-                    reply_text = await get_text(
-                        "tech_break_active",
-                        end_time=context.bot_data["tech_break_info"]["end_time"].strftime("%Y-%m-%d %H:%M:%S UTC"),
-                        minutes_left=minutes,
-                        reason=reason
-                    )
-                    await update.message.reply_text(
-                        reply_text,
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    )
-                    context.user_data["state"] = 8
-                    await log_analytics(user_id, "set_tech_break", {"minutes": minutes, "reason": reason})
-                    return 8
-                except ValueError:
-                    await update.message.reply_text(
-                        "Неверный формат. Введите: <минуты> <причина>",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin")]])
-                    )
-                    await log_analytics(user_id, "invalid_tech_break_input", {"input": text})
-                    return 16
-
-            elif state == STATES["bot_settings"] and is_admin and "edit_setting" in context.user_data:
-                setting = context.user_data["edit_setting"]
-                try:
-                    value = float(text)
-                    if value < 0:
-                        raise ValueError("Value must be non-negative")
-                    await conn.execute(
-                        "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-                        setting, value
-                    )
-                    await load_settings()
-                    reply_text = f"Настройка '{setting}' обновлена: {value}"
-                    await update.message.reply_text(
-                        reply_text,
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]])
-                    )
-                    context.user_data.pop("edit_setting", None)
-                    context.user_data["state"] = 17
-                    await log_analytics(user_id, f"edit_{setting}", {"value": value})
-                    return 17
-                except ValueError:
-                    await update.message.reply_text(
-                        "Пожалуйста, введите корректное число.",
-                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="bot_settings")]])
-                    )
-                    await log_analytics(user_id, f"invalid_{setting}_input", {"input": text})
-                    return 17
-
-            else:
-                await update.message.reply_text(
-                    "Неизвестная команда или состояние. Вернитесь в главное меню.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
-                )
-                context.user_data["state"] = 0
-                await log_analytics(user_id, "unknown_message_state", {"state": state, "text": text})
-                return 0
-
-    except Exception as e:
-        logger.error(f"Ошибка в message_handler: {e}", exc_info=True)
-        await update.message.reply_text(
-            "Произошла ошибка. Попробуйте снова или обратитесь в поддержку.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]])
-        )
-        context.user_data["state"] = 0
-        await log_analytics(user_id, "message_error", {"error": str(e)})
-        return 0
 
 async def lifespan(app):
     global telegram_app
