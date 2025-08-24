@@ -701,44 +701,75 @@ async def log_analytics(user_id: int, action: str, data: dict = None):
 
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.debug("Updating TON price...")
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://api.coingecko.com/api/v3/coins/the-open-network") as response:
-                if response.status != 200:
-                    logger.error(f"Failed to fetch TON price: HTTP {response.status}")
-                    return
-                data = await response.json()
-                price = float(data["market_data"]["current_price"]["usd"])
-                diff_24h = data["market_data"]["price_change_percentage_24h"]
-                # Normalize Unicode minus sign
-                diff_24h_str = str(diff_24h).replace("−", "-")
-                try:
-                    diff_24h = float(diff_24h_str.rstrip("%"))
-                except ValueError as e:
-                    logger.warning(f"Failed to parse diff_24h '{diff_24h_str}': {e}")
-                    diff_24h = 0.0  # Fallback to 0.0 if parsing fails
-
-        context.bot_data["ton_price_info"] = {
-            "price": price,
-            "diff_24h": diff_24h,
-            "updated_at": datetime.now(pytz.UTC)
-        }
-        logger.debug(f"TON price updated: price={price}, diff_24h={diff_24h}")
-
-        # Store in database
+    max_retries = 3
+    retry_delay = 60  # Wait 60 seconds for rate limit reset
+    for attempt in range(max_retries):
         try:
-            pool = await ensure_db_pool()
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO ton_price (price, updated_at) VALUES ($1, $2)",
-                    price, datetime.now(pytz.UTC)
-                )
-                logger.debug("Stored TON price in database")
-        except Exception as e:
-            logger.error(f"Failed to store TON price in database: {e}", exc_info=True)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.coingecko.com/api/v3/coins/the-open-network",
+                    headers={"User-Agent": "TelegramBot/1.0"}
+                ) as response:
+                    if response.status == 429:
+                        logger.warning(f"Rate limit hit on attempt {attempt + 1}/{max_retries}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                        continue
+                    if response.status != 200:
+                        logger.error(f"Failed to fetch TON price: HTTP {response.status}")
+                        break
+                    data = await response.json()
+                    price = float(data["market_data"]["current_price"]["usd"])
+                    diff_24h = data["market_data"]["price_change_percentage_24h"]
+                    diff_24h_str = str(diff_24h).replace("−", "-")
+                    try:
+                        diff_24h = float(diff_24h_str.rstrip("%"))
+                    except ValueError as e:
+                        logger.warning(f"Failed to parse diff_24h '{diff_24h_str}': {e}")
+                        diff_24h = 0.0
 
+                    context.bot_data["ton_price_info"] = {
+                        "price": price,
+                        "diff_24h": diff_24h,
+                        "updated_at": datetime.now(pytz.UTC)
+                    }
+                    logger.debug(f"TON price updated: price={price}, diff_24h={diff_24h}")
+
+                    # Store in database
+                    async with (await ensure_db_pool()) as conn:
+                        await conn.execute(
+                            "INSERT INTO ton_price (price, updated_at) VALUES ($1, $2)",
+                            price, datetime.now(pytz.UTC)
+                        )
+                        logger.debug("Stored TON price in database")
+                    return
+
+        except Exception as e:
+            logger.error(f"Error in update_ton_price (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+            continue
+
+    logger.error("Failed to update TON price after all retries")
+    # Fallback to database
+    try:
+        async with (await ensure_db_pool()) as conn:
+            price_record = await conn.fetchrow(
+                "SELECT price, updated_at FROM ton_price ORDER BY updated_at DESC LIMIT 1"
+            )
+            if price_record and (datetime.now(pytz.UTC) - price_record["updated_at"]).total_seconds() < 3600:
+                context.bot_data["ton_price_info"] = {
+                    "price": price_record["price"],
+                    "diff_24h": 0.0,
+                    "updated_at": price_record["updated_at"]
+                }
+                logger.info(f"Using database TON price: {price_record['price']}")
+            else:
+                logger.warning("No valid TON price in database")
+                context.bot_data["ton_price_info"] = {"price": 1.0, "diff_24h": 0.0, "updated_at": datetime.now(pytz.UTC)}
     except Exception as e:
-        logger.error(f"Error in update_ton_price: {e}", exc_info=True)
+        logger.error(f"Failed to fetch TON price from database: {e}", exc_info=True)
+        context.bot_data["ton_price_info"] = {"price": 1.0, "diff_24h": 0.0, "updated_at": datetime.now(pytz.UTC)}
 
 async def safe_reply_text(update: Update, text: str, reply_markup=None, parse_mode=None, retry_count=3):
     for attempt in range(retry_count):
