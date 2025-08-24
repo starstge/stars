@@ -720,6 +720,8 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 from telegram.error import RetryAfter, TelegramError
 
+from telegram.error import RetryAfter, TelegramError
+
 async def safe_reply_text(update: Update, text: str, reply_markup=None, parse_mode=None, retry_count=3):
     for attempt in range(retry_count):
         try:
@@ -734,8 +736,6 @@ async def safe_reply_text(update: Update, text: str, reply_markup=None, parse_mo
             if attempt + 1 == retry_count:
                 logger.error(f"Failed to send message after {retry_count} attempts")
                 raise
-
-
 async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     username = update.effective_user.username or str(user_id)
@@ -753,9 +753,14 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
             logger.debug(f"User admin status: is_admin={is_admin}")
 
+            # Initialize tech_break_info if not present
+            if "tech_break_info" not in context.bot_data:
+                context.bot_data["tech_break_info"] = {"end_time": datetime.min.replace(tzinfo=pytz.UTC), "reason": ""}
+                logger.debug("Initialized tech_break_info")
+
             # Check tech break
             if (
-                context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC))
+                context.bot_data["tech_break_info"].get("end_time", datetime.min.replace(tzinfo=pytz.UTC))
                 > datetime.now(pytz.UTC)
                 and not is_admin
             ):
@@ -783,6 +788,7 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             price = context.bot_data.get("ton_price_info", {}).get("price", 0.0)
             diff_24h = context.bot_data.get("ton_price_info", {}).get("diff_24h", 0.0)
 
+            # Fallback to database if price is unavailable
             if price == 0.0:
                 logger.warning("TON price is zero, attempting to fetch from database")
                 price_record = await conn.fetchrow(
@@ -813,7 +819,6 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
                 parse_mode="HTML"
             )
-            context.user_data["state"] = 0
             await log_analytics(user_id, "ton_price", {"price": price, "diff_24h": diff_24h})
             logger.info(f"Successfully executed /tonprice for user_id={user_id}")
             return 0
@@ -826,10 +831,8 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
             parse_mode="HTML"
         )
-        context.user_data["state"] = 0
         await log_analytics(user_id, "ton_price_error", {"error": str(e)})
         return 0
-
 async def load_settings():
     global PRICE_USD_PER_50, MARKUP_PERCENTAGE, REFERRAL_BONUS_PERCENTAGE
     async with (await ensure_db_pool()) as conn:
@@ -902,7 +905,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     username = update.effective_user.username or str(user_id)
     logger.debug(f"Entering start handler: user_id={user_id}, username={username}, args={context.args}, state={context.user_data.get('state', 0)}")
-    
+
     try:
         # Reset state to ensure commands are processed correctly
         context.user_data["state"] = 0
@@ -943,9 +946,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             is_admin = await conn.fetchval("SELECT is_admin FROM users WHERE user_id = $1", user_id) or False
             logger.debug(f"User admin status: is_admin={is_admin}")
 
+            # Initialize tech_break_info if not present
+            if "tech_break_info" not in context.bot_data:
+                context.bot_data["tech_break_info"] = {"end_time": datetime.min.replace(tzinfo=pytz.UTC), "reason": ""}
+                logger.debug("Initialized tech_break_info")
+
             # Check tech break
             if (
-                context.bot_data.get("tech_break_info", {}).get("end_time", datetime.min.replace(tzinfo=pytz.UTC))
+                context.bot_data["tech_break_info"].get("end_time", datetime.min.replace(tzinfo=pytz.UTC))
                 > datetime.now(pytz.UTC)
                 and not is_admin
             ):
@@ -992,7 +1000,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
-            context.user_data["state"] = 0
             await log_analytics(user_id, "start", {"referrer_id": referrer_id})
             logger.info(f"Successfully executed /start for user_id={user_id}")
             return 0
@@ -1005,7 +1012,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
             parse_mode="HTML"
         )
-        context.user_data["state"] = 0
         await log_analytics(user_id, "start_error", {"error": str(e)})
         return 0
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
