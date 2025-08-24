@@ -511,38 +511,42 @@ logger = logging.getLogger(__name__)
 # Global pool variable
 _db_pool: Optional[asyncpg.Pool] = None
 
-async def ensure_db_pool():
+async def ensure_db_pool(max_attempts: int = 3, retry_delay: float = 1.0) -> Pool:
     global _db_pool
-    max_retries = 3
-    retry_delay = 1
-
-    for attempt in range(max_retries):
+    attempt = 1
+    while attempt <= max_attempts:
         try:
             if _db_pool is None or _db_pool._closed:
-                logger.info(f"Creating new asyncpg connection pool (attempt {attempt + 1}/{max_retries})")
+                logger.debug(f"Creating new database pool (attempt {attempt}/{max_attempts})")
+                database_url = os.getenv("DATABASE_URL")
+                if not database_url:
+                    logger.error("DATABASE_URL environment variable not set")
+                    raise ValueError("DATABASE_URL not set")
+                
                 _db_pool = await asyncpg.create_pool(
-                    dsn=POSTGRES_URL,
+                    database_url,
                     min_size=1,
                     max_size=10,
-                    max_inactive_connection_lifetime=300,
+                    max_inactive_connection_lifetime=300
                 )
-                # Validate pool
-                async with _db_pool.acquire() as conn:
-                    await conn.execute("SELECT 1")
-                logger.info("Connection pool created and validated successfully")
-            else:
-                # Validate existing pool
-                async with _db_pool.acquire() as conn:
-                    await conn.execute("SELECT 1")
-                logger.debug("Existing connection pool is valid")
-            return _db_pool
+                logger.info("Database pool created successfully")
+            
+            # Verify pool is usable
+            async with _db_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+                logger.debug("Database pool validated")
+                return _db_pool
+
         except Exception as e:
-            logger.warning(f"Failed to create/validate pool (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt + 1 < max_retries:
+            logger.warning(f"Failed to create/validate pool (attempt {attempt}/{max_attempts}): {e}")
+            _db_pool = None  # Reset pool if it’s unusable
+            attempt += 1
+            if attempt <= max_attempts:
                 await asyncio.sleep(retry_delay)
-                continue
-            logger.error(f"Failed to create pool after {max_retries} attempts: {e}", exc_info=True)
-            raise
+            continue
+
+    logger.error(f"Failed to create pool after {max_attempts} attempts: {e}")
+    raise asyncpg.exceptions.InterfaceError("Failed to create database pool")
 
 async def close_db_pool(context: ContextTypes.DEFAULT_TYPE):
     async with _db_pool_lock:
@@ -702,25 +706,45 @@ async def log_analytics(user_id: int, action: str, data: dict = None):
         logger.error(f"Ошибка логирования аналитики: {e}", exc_info=True)
 
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.debug("Updating TON price...")
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get("https://tonapi.io/v2/rates?tokens=ton&currencies=usd") as response:
+            async with session.get("https://api.coingecko.com/api/v3/coins/the-open-network") as response:
                 if response.status != 200:
                     logger.error(f"Failed to fetch TON price: HTTP {response.status}")
                     return
                 data = await response.json()
-                price = float(data["rates"]["TON"]["prices"]["USD"])
-                diff_24h = data["rates"]["TON"]["diff_24h"]["USD"]
-                # Strip percentage sign and convert to float
-                diff_24h = float(diff_24h.rstrip("%"))
-                context.bot_data["ton_price_info"] = {"price": price, "diff_24h": diff_24h}
-                logger.info(f"Updated TON price: {price} USD, diff_24h: {diff_24h}%")
+                price = float(data["market_data"]["current_price"]["usd"])
+                diff_24h = data["market_data"]["price_change_percentage_24h"]
+                # Normalize Unicode minus sign
+                diff_24h_str = str(diff_24h).replace("−", "-")
+                try:
+                    diff_24h = float(diff_24h_str.rstrip("%"))
+                except ValueError as e:
+                    logger.warning(f"Failed to parse diff_24h '{diff_24h_str}': {e}")
+                    diff_24h = 0.0  # Fallback to 0.0 if parsing fails
+
+        context.bot_data["ton_price_info"] = {
+            "price": price,
+            "diff_24h": diff_24h,
+            "updated_at": datetime.now(pytz.UTC)
+        }
+        logger.debug(f"TON price updated: price={price}, diff_24h={diff_24h}")
+
+        # Store in database
+        try:
+            pool = await ensure_db_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO ton_price (price, updated_at) VALUES ($1, $2)",
+                    price, datetime.now(pytz.UTC)
+                )
+                logger.debug("Stored TON price in database")
+        except Exception as e:
+            logger.error(f"Failed to store TON price in database: {e}", exc_info=True)
+
     except Exception as e:
-        logger.error(f"Ошибка в update_ton_price: {e}", exc_info=True)
-
-from telegram.error import RetryAfter, TelegramError
-
-from telegram.error import RetryAfter, TelegramError
+        logger.error(f"Error in update_ton_price: {e}", exc_info=True)
 
 async def safe_reply_text(update: Update, text: str, reply_markup=None, parse_mode=None, retry_count=3):
     for attempt in range(retry_count):
@@ -889,6 +913,15 @@ async def format_time_remaining(end_time):
         parts.append(f"{minutes} мин.")
     return " ".join(parts) if parts else "менее минуты"
 
+pythonfrom telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
+from datetime import datetime
+import pytz
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     username = update.effective_user.username or str(user_id)
@@ -899,13 +932,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data["state"] = 0
         logger.debug(f"State reset to main_menu for user_id={user_id}")
 
+        # Initialize referrer_id to None
+        referrer_id = None
+        if context.args and context.args[0].isdigit():
+            referrer_id = int(context.args[0])
+            logger.debug(f"Referrer ID provided: {referrer_id}")
+
         # Ensure database pool
         pool = await ensure_db_pool()
         async with pool.acquire() as conn:
             # Check if user exists
             user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
             if not user:
-                referrer_id = int(context.args[0]) if context.args and context.args[0].isdigit() else None
                 if referrer_id:
                     referrer = await conn.fetchrow("SELECT referrals FROM users WHERE user_id = $1", referrer_id)
                     if referrer:
@@ -957,7 +995,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
                     parse_mode="HTML"
                 )
-                await log_analytics(user_id, "start_tech_break", {})
+                await log_analytics(user_id, "start_tech_break", {"referrer_id": referrer_id})
                 return 0
 
             # Fetch total and user stars
@@ -986,7 +1024,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
-            await log_analytics(user_id, "start", {"referrer_id": referrer_id})
+            await log_analytics(user_id, "start", {"referrer_id": referrer_id if referrer_id is not None else "none"})
             logger.info(f"Successfully executed /start for user_id={user_id}")
             return 0
 
@@ -997,7 +1035,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
             parse_mode="HTML"
         )
-        await log_analytics(user_id, "start_error", {"error": str(e)})
+        await log_analytics(user_id, "start_error", {"error": str(e), "referrer_id": referrer_id if referrer_id is not None else "none"})
         return 0
 async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -3094,6 +3132,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await log_analytics(user_id, "message_error", {"error": str(e)})
         return 0
 
+async def lifespan(app):
+    global telegram_app
+    if telegram_app is None:
+        logger.error("telegram_app is None in lifespan")
+        raise RuntimeError("telegram_app not initialized")
+    logger.info("Initializing telegram_app...")
+    await telegram_app.initialize()
+    yield
+    logger.info("Shutting down telegram_app...")
+    await telegram_app.shutdown()
+
 async def webhook(request: web.Request) -> web.Response:
     try:
         if telegram_app is None:
@@ -3117,7 +3166,8 @@ async def webhook(request: web.Request) -> web.Response:
 async def health_check(request: web.Request) -> web.Response:
     logger.info(f"Health check called: {request.method} {request.path}")
     try:
-        async with (await ensure_db_pool()) as conn:
+        pool = await ensure_db_pool()
+        async with pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
         return web.json_response({"status": "healthy"})
     except Exception as e:
@@ -3125,31 +3175,18 @@ async def health_check(request: web.Request) -> web.Response:
         return web.json_response({"status": "unhealthy", "message": str(e)}, status=500)
 
 async def setup_handlers(app: Application):
-    """Register all Telegram handlers."""
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tonprice", ton_price_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_handler(CallbackQueryHandler(callback_query_handler))
-    app.add_handler(CommandHandler("test", test))  # For debugging
+    app.add_handler(CommandHandler("test", test))
     logger.info("Handlers registered: start, tonprice, message, callback_query, test")
 
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Debug command to verify handler execution."""
     user_id = update.effective_user.id
     logger.debug(f"Test command received: user_id={user_id}")
     await update.message.reply_text("Bot is responding!", parse_mode="HTML")
     await log_analytics(user_id, "test_command", {})
-
-async def lifespan(app):
-    global telegram_app
-    if telegram_app is None:
-        logger.error("telegram_app is None in lifespan")
-        raise RuntimeError("telegram_app not initialized")
-    logger.info("Initializing telegram_app...")
-    await telegram_app.initialize()
-    yield
-    logger.info("Shutting down telegram_app...")
-    await telegram_app.shutdown()
 
 async def main():
     global telegram_app
@@ -3158,13 +3195,21 @@ async def main():
     if not bot_token:
         logger.error("BOT_TOKEN environment variable not set")
         raise RuntimeError("BOT_TOKEN not set")
-    
+
     telegram_app = Application.builder().token(bot_token).build()
-    
+
+    # Initialize database pool
+    try:
+        await ensure_db_pool()
+        logger.info("Database pool initialized in main")
+    except Exception as e:
+        logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
+        raise
+
     # Register handlers
     await setup_handlers(telegram_app)
     logger.info("telegram_app created successfully")
-    
+
     # Initialize tech_break_info
     telegram_app.bot_data["tech_break_info"] = {
         "end_time": datetime.min.replace(tzinfo=pytz.UTC),
@@ -3220,6 +3265,9 @@ async def main():
             logger.info("telegram_app shut down successfully")
         except Exception as e:
             logger.error(f"Failed to shut down telegram_app: {e}", exc_info=True)
+        if _db_pool is not None:
+            await _db_pool.close()
+            logger.info("Database pool closed")
         await runner.cleanup()
 
 if __name__ == "__main__":
