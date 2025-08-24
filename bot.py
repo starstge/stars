@@ -913,14 +913,6 @@ async def format_time_remaining(end_time):
         parts.append(f"{minutes} мин.")
     return " ".join(parts) if parts else "менее минуты"
 
-pythonfrom telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
-from datetime import datetime
-import pytz
-import json
-import logging
-
-logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
@@ -995,7 +987,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_to_menu")]]),
                     parse_mode="HTML"
                 )
-                await log_analytics(user_id, "start_tech_break", {"referrer_id": referrer_id})
+                await log_analytics(user_id, "start_tech_break", {"referrer_id": referrer_id if referrer_id is not None else "none"})
                 return 0
 
             # Fetch total and user stars
