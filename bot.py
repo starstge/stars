@@ -36,6 +36,7 @@ from prometheus_client import Counter, Histogram, start_http_server
 from cachetools import TTLCache
 import hmac
 import hashlib
+from contextlib import asynccontextmanager
 import requests
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from io import BytesIO
@@ -151,9 +152,7 @@ async def fetch_ton_price(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error fetching TON price: {e}")
         return None
-# Global variables
-db_pool = None
-_db_pool_lock = asyncio.Lock()
+
 telegram_app = None
 transaction_cache = TTLCache(maxsize=1000, ttl=3600)
 tech_break_info = {}  # Initialize as empty dict to avoid NoneType errors
@@ -229,7 +228,6 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             parse_mode="HTML"
         )
         await log_analytics(user_id, "ton_price_command_error", {"error": str(e)})
-
 # Database connection (synchronous for Flask)
 
 
@@ -644,8 +642,11 @@ async def ensure_db_pool():
                 logger.info(f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
                 if _db_pool is not None:
                     try:
-                        await _db_pool.close()
+                        # Use a short timeout to avoid long waits
+                        await asyncio.wait_for(_db_pool.close(), timeout=5.0)
                         logger.debug("Closed existing pool")
+                    except asyncio.TimeoutError:
+                        logger.warning("Timeout closing existing pool, proceeding anyway")
                     except Exception as e:
                         logger.warning(f"Error closing existing pool: {e}")
                 _db_pool = await asyncpg.create_pool(
@@ -673,7 +674,6 @@ async def get_db_connection():
     pool = await ensure_db_pool()
     async with pool.acquire() as conn:
         yield conn
-
 async def init_db():
     try:
         async with (await ensure_db_pool()) as conn:
@@ -928,14 +928,17 @@ async def safe_reply_text(update: Update, text: str, reply_markup=None, parse_mo
 async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.debug("Starting TON price update...")
     max_retries = 3
-    base_delay = 120  # Increased to 120 seconds
+    base_delay = 60  # 60 seconds for retries
+    api_url = "https://tonapi.io/v2/rates"
+
     try:
-        async with asyncio.timeout(60.0):  # Increased timeout to 60 seconds
+        async with asyncio.timeout(30.0):  # Reduced timeout to 30 seconds
             async with aiohttp.ClientSession() as session:
                 for attempt in range(max_retries):
                     try:
                         async with session.get(
-                            "https://api.coingecko.com/api/v3/coins/the-open-network",
+                            api_url,
+                            params={"tokens": "ton", "currencies": "usd"},
                             headers={"User-Agent": "TelegramBot/1.0"}
                         ) as response:
                             if response.status == 429:
@@ -949,33 +952,29 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
                                     f"Failed to fetch TON price: HTTP {response.status}")
                                 break
                             data = await response.json()
-                            price = float(data["market_data"]
-                                          ["current_price"]["usd"])
-                            diff_24h = data["market_data"].get(
-                                "price_change_percentage_24h", 0.0)
+                            price = float(data.get("rates", {}).get("TON", {}).get("prices", {}).get("USD", 0.0))
+                            if price == 0.0:
+                                logger.error("Invalid TON price received from TonAPI")
+                                break
                             context.bot_data["ton_price_info"] = {
                                 "price": price,
-                                "diff_24h": float(str(diff_24h).replace("−", "-").rstrip("%") or 0.0),
+                                "diff_24h": 0.0,  # TonAPI may not provide diff_24h; adjust if available
                                 "updated_at": datetime.now(pytz.UTC)
                             }
-                            logger.debug(
-                                f"TON price updated: price={price}, diff_24h={diff_24h}")
+                            logger.debug(f"TON price updated: price={price}")
                             try:
                                 async with asyncio.timeout(5.0):
-                                    async with (await ensure_db_pool()) as conn:
+                                    async with get_db_connection() as conn:
                                         await conn.execute(
                                             "INSERT INTO ton_price (price, updated_at) VALUES ($1, $2)",
                                             price, datetime.now(pytz.UTC)
                                         )
-                                        logger.debug(
-                                            "Stored TON price in database")
+                                        logger.debug("Stored TON price in database")
                                 return
                             except asyncio.TimeoutError:
-                                logger.warning(
-                                    "Timeout storing TON price in database")
+                                logger.warning("Timeout storing TON price in database")
                             except Exception as e:
-                                logger.warning(
-                                    f"Failed to store TON price in database: {e}")
+                                logger.warning(f"Failed to store TON price in database: {e}")
                             return
                     except Exception as e:
                         logger.error(
@@ -987,9 +986,11 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Timeout in update_ton_price")
     except Exception as e:
         logger.error(f"Fatal error in update_ton_price: {e}", exc_info=True)
+
+    # Fallback to database
     try:
         async with asyncio.timeout(5.0):
-            async with (await ensure_db_pool()) as conn:
+            async with get_db_connection() as conn:
                 price_record = await conn.fetchrow(
                     "SELECT price, updated_at FROM ton_price ORDER BY updated_at DESC LIMIT 1"
                 )
@@ -999,13 +1000,14 @@ async def update_ton_price(context: ContextTypes.DEFAULT_TYPE) -> None:
                         "diff_24h": 0.0,
                         "updated_at": price_record["updated_at"]
                     }
-                    logger.info(
-                        f"Using database TON price: {price_record['price']}")
+                    logger.info(f"Using database TON price: {price_record['price']}")
                     return
     except asyncio.TimeoutError:
         logger.error("Timeout fetching TON price from database")
     except Exception as e:
         logger.error(f"Failed to fetch TON price from database: {e}")
+
+    # Ultimate fallback
     context.bot_data["ton_price_info"] = {
         "price": 3.32,
         "diff_24h": 0.0,
@@ -2594,28 +2596,29 @@ async def main():
     logger.info("Starting bot...")
 
     # Validate environment variables
-    bot_token = os.getenv("BOT_TOKEN")
-    if not bot_token:
-        logger.error("BOT_TOKEN environment variable not set")
-        raise RuntimeError("BOT_TOKEN not set")
+    try:
+        await check_environment()
+    except ValueError as e:
+        logger.error(str(e))
+        raise
 
     # Initialize Telegram application
     try:
-        telegram_app = Application.builder().token(bot_token).build()
+        telegram_app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
         logger.info("Telegram application created successfully")
     except Exception as e:
-        logger.error(
-            f"Failed to create Telegram application: {e}", exc_info=True)
+        logger.error(f"Failed to create Telegram application: {e}", exc_info=True)
         raise
 
     # Initialize database pool
     try:
-        await ensure_db_pool()
-        logger.info("Database pool initialized in main")
+        _db_pool = await ensure_db_pool()
+        await init_db()
+        logger.info("Database pool initialized and schema created")
     except Exception as e:
-        logger.error(f"Failed to initialize database pool: {e}", exc_info=True)
-        logger.warning(
-            "Starting bot without database connection, using fallbacks")
+        logger.error(f"Failed to initialize database: {e}", exc_info=True)
+        await notify_admins(telegram_app, f"Database initialization failed: {e}")
+        raise
 
     # Initialize bot data
     telegram_app.bot_data["tech_break_info"] = {
@@ -2630,29 +2633,13 @@ async def main():
     logger.debug("Initialized bot_data")
 
     # Register handlers
-    try:
-        await setup_handlers(telegram_app)
-        logger.info("Handlers registered successfully")
-    except Exception as e:
-        logger.error(f"Failed to register handlers: {e}", exc_info=True)
-        raise
-
-    # Initialize Telegram application
-    try:
-        await telegram_app.initialize()
-        logger.info("Telegram application initialized successfully")
-    except Exception as e:
-        logger.error(
-            f"Failed to initialize Telegram application: {e}", exc_info=True)
-        raise
+    await setup_handlers(telegram_app)
 
     # Set up aiohttp server
     app = web.Application()
     app.router.add_post('/webhook', webhook)
     app.router.add_get('/', health_check)
     app.router.add_get('/debug_pool', debug_pool)
-    # Add Flask WSGI handler if needed
-    # app.router.add_route('*', '/{path_info:.*}', wsgi_handler.handle_request)
 
     try:
         runner = web.AppRunner(app)
@@ -2661,7 +2648,8 @@ async def main():
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
         logger.info(f"aiohttp server started on port {port}")
-        webhook_url = f"https://stars-ejwz.onrender.com/webhook"
+
+        webhook_url = os.getenv("WEBHOOK_URL", f"https://{os.getenv('HOSTNAME')}/webhook")
         logger.info(f"Setting webhook to {webhook_url}...")
         await telegram_app.bot.delete_webhook(drop_pending_updates=True)
         await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
@@ -2684,6 +2672,7 @@ async def main():
         await asyncio.Event().wait()
     except Exception as e:
         logger.error(f"Error in main: {e}", exc_info=True)
+        await notify_admins(telegram_app, f"Bot startup failed: {e}")
         raise
     finally:
         logger.info("Shutting down bot...")
@@ -2692,21 +2681,18 @@ async def main():
                 await telegram_app.shutdown()
                 logger.info("Telegram application shut down successfully")
         except Exception as e:
-            logger.error(
-                f"Failed to shut down Telegram application: {e}", exc_info=True)
+            logger.error(f"Failed to shut down Telegram application: {e}", exc_info=True)
         if _db_pool is not None:
             try:
                 async with _db_pool.acquire() as conn:
                     active_conns = await conn.fetchval("SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND datname = current_database()")
-                    logger.info(
-                        f"Active connections before pool close: {active_conns}")
+                    logger.info(f"Active connections before pool close: {active_conns}")
                 await asyncio.wait_for(_db_pool.close(), timeout=10.0)
                 logger.info("Database pool closed successfully")
             except asyncio.TimeoutError:
                 logger.error("Timeout closing database pool")
             except Exception as e:
-                logger.error(
-                    f"Failed to close database pool: {e}", exc_info=True)
+                logger.error(f"Failed to close database pool: {e}", exc_info=True)
             _db_pool = None
         await runner.cleanup()
         logger.info("aiohttp server shut down")
