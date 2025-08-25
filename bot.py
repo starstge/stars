@@ -2684,6 +2684,101 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await log_analytics(user_id, "test_command", {})
 
 
+# aiohttp Handlers
+async def health_check(request: web.Request) -> web.Response:
+    logger.info(f"Health check called: {request.method} {request.path}")
+    async with (await ensure_db_pool()).acquire() as conn:
+        await conn.execute("SELECT 1")
+    return web.json_response({"status": "ok"})
+
+async def favicon_handler(request: web.Request) -> web.Response:
+    logger.info("Favicon requested")
+    return web.Response(status=204)  # No content, or serve a static favicon.ico file
+
+
+async def handle_ton_webhook(data: dict) -> web.Response:
+    logger.info(f"Handling TON webhook: {data}")
+    try:
+        account_id = data.get("account_id")
+        tx_hash = data.get("tx_hash")
+        amount = data.get("amount")  # Amount in nanoton
+        comment = data.get("comment")  # Invoice ID
+
+        if not all([account_id, tx_hash, amount, comment]):
+            logger.warning(f"Incomplete TON webhook data: {data}")
+            return web.json_response({"error": "Missing required fields"}, status=400)
+
+        owner_wallet = os.getenv("OWNER_WALLET")
+        if not owner_wallet:
+            logger.error("OWNER_WALLET not set")
+            return web.json_response({"error": "Server configuration error"}, status=500)
+
+        if account_id != owner_wallet:
+            logger.warning(f"Received TON webhook for unknown wallet: {account_id}")
+            return web.json_response({"error": "Invalid wallet"}, status=400)
+
+        async with (await ensure_db_pool()).acquire() as conn:
+            transaction = await conn.fetchrow(
+                "SELECT user_id, stars_amount, price_ton, recipient_username FROM transactions WHERE invoice_id = $1 AND checked_status = 'pending'",
+                comment
+            )
+            if not transaction:
+                logger.warning(f"No pending transaction found for invoice_id: {comment}")
+                return web.json_response({"error": "Transaction not found"}, status=404)
+
+            expected_amount = int(transaction["price_ton"] * 1_000_000_000)
+            if abs(amount - expected_amount) > 100_000_000:  # Allow 0.1 TON tolerance
+                logger.warning(f"Amount mismatch: expected {expected_amount}, received {amount}")
+                return web.json_response({"error": "Amount mismatch"}, status=400)
+
+            # Update transaction and user
+            await conn.execute(
+                "UPDATE transactions SET checked_status = 'completed', purchase_time = $1, tx_hash = $2 WHERE invoice_id = $3",
+                datetime.now(pytz.UTC), tx_hash, comment
+            )
+            await conn.execute(
+                "UPDATE users SET stars_bought = stars_bought + $1 WHERE user_id = $2",
+                transaction["stars_amount"], transaction["user_id"]
+            )
+
+            # Award referral bonus
+            ref_bonus_percentage = await conn.fetchval("SELECT value FROM settings WHERE key = 'ref_bonus'") or 30.0
+            referrer_id = await conn.fetchval("SELECT referrer_id FROM users WHERE user_id = $1", transaction["user_id"])
+            if referrer_id:
+                ref_bonus_ton = transaction["price_ton"] * (ref_bonus_percentage / 100)
+                await conn.execute(
+                    "UPDATE users SET ref_bonus_ton = ref_bonus_ton + $1 WHERE user_id = $2",
+                    ref_bonus_ton, referrer_id
+                )
+                await log_analytics(transaction["user_id"], "referral_bonus_added", {
+                    "referrer_id": referrer_id,
+                    "bonus_ton": ref_bonus_ton,
+                    "invoice_id": comment
+                })
+
+            # Notify user
+            try:
+                await telegram_app.bot.send_message(
+                    chat_id=transaction["user_id"],
+                    text=f"Платеж подтвержден! {transaction['stars_amount']} звезд добавлены для {transaction['recipient_username']}.",
+                    parse_mode="HTML"
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to notify user {transaction['user_id']}: {e}")
+
+            logger.info(f"Processed TON transaction: invoice_id={comment}, stars={transaction['stars_amount']}")
+            await log_analytics(transaction["user_id"], "payment_confirmed", {
+                "stars": transaction["stars_amount"],
+                "recipient": transaction["recipient_username"],
+                "invoice_id": comment
+            })
+            return web.json_response({"status": "ok"})
+
+    except Exception as e:
+        logger.error(f"Error in handle_ton_webhook: {e}", exc_info=True)
+        await notify_admins(telegram_app, f"TON webhook error: {str(e)}")
+        return web.json_response({"error": str(e)}, status=500)
+
 async def main():
     global telegram_app, _db_pool
     logging.basicConfig(
@@ -2735,9 +2830,8 @@ async def main():
 
     # Set up aiohttp server with Flask integration
     app = web.Application()
+    app.router.add_route('GET', '/', health_check)  # Handle both GET and HEAD with one route
     app.router.add_post('/webhook', webhook)
-    app.router.add_get('/', health_check)
-    app.router.add_head('/', health_check)
     app.router.add_get('/debug_pool', debug_pool)
     app.router.add_get('/favicon.ico', favicon_handler)
 
