@@ -2539,20 +2539,34 @@ async def lifespan(app):
 
 
 async def webhook(request: web.Request) -> web.Response:
+    logger.info(f"Webhook received: {request.method} {request.path}")
+    start_time = time.time()
     try:
         data = await request.json()
-        logger.debug(f"Webhook received data: {data}")
+        logger.debug(f"Webhook data: {data}")
+
+        # Check if the request is a TON API webhook
+        if "event_type" in data and data.get("event_type") == "account_tx":
+            logger.info("Processing TON API webhook")
+            return await handle_ton_webhook(data)
+
+        # Handle Telegram webhook
         update = Update.de_json(data, telegram_app.bot)
         if update:
-            logger.info(f"Processing update: update_id={update.update_id}")
             await telegram_app.process_update(update)
-            logger.debug(f"Update processed: update_id={update.update_id}")
+            logger.debug(f"Processed Telegram update in {time.time() - start_time:.2f}s")
             return web.json_response({"status": "ok"})
-        logger.warning("Received empty or invalid update")
-        return web.json_response({"status": "no update"}, status=400)
+        else:
+            logger.warning("Invalid Telegram update received")
+            return web.json_response({"error": "Invalid update"}, status=400)
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode webhook JSON: {e}", exc_info=True)
+        return web.json_response({"error": "Invalid JSON"}, status=400)
     except Exception as e:
         logger.error(f"Error processing webhook: {e}", exc_info=True)
-        return web.json_response({"status": "error", "error": str(e)}, status=500)
+        await notify_admins(telegram_app, f"Webhook error: {str(e)}")
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def health_check(request: web.Request) -> web.Response:
@@ -2568,6 +2582,89 @@ async def health_check(request: web.Request) -> web.Response:
             {"status": "running", "database": "unavailable", "error": str(e)},
             status=200  # Return 200 to avoid UptimeRobot alerts
         )
+
+async def handle_ton_webhook(data: dict) -> web.Response:
+    logger.info(f"Handling TON webhook: {data}")
+    try:
+        account_id = data.get("account_id")
+        tx_hash = data.get("tx_hash")
+        amount = data.get("amount")  # Amount in nanoton
+        comment = data.get("comment")  # Invoice ID
+
+        if not all([account_id, tx_hash, amount, comment]):
+            logger.warning(f"Incomplete TON webhook data: {data}")
+            return web.json_response({"error": "Missing required fields"}, status=400)
+
+        owner_wallet = os.getenv("OWNER_WALLET")
+        if not owner_wallet:
+            logger.error("OWNER_WALLET not set")
+            return web.json_response({"error": "Server configuration error"}, status=500)
+
+        if account_id != owner_wallet:
+            logger.warning(f"Received TON webhook for unknown wallet: {account_id}")
+            return web.json_response({"error": "Invalid wallet"}, status=400)
+
+        async with (await ensure_db_pool()).acquire() as conn:
+            transaction = await conn.fetchrow(
+                "SELECT user_id, stars_amount, price_ton, recipient_username FROM transactions WHERE invoice_id = $1 AND checked_status = 'pending'",
+                comment
+            )
+            if not transaction:
+                logger.warning(f"No pending transaction found for invoice_id: {comment}")
+                return web.json_response({"error": "Transaction not found"}, status=404)
+
+            expected_amount = int(transaction["price_ton"] * 1_000_000_000)
+            if abs(amount - expected_amount) > 100_000_000:  # Allow 0.1 TON tolerance
+                logger.warning(f"Amount mismatch: expected {expected_amount}, received {amount}")
+                return web.json_response({"error": "Amount mismatch"}, status=400)
+
+            # Update transaction and user
+            await conn.execute(
+                "UPDATE transactions SET checked_status = 'completed', purchase_time = $1, tx_hash = $2 WHERE invoice_id = $3",
+                datetime.now(pytz.UTC), tx_hash, comment
+            )
+            await conn.execute(
+                "UPDATE users SET stars_bought = stars_bought + $1 WHERE user_id = $2",
+                transaction["stars_amount"], transaction["user_id"]
+            )
+
+            # Award referral bonus
+            ref_bonus_percentage = await conn.fetchval("SELECT value FROM settings WHERE key = 'ref_bonus'") or 30.0
+            referrer_id = await conn.fetchval("SELECT referrer_id FROM users WHERE user_id = $1", transaction["user_id"])
+            if referrer_id:
+                ref_bonus_ton = transaction["price_ton"] * (ref_bonus_percentage / 100)
+                await conn.execute(
+                    "UPDATE users SET ref_bonus_ton = ref_bonus_ton + $1 WHERE user_id = $2",
+                    ref_bonus_ton, referrer_id
+                )
+                await log_analytics(transaction["user_id"], "referral_bonus_added", {
+                    "referrer_id": referrer_id,
+                    "bonus_ton": ref_bonus_ton,
+                    "invoice_id": comment
+                })
+
+            # Notify user
+            try:
+                await telegram_app.bot.send_message(
+                    chat_id=transaction["user_id"],
+                    text=f"Платеж подтвержден! {transaction['stars_amount']} звезд добавлены для {transaction['recipient_username']}.",
+                    parse_mode="HTML"
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to notify user {transaction['user_id']}: {e}")
+
+            logger.info(f"Processed TON transaction: invoice_id={comment}, stars={transaction['stars_amount']}")
+            await log_analytics(transaction["user_id"], "payment_confirmed", {
+                "stars": transaction["stars_amount"],
+                "recipient": transaction["recipient_username"],
+                "invoice_id": comment
+            })
+            return web.json_response({"status": "ok"})
+
+    except Exception as e:
+        logger.error(f"Error in handle_ton_webhook: {e}", exc_info=True)
+        await notify_admins(telegram_app, f"TON webhook error: {str(e)}")
+        return web.json_response({"error": str(e)}, status=500)
 
 
 async def setup_handlers(app: Application) -> None:
@@ -2596,11 +2693,12 @@ async def main():
     logger.info("Starting bot...")
 
     # Validate environment variables
-    try:
-        await check_environment()
-    except ValueError as e:
-        logger.error(str(e))
-        raise
+    required_env_vars = ["BOT_TOKEN", "POSTGRES_URL", "OWNER_WALLET", "FLASK_SECRET_KEY", "ADMIN_PASSWORD"]
+    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+    if missing_vars:
+        error_msg = f"Missing environment variables: {', '.join(missing_vars)}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
 
     # Initialize Telegram application
     try:
@@ -2632,14 +2730,20 @@ async def main():
     }
     logger.debug("Initialized bot_data")
 
-    # Register handlers
+    # Register Telegram handlers
     await setup_handlers(telegram_app)
 
-    # Set up aiohttp server
+    # Set up aiohttp server with Flask integration
     app = web.Application()
     app.router.add_post('/webhook', webhook)
     app.router.add_get('/', health_check)
+    app.router.add_head('/', health_check)
     app.router.add_get('/debug_pool', debug_pool)
+    app.router.add_get('/favicon.ico', favicon_handler)
+
+    # Add Flask routes via aiohttp_wsgi
+    wsgi = WSGIHandler(app_flask)
+    app.router.add_route('*', '/{path:.*}', wsgi.handle_request)
 
     try:
         runner = web.AppRunner(app)
@@ -2649,7 +2753,7 @@ async def main():
         await site.start()
         logger.info(f"aiohttp server started on port {port}")
 
-        webhook_url = os.getenv("WEBHOOK_URL", f"https://{os.getenv('HOSTNAME')}/webhook")
+        webhook_url = os.getenv("WEBHOOK_URL", f"https://{os.getenv('HOSTNAME', 'stars-ejwz.onrender.com')}/webhook")
         logger.info(f"Setting webhook to {webhook_url}...")
         await telegram_app.bot.delete_webhook(drop_pending_updates=True)
         await telegram_app.bot.set_webhook(webhook_url, drop_pending_updates=True)
@@ -2685,7 +2789,9 @@ async def main():
         if _db_pool is not None:
             try:
                 async with _db_pool.acquire() as conn:
-                    active_conns = await conn.fetchval("SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND datname = current_database()")
+                    active_conns = await conn.fetchval(
+                        "SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND datname = current_database()"
+                    )
                     logger.info(f"Active connections before pool close: {active_conns}")
                 await asyncio.wait_for(_db_pool.close(), timeout=10.0)
                 logger.info("Database pool closed successfully")
