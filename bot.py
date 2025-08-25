@@ -176,78 +176,59 @@ async def ton_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     logger.debug(f"Entering ton_price_command: user_id={user_id}")
 
     try:
-        async with asyncio.timeout(5.0):
-            # Try fetching from bot_data
-            ton_price_info = context.bot_data.get("ton_price_info", {})
-            price = ton_price_info.get("price", 0.0)
-            updated_at = ton_price_info.get(
-                "updated_at", datetime.min.replace(tzinfo=pytz.UTC))
-            diff_24h = ton_price_info.get("diff_24h", 0.0)
+        # Try fetching from bot_data
+        ton_price_info = context.bot_data.get("ton_price_info", {})
+        price = ton_price_info.get("price", 0.0)
+        updated_at = ton_price_info.get("updated_at", datetime.min.replace(tzinfo=pytz.UTC))
+        diff_24h = ton_price_info.get("diff_24h", 0.0)
 
-            # If price is missing or outdated (>1 hour), fetch from database
-            if price == 0.0 or (datetime.now(pytz.UTC) - updated_at).total_seconds() > 3600:
-                logger.debug(
-                    "TON price missing or outdated, fetching from database")
-                async with (await ensure_db_pool()) as conn:
-                    price_record = await conn.fetchrow(
-                        "SELECT price, updated_at FROM ton_price ORDER BY updated_at DESC LIMIT 1"
-                    )
-                    if price_record:
-                        price = price_record["price"]
-                        updated_at = price_record["updated_at"]
-                        diff_24h = 0.0
-                        context.bot_data["ton_price_info"] = {
-                            "price": price,
-                            "diff_24h": diff_24h,
-                            "updated_at": updated_at
-                        }
-                        logger.debug(
-                            f"Updated bot_data with database price: {price}")
-                    else:
-                        price = 3.32
-                        diff_24h = 0.0
-                        updated_at = datetime.now(pytz.UTC)
-                        context.bot_data["ton_price_info"] = {
-                            "price": price,
-                            "diff_24h": diff_24h,
-                            "updated_at": updated_at
-                        }
-                        logger.warning(
-                            "No TON price in database, using fallback: 3.32")
+        # If price is missing or outdated (>1 hour), fetch from database
+        if price == 0.0 or (datetime.now(pytz.UTC) - updated_at).total_seconds() > 3600:
+            logger.debug("TON price missing or outdated, fetching from database")
+            async with get_db_connection() as conn:
+                price_record = await conn.fetchrow(
+                    "SELECT price, updated_at FROM ton_price ORDER BY updated_at DESC LIMIT 1"
+                )
+                if price_record:
+                    price = price_record["price"]
+                    updated_at = price_record["updated_at"]
+                    diff_24h = 0.0
+                    context.bot_data["ton_price_info"] = {
+                        "price": price,
+                        "diff_24h": diff_24h,
+                        "updated_at": updated_at
+                    }
+                    logger.debug(f"Updated bot_data with database price: {price}")
+                else:
+                    price = 3.32
+                    diff_24h = 0.0
+                    updated_at = datetime.now(pytz.UTC)
+                    context.bot_data["ton_price_info"] = {
+                        "price": price,
+                        "diff_24h": diff_24h,
+                        "updated_at": updated_at
+                    }
+                    logger.warning("No TON price in database, using fallback: 3.32")
 
-            # Format response
-            diff_text = f"(+{diff_24h:.2f}%)" if diff_24h > 0 else f"({diff_24h:.2f}%)" if diff_24h < 0 else ""
-            text = f"Текущая цена TON: ${price:.2f} {diff_text}\nОбновлено: {updated_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=text,
-                parse_mode="HTML"
-            )
-            logger.debug(f"Sent TON price to user_id={user_id}: {price}")
-            await log_analytics(user_id, "ton_price_command", {"price": price, "diff_24h": diff_24h})
-
-    except asyncio.TimeoutError:
-        logger.error(f"Timeout in ton_price_command for user_id={user_id}")
+        # Format response
+        diff_text = f"(+{diff_24h:.2f}%)" if diff_24h > 0 else f"({diff_24h:.2f}%)" if diff_24h < 0 else ""
+        text = f"Текущая цена TON: ${price:.2f} {diff_text}\nОбновлено: {updated_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text="Ошибка: операция заняла слишком много времени. Попробуйте снова.",
+            text=text,
             parse_mode="HTML"
         )
-    except asyncpg.exceptions.InterfaceError as e:
-        logger.error(
-            f"Database error in ton_price_command: {e}", exc_info=True)
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Ошибка: не удалось подключиться к базе данных. Попробуйте позже.",
-            parse_mode="HTML"
-        )
+        logger.debug(f"Sent TON price to user_id={user_id}: {price}")
+        await log_analytics(user_id, "ton_price_command", {"price": price, "diff_24h": diff_24h})
+
     except Exception as e:
         logger.error(f"Error in ton_price_command: {e}", exc_info=True)
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text="Произошла ошибка. Попробуйте снова или обратитесь в поддержку.",
+            text="Ошибка при получении цены TON. Попробуйте позже.",
             parse_mode="HTML"
         )
+        await log_analytics(user_id, "ton_price_command_error", {"error": str(e)})
 
 # Database connection (synchronous for Flask)
 
@@ -646,19 +627,21 @@ async def ensure_db_pool():
     global _db_pool
     max_retries = 5
     retry_delay = 2
+    DATABASE_URL = os.getenv("DATABASE_URL")
+
     async with _db_pool_lock:
         if _db_pool is not None and not _db_pool._closed and not _db_pool._closing:
             try:
                 async with _db_pool.acquire() as conn:
                     await conn.execute("SELECT 1")
-                    logger.debug("Existing database pool is valid")
-                    return _db_pool
+                logger.debug("Reusing existing database pool")
+                return _db_pool
             except Exception as e:
                 logger.warning(f"Existing pool is invalid: {e}, will recreate")
+
         for attempt in range(max_retries):
             try:
-                logger.info(
-                    f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
+                logger.info(f"Creating new database pool (attempt {attempt + 1}/{max_retries})")
                 if _db_pool is not None:
                     try:
                         await _db_pool.close()
@@ -667,26 +650,29 @@ async def ensure_db_pool():
                         logger.warning(f"Error closing existing pool: {e}")
                 _db_pool = await asyncpg.create_pool(
                     dsn=DATABASE_URL,
-                    min_size=1,
-                    max_size=10,
+                    min_size=2,
+                    max_size=20,
                     max_inactive_connection_lifetime=300,
                     timeout=30,
                     command_timeout=10
                 )
                 async with _db_pool.acquire() as conn:
                     await conn.execute("SELECT 1")
-                logger.debug("Database pool validated successfully")
+                logger.debug("Database pool created and validated successfully")
                 return _db_pool
             except Exception as e:
-                logger.warning(
-                    f"Failed to create/validate pool (attempt {attempt + 1}/{max_retries}): {e}")
+                logger.error(f"Failed to create/validate pool (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt + 1 < max_retries:
                     await asyncio.sleep(retry_delay)
                 continue
         logger.error(f"Failed to create pool after {max_retries} attempts")
-        raise asyncpg.exceptions.InterfaceError(
-            "Failed to establish database connection pool")
+        raise asyncpg.exceptions.InterfaceError("Failed to establish database connection pool")
 
+@asynccontextmanager
+async def get_db_connection():
+    pool = await ensure_db_pool()
+    async with pool.acquire() as conn:
+        yield conn
 
 async def init_db():
     try:
